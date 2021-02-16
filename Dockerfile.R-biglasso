@@ -1,0 +1,7 @@
+FROM rocker/tidyverse:4.0.3
+
+# Install R packages
+RUN install2.r --error \
+    biglasso \
+    feather \
+    microbenchmark
