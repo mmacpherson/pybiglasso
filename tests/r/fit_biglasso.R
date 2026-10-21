@@ -15,7 +15,8 @@ read_design <- function(case_dir, n, p, filebacked) {
   path <- file.path(case_dir, "X.bin")
   if (!filebacked) {
     X <- matrix(readBin(path, "double", n * p), n, p)
-    return(as.big.matrix(X))
+    # -- shared = FALSE: ordinary memory, not /dev/shm (64 MB in containers)
+    return(as.big.matrix(X, shared = FALSE))
   }
   # -- fill a file-backed big.matrix a block of columns at a time, so that
   #    designs larger than memory never have to be materialized
@@ -25,7 +26,7 @@ read_design <- function(case_dir, n, p, filebacked) {
   )
   con <- file(path, "rb")
   on.exit(close(con))
-  block <- max(1L, floor(2^27 / (8 * n)))
+  block <- max(1L, floor(2^25 / (8 * n)))  # ~32 MB of columns at a time
   for (j in seq(1L, p, by = block)) {
     k <- min(block, p - j + 1L)
     bm[, j:(j + k - 1L)] <- matrix(readBin(con, "double", n * k), n, k)
@@ -41,11 +42,13 @@ fit_case <- function(case_dir) {
   y <- readBin(file.path(case_dir, "y.bin"), "double", prm$ny)
 
   args <- list(
-    X = X, y = y, family = "binomial", screen = "SSR",
+    X = X, y = y, family = "binomial",
+    screen = if (is.null(prm$screen)) "SSR" else prm$screen,
     penalty = if (prm$alpha < 1) "enet" else "lasso", alpha = prm$alpha,
     nlambda = prm$nlambda, lambda.min = prm$lambda_min,
     lambda.log.scale = prm$lambda_log_scale, eps = prm$eps,
-    max.iter = prm$max_iter, ncores = 1
+    max.iter = prm$max_iter,
+    ncores = if (is.null(prm$ncores)) 1 else prm$ncores
   )
   if (!is.null(prm$lambdas)) args$lambda <- prm$lambdas
   if (!is.null(prm$penalty_factor)) args$penalty.factor <- prm$penalty_factor

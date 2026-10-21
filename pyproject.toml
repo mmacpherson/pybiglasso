@@ -48,6 +48,7 @@ Homepage = "https://github.com/mmacpherson/pybiglasso"
 [dependency-groups]
 dev = ["pytest", "pytest-cov", "ruff", "pybiglasso[all]"]
 scripts = ["click", "sh", "tqdm", "lets-plot", "pyarrow", "jupyter"]
+bench = ["glum", "skglm", "scikit-learn", "benchopt", "seaborn"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

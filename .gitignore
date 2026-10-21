@@ -19,3 +19,5 @@ htmlcov/
 py-vs-r*/
 scratch/
 scratch*
+benchmarks/results/*.tmp
+benchmarks/results/tmp/
