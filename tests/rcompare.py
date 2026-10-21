@@ -249,6 +249,7 @@ def fit_py(case, data, lambdas=None):
         row_indices=data["row_indices"],
         dfmax=case.dfmax,
         max_iter=MAX_ITER,
+        r_compatible=True,
     )
     seconds = time.perf_counter() - t0
     return dict(

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 BigLassoParams = collections.namedtuple(
     "BigLassoParams",
     "alpha lambdas nlambda eps lambda_min lambda_log_scale multiplier dfmax max_iter "
-    "stop_on_saturation",
+    "stop_on_saturation r_compatible",
 )
 
 
@@ -37,6 +37,7 @@ def biglasso(
     max_iter=1000,
     feature_names=None,
     stop_on_saturation=True,
+    r_compatible=False,
 ):
     """Fit a lasso or elastic-net penalized logistic regression path.
 
@@ -49,6 +50,13 @@ def biglasso(
 
     Like R, the path stops early once training deviance falls below 1% of the
     null deviance; `stop_on_saturation=False` (not in R) fits every lambda.
+
+    For the elastic net (alpha < 1), the coordinate update minimizes the
+    documented objective, (1/n) * NLL + lambda * (alpha * |b|_1 +
+    (1 - alpha) / 2 * |b|_2^2), as glmnet and scikit-learn do. R biglasso's
+    logistic update instead divides by v * (1 + l2) rather than v + l2, which
+    solves a different problem; `r_compatible=True` reproduces R exactly. The
+    two agree for the lasso (alpha = 1).
 
     Returns a `BiglassoPath`.
     """
@@ -146,6 +154,7 @@ def biglasso(
         dfmax=dfmax,
         max_iter=max_iter,
         stop_on_saturation=stop_on_saturation,
+        r_compatible=r_compatible,
     )
     logger.info(
         "Starting fit. Design matrix size: [%d, %d]  Num λ values: %d",
@@ -388,6 +397,7 @@ def update_weights(
     sum_w_residuals,
     eta,
     a,
+    r_compatible,
 ):  # pragma: no cover
     """Perform one round of weight updates.
 
@@ -420,7 +430,10 @@ def update_weights(
             new_weight = 0.0
         else:
             sign = 1 if (u > 0) else -1
-            new_weight = sign * (abs(u) - l1) / v / (1 + l2)
+            if r_compatible:
+                new_weight = sign * (abs(u) - l1) / v / (1 + l2)
+            else:
+                new_weight = sign * (abs(u) - l1) / (v + l2)
 
         shift = new_weight - a[j]
         if shift != 0:
@@ -601,6 +614,7 @@ def binomial_hsr(
         params.multiplier,
         params.max_iter,
         params.stop_on_saturation,
+        params.r_compatible,
         bl,
         bl_i,
     )
@@ -740,6 +754,7 @@ def _fit_lambda(
     multiplier,
     max_iter,
     stop_on_saturation,
+    r_compatible,
     bl,
     bl_i,
     il,
@@ -785,6 +800,7 @@ def _fit_lambda(
             bl_i["sum_w_residuals"],
             bl_i["eta"],
             bl_i["a"],
+            r_compatible,
         )
 
         if max_update >= thresh:

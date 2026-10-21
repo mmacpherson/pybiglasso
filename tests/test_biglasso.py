@@ -59,6 +59,30 @@ def test_lasso_matches_independent_solver(data):
         )
 
 
+@pytest.mark.parametrize("alpha", [0.5, 0.2])
+def test_elastic_net_matches_independent_solver(data, alpha):
+    """The default elastic net minimizes the documented (glmnet) objective."""
+    sklm = pytest.importorskip("sklearn.linear_model")
+    X, y = data
+    n, sd = len(y), X.std(axis=0)
+    Xs = (X - X.mean(axis=0)) / sd
+    p = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-12)
+    r = bl.biglasso(X, y, alpha=alpha, lambdas=p.lambdas, eps=1e-12, r_compatible=True)
+    for k in (2, 4, 7):
+        sk = sklm.LogisticRegression(
+            C=1 / (n * p.lambdas[k]),
+            l1_ratio=alpha,
+            solver="saga",
+            tol=1e-12,
+            max_iter=200_000,
+        ).fit(Xs, y)
+        ours = p.coef[:, [k]].toarray().ravel() * sd
+        np.testing.assert_allclose(ours, sk.coef_.ravel(), atol=1e-5)
+        # -- R's update solves a different problem, measurably so
+        r_coef = r.coef[:, [k]].toarray().ravel() * sd
+        assert np.abs(r_coef - sk.coef_.ravel()).max() > 1e-3
+
+
 # -- prediction and scoring -----------------------------------------------
 
 
