@@ -30,20 +30,23 @@ classifiers = [
 dependencies = [
     "numba",
     "numpy",
-    "pandas",
-    "scikit-learn",
+    "scipy",
     "threadpoolctl",
 ]
 
 [project.optional-dependencies]
-viz = ["plotnine"]
+polars = ["polars"]
+pandas = ["pandas"]
+sklearn = ["scikit-learn>=1.6"]
+viz = ["seaborn>=0.13"]
+all = ["pybiglasso[polars,pandas,sklearn,viz]"]
 
 [project.urls]
 Homepage = "https://github.com/mmacpherson/pybiglasso"
 "R biglasso" = "https://github.com/pbreheny/biglasso"
 
 [dependency-groups]
-dev = ["pytest", "pytest-cov", "ruff", "plotnine"]
+dev = ["pytest", "pytest-cov", "ruff", "pybiglasso[all]"]
 scripts = ["click", "sh", "tqdm", "lets-plot", "pyarrow", "jupyter"]
 
 [tool.pytest.ini_options]

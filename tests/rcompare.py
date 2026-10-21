@@ -252,13 +252,14 @@ def fit_py(case, data, lambdas=None):
     )
     seconds = time.perf_counter() - t0
     return dict(
-        center=fit["df_ncol"].center.to_numpy(),
-        scale=fit["df_ncol"].scale.to_numpy(),
-        lambda_=fit["df_nlambda"].lambda_.to_numpy(),
-        loss=fit["df_nlambda"].deviance.to_numpy(),
-        iter=fit["df_nlambda"].iterations.to_numpy(),
-        rejections=fit["df_nlambda"].num_rejected.to_numpy(),
-        beta=fit["df_weights"].sparse.to_dense().to_numpy().T,
+        center=fit.center,
+        scale=fit.scale,
+        lambda_=fit.lambdas,
+        # -- R's `loss` is the negative log-likelihood, half the deviance
+        loss=fit.deviance / 2,
+        iter=fit.iterations,
+        rejections=fit.n_rejected,
+        beta=np.vstack([fit.intercept, fit.coef.toarray()]),
         seconds=seconds,
     )
 

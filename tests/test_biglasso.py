@@ -1,212 +1,240 @@
+import warnings
+
 import numpy as np
 import pytest
-import sklearn.linear_model
+import scipy.sparse as sps
 
 import pybiglasso as bl
 
 
-def test_output_shape():
+@pytest.fixture(scope="module")
+def data():
+    d = bl.common.generate_test_data(300, 12, seed=3)
+    return d["X"], d["y"]
 
-    nr, nc, nl = 10, 20, 7
-    testdata = bl.common.generate_test_data(num_rows=nr, num_features=nc, seed=123)
 
-    result = bl.biglasso(
-        testdata["X"],
-        testdata["y"],
-        alpha=0.8,
-        family="binomial",
-        nlambda=nl,
+@pytest.fixture(scope="module")
+def path(data):
+    X, y = data
+    return bl.biglasso(X, y, alpha=1.0, nlambda=15)
+
+
+# -- the path object ------------------------------------------------------
+
+
+def test_path_shapes(path, data):
+    X, _ = data
+    L = len(path)
+    assert L == 15
+    assert isinstance(path.coef, sps.csc_array)
+    assert path.coef.shape == (X.shape[1], L)
+    for arr in (path.lambdas, path.intercept, path.deviance, path.iterations):
+        assert arr.shape == (L,)
+    assert np.all(np.diff(path.lambdas) < 0)
+    assert path.n_nonzero[0] == 0 and path.n_nonzero[-1] > 0
+    assert path.feature_names == tuple(f"x{j}" for j in range(X.shape[1]))
+
+
+def test_feature_names_from_dataframe(data):
+    pd = pytest.importorskip("pandas")
+    X, y = data
+    df = pd.DataFrame(X, columns=[f"snp{j}" for j in range(X.shape[1])])
+    p = bl.biglasso(df, y, nlambda=3)
+    assert p.feature_names[0] == "snp0"
+
+
+def test_lasso_matches_independent_solver(data):
+    """At alpha=1 the objective is unambiguous; compare against sklearn's saga."""
+    sklm = pytest.importorskip("sklearn.linear_model")
+    X, y = data
+    n, sd = len(y), X.std(axis=0)
+    p = bl.biglasso(X, y, alpha=1.0, nlambda=8, lambda_min=0.02, eps=1e-12)
+    for k in (2, 4, 7):
+        lam = p.lambdas[k]
+        sk = sklm.LogisticRegression(
+            C=1 / (n * lam), l1_ratio=1.0, solver="saga", tol=1e-12, max_iter=200_000
+        ).fit((X - X.mean(axis=0)) / sd, y)
+        np.testing.assert_allclose(
+            p.coef[:, [k]].toarray().ravel() * sd, sk.coef_.ravel(), atol=1e-5
+        )
+
+
+# -- prediction and scoring -----------------------------------------------
+
+
+def test_predict(path, data):
+    X, _ = data
+    eta = path.decision_function(X)
+    manual = path.intercept + X @ path.coef.toarray()
+    np.testing.assert_allclose(eta, manual)
+    np.testing.assert_allclose(path.predict_proba(X), 1 / (1 + np.exp(-manual)))
+    np.testing.assert_array_equal(path.predict(X), (manual > 0).astype(np.int8))
+
+
+def test_predict_subsets(path, data):
+    X, _ = data
+    lams = path.lambdas[[3, 7]]
+    np.testing.assert_allclose(
+        path.decision_function(X, lambdas=lams), path.decision_function(X)[:, [3, 7]]
     )
-
-    assert set(result.keys()) == set(["df_ncol", "df_nlambda", "df_weights"])
-
-    assert result["df_weights"].shape == (nl, nc + 1)
-
-
-def test_binomial_against_glmnet():
-    glmnet = pytest.importorskip("glmnet")
-
-    nrow = 100
-    ncol = 10
-    seed = 123
-    alpha = 1.0
-    eps = 1e-7
-    tol = 1e-3
-    nlambda = 21
-    lambda_min = 1e-6
-
-    test_data = bl.common.generate_test_data(nrow, ncol, seed=seed)
-    X, y = test_data["X"], test_data["y"]
-
-    bl_fit = bl.biglasso(
-        X,
-        y,
-        alpha=alpha,
-        family="binomial",
-        eps=eps,
-        nlambda=nlambda,
-        lambda_min=lambda_min,
+    rows = np.arange(0, X.shape[0], 3)
+    np.testing.assert_allclose(
+        path.decision_function(X, row_indices=rows), path.decision_function(X)[rows]
     )
-    df_nlambda = bl_fit["df_nlambda"]
-    df_weights = bl_fit["df_weights"]
+    with pytest.raises(ValueError, match="not on the fitted path"):
+        path.decision_function(X, lambdas=[0.123456])
+    with pytest.raises(ValueError, match="columns"):
+        path.decision_function(X[:, :-1])
 
-    # -- compare path against glmnet
-    gn_fit = glmnet.LogitNet(
-        lambda_path=df_nlambda["lambda_"], alpha=alpha, n_splits=0, tol=eps
+
+def test_score(path, data):
+    metrics = pytest.importorskip("sklearn.metrics")
+    X, y = data
+    # -- deviance on the training data matches the path's own, which is
+    #    measured just before the last coordinate-descent sweep
+    np.testing.assert_allclose(path.score(X, y), path.deviance, rtol=1e-4)
+    eta = path.decision_function(X)
+    auc = [metrics.roc_auc_score(y, eta[:, k]) for k in range(1, len(path))]
+    np.testing.assert_allclose(path.score(X, y, "auc")[1:], auc)
+    acc = [metrics.accuracy_score(y, eta[:, k] > 0) for k in range(len(path))]
+    np.testing.assert_allclose(path.score(X, y, "accuracy"), acc)
+    with pytest.raises(ValueError, match="metric"):
+        path.score(X, y, "r2")
+
+
+def test_dataframe_exports(path):
+    pl = pytest.importorskip("polars")
+    coef = path.to_polars()
+    assert coef.columns == ["lambda_", "feature", "coefficient"]
+    assert coef.height == len(path) + path.coef.nnz
+    assert coef.filter(pl.col("feature") == "(Intercept)").height == len(path)
+    assert path.to_polars("path").height == len(path)
+    assert path.to_polars("features").height == path.coef.shape[0]
+    pytest.importorskip("pandas")
+    assert path.to_pandas().shape == (coef.height, 3)
+
+
+def test_plots(path):
+    so = pytest.importorskip("seaborn.objects")
+    for plot in (bl.plot_coefficients(path), bl.plot_deviance(path)):
+        assert isinstance(plot, so.Plot)
+        plot.plot()
+
+
+# -- input handling -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "make_y, rows, match",
+    [
+        (lambda y: np.zeros_like(y), None, "both 0s and 1s"),
+        (lambda y: np.ones_like(y), None, "both 0s and 1s"),
+        (
+            lambda y: np.where(np.arange(len(y)) < 50, 1.0, 0.0),
+            np.arange(60, 100),
+            "both 0s and 1s",
+        ),
+        (lambda y: 2 * y, None, "both 0s and 1s"),
+    ],
+    ids=["all-zero", "all-one", "one-class-in-row-subset", "not-0-1"],
+)
+def test_rejects_degenerate_response(data, make_y, rows, match):
+    X, y = data
+    with pytest.raises(ValueError, match=match):
+        bl.biglasso(X, make_y(y), row_indices=rows)
+
+
+def test_rejects_bad_inputs(data):
+    X, y = data
+    with pytest.raises(ValueError, match="Alpha"):
+        bl.biglasso(X, y, alpha=1.5)
+    with pytest.raises(ValueError, match="one entry per column"):
+        bl.biglasso(X, y, penalty_factor=np.ones(3))
+    with pytest.raises(ValueError, match="at least one positive"):
+        bl.biglasso(X, y, penalty_factor=np.zeros(X.shape[1]))
+    with pytest.raises(ValueError, match="decreasing"):
+        bl.biglasso(X, y, lambdas=[0.01, 0.1])
+    with pytest.raises(ValueError, match="outside valid range"):
+        bl.biglasso(X, y, row_indices=np.array([0, X.shape[0]]))
+    with pytest.warns(UserWarning, match="Fortran"):
+        bl.biglasso(np.ascontiguousarray(X), y, nlambda=3)
+
+
+def test_row_indices_match_subset(data):
+    X, y = data
+    rows = np.flip(np.arange(X.shape[0])[::2])
+    a = bl.biglasso(np.asfortranarray(X[rows]), y[rows], nlambda=10)
+    b = bl.biglasso(X, y, row_indices=rows, nlambda=10)
+    np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray())
+    np.testing.assert_allclose(a.intercept, b.intercept)
+    np.testing.assert_array_equal(a.iterations, b.iterations)
+
+
+def test_memmap_matches_in_memory(data, tmp_path):
+    X, y = data
+    mm = np.lib.format.open_memmap(
+        tmp_path / "X.npy", mode="w+", dtype=X.dtype, shape=X.shape, fortran_order=True
     )
-    gn_fit.fit(X, y)
-
-    assert np.allclose(df_nlambda["lambda_"].to_numpy(), gn_fit.lambda_path_)
-
-    assert np.allclose(
-        df_weights["Intercept"].to_numpy(), gn_fit.intercept_path_, atol=tol
-    )
-    assert np.allclose(
-        df_weights.loc[:, df_weights.columns != "Intercept"].to_numpy().transpose(),
-        gn_fit.coef_path_,
-        atol=tol,
-    )
-
-    # -- test the very-small λ case against straight logistic regression
-    sk_fit = sklearn.linear_model.LogisticRegression(C=1e5)
-    sk_fit.fit(X, y)
-
-    assert np.allclose(
-        df_weights["Intercept"].to_numpy()[-1], sk_fit.intercept_, atol=tol
-    )
-    assert np.allclose(
-        df_weights.iloc[-1, df_weights.columns != "Intercept"].to_numpy(),
-        sk_fit.coef_,
-        atol=tol,
-    )
-
-    # -- now fit smaller, alpha, tweaking tolerances
-    # -- FIXFIX: cleaner if we use pytest's parametrization
-    alpha = 0.5
-    tol = 5e-2  # BIG allowance for nonzero alpha... why that different from glmnet? who's more right here?
-
-    bl_fit = bl.biglasso(
-        X,
-        y,
-        alpha=alpha,
-        family="binomial",
-        eps=eps,
-        nlambda=nlambda,
-        lambda_min=lambda_min,
-    )
-    df_nlambda = bl_fit["df_nlambda"]
-    df_weights = bl_fit["df_weights"]
-
-    # -- compare path against glmnet
-    gn_fit = glmnet.LogitNet(
-        lambda_path=df_nlambda["lambda_"], alpha=alpha, n_splits=0, tol=eps
-    )
-    gn_fit.fit(X, y)
-
-    assert np.allclose(df_nlambda["lambda_"].to_numpy(), gn_fit.lambda_path_)
-
-    assert np.allclose(
-        df_weights["Intercept"].to_numpy(), gn_fit.intercept_path_, atol=tol
-    )
-    assert np.allclose(
-        df_weights.loc[:, df_weights.columns != "Intercept"].to_numpy().transpose(),
-        gn_fit.coef_path_,
-        atol=tol,
-    )
-
-    # -- test the very-small λ case against straight logistic regression
-    sk_fit = sklearn.linear_model.LogisticRegression(C=1e5)
-    sk_fit.fit(X, y)
-
-    assert np.allclose(
-        df_weights["Intercept"].to_numpy()[-1], sk_fit.intercept_, atol=tol
-    )
-    assert np.allclose(
-        df_weights.iloc[-1, df_weights.columns != "Intercept"].to_numpy(),
-        sk_fit.coef_,
-        atol=tol,
-    )
+    mm[:] = X
+    mm.flush()
+    a = bl.biglasso(X, y, nlambda=10)
+    b = bl.biglasso(np.load(tmp_path / "X.npy", mmap_mode="r"), y, nlambda=10)
+    np.testing.assert_array_equal(a.coef.toarray(), b.coef.toarray())
 
 
-def assert_same_result(fit1, fit2):
-
-    print(fit1["df_weights"])
-    print(fit2["df_weights"])
-    assert np.allclose(
-        fit1["df_weights"].to_numpy(),
-        fit2["df_weights"].to_numpy(),
-    )
-
-    print(fit1["df_nlambda"])
-    print(fit2["df_nlambda"])
-    assert np.allclose(
-        fit1["df_nlambda"].to_numpy(),
-        fit2["df_nlambda"].to_numpy(),
-    )
-
-    print(fit1["df_ncol"])
-    print(fit2["df_ncol"])
-    assert np.allclose(
-        fit1["df_ncol"].loc[:, ["center", "scale", "penalty_factor"]].to_numpy(),
-        fit2["df_ncol"].loc[:, ["center", "scale", "penalty_factor"]].to_numpy(),
-    )
+# -- the lambda path ------------------------------------------------------
 
 
-def test_binomial_row_indices():
+@pytest.mark.parametrize("penalty", ["zeros", "varied"])
+def test_default_grid_matches_same_grid_as_user_lambdas(data, penalty):
+    """The default path's starting point must be a true solution at lambda_max."""
+    X, y = data
+    pf = np.ones(X.shape[1])
+    if penalty == "zeros":
+        pf[:2] = 0
+    else:
+        pf = np.random.default_rng(0).uniform(0.5, 2, X.shape[1])
+    a = bl.biglasso(X, y, penalty_factor=pf, nlambda=10)
+    b = bl.biglasso(X, y, penalty_factor=pf, lambdas=a.lambdas)
+    np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray(), atol=1e-5)
+    np.testing.assert_allclose(a.intercept, b.intercept, atol=1e-5)
 
-    nrow = 100
-    ncol = 10
-    seed = 123
-    alpha = 1.0
-    eps = 1e-7
-    nlambda = 21
-    lambda_min = 1e-6
 
-    test_data = bl.common.generate_test_data(nrow, ncol, seed=seed)
-    X, y = test_data["X"], test_data["y"]
+def test_unpenalized_columns_enter_at_lambda_max(data):
+    X, y = data
+    pf = np.ones(X.shape[1])
+    pf[:2] = 0
+    p = bl.biglasso(X, y, penalty_factor=pf, nlambda=10)
+    first = p.coef[:, [0]].toarray().ravel()
+    assert np.all(first[:2] != 0), "unpenalized columns should be fit at lambda_max"
+    assert np.all(first[2:] == 0), "penalized columns should be zero at lambda_max"
+    # -- and just below lambda_max, a penalized column enters
+    assert p.n_nonzero[1] > 2
 
-    # -- no row indices should be same as all row indices
-    bl_fit_1 = bl.biglasso(
-        X,
-        y,
-        alpha=alpha,
-        family="binomial",
-        eps=eps,
-        nlambda=nlambda,
-        lambda_min=lambda_min,
-    )
-    bl_fit_2 = bl.biglasso(
-        X,
-        y,
-        row_indices=np.arange(X.shape[0]),
-        alpha=alpha,
-        family="binomial",
-        eps=eps,
-        nlambda=nlambda,
-        lambda_min=lambda_min,
-    )
-    assert_same_result(bl_fit_1, bl_fit_2)
 
-    # -- select row indices should be same as preselected X, y
-    row_indices = np.flip(np.arange(X.shape[0])[::2])
-    print(row_indices)
-    bl_fit_1 = bl.biglasso(
-        np.asfortranarray(X[row_indices, :]),
-        y[row_indices],
-        alpha=alpha,
-        family="binomial",
-        eps=eps,
-        nlambda=nlambda,
-        lambda_min=lambda_min,
-    )
-    bl_fit_2 = bl.biglasso(
-        X,
-        y,
-        row_indices=row_indices,
-        alpha=alpha,
-        family="binomial",
-        eps=eps,
-        nlambda=nlambda,
-        lambda_min=lambda_min,
-    )
-    assert_same_result(bl_fit_1, bl_fit_2)
+def test_dfmax_truncates_path(data):
+    X, y = data
+    with pytest.warns(UserWarning, match="dfmax"):
+        p = bl.biglasso(X, y, dfmax=3, nlambda=30)
+    assert len(p) < 30
+    assert p.n_nonzero[:-1].max() <= 3
+
+
+def test_saturation(data):
+    X, _ = data
+    y = (X[:, 0] > 0).astype(float)  # perfectly separable
+    with pytest.warns(UserWarning, match="saturated"):
+        p = bl.biglasso(X, y, nlambda=50, lambda_min=1e-4)
+    assert len(p) < 50
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        full = bl.biglasso(X, y, nlambda=50, lambda_min=1e-4, stop_on_saturation=False)
+    assert len(full) == 50
+
+
+def test_float32_matches_float64(data):
+    X, y = data
+    X32 = np.asfortranarray(X.astype(np.float32))
+    a = bl.biglasso(X32, y, nlambda=10)
+    b = bl.biglasso(np.asfortranarray(X32.astype(np.float64)), y, nlambda=10)
+    np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray())

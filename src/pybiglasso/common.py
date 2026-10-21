@@ -1,28 +1,10 @@
 #!/usr/bin/env python3
 
 import numpy as np
-import pandas as pd
-import sklearn.datasets
-import sklearn.metrics
 from numpy.random import default_rng
-from sklearn.linear_model import LogisticRegression
 
 DEFAULT_SEED = 123 * 321
 DEFAULT_DTYPE = np.float64
-
-
-def get_iris_dataset(seed=DEFAULT_SEED, dtype=DEFAULT_DTYPE):
-
-    iris = sklearn.datasets.load_iris()
-    X = iris["data"].astype(dtype)
-    y = (iris["target"] == 2).astype(dtype)  # 1 if Iris-Virginica, else 0'
-
-    X = (X - X.mean(axis=0)) / X.std(axis=0)
-
-    log_reg = LogisticRegression(solver="lbfgs", C=1e5, fit_intercept=False)
-    log_reg.fit(X, y)
-
-    return dict(w=log_reg.coef_.ravel(), X=X, y=y)
 
 
 def generate_test_data(
@@ -142,78 +124,3 @@ def make_biglasso_dataset(
 def logit_to_prob(x):
     odds = np.exp(x)
     return odds / (1 + odds)
-
-
-def predict(bl_fit, Xnew, lam=None, output="logit"):
-    """Predict biglasso response given design matrix `Xnew`.
-
-    Inputs:
-      bl_fit: output of biglasso() call
-      Xnew: ndarray (nrow, ncol)
-      lam: iterable (nlambda) of lambda values; must be present in bl_fit
-
-    Output:
-      : ndarray (nrow, nlambda) of predictions (in nlambda=1 case, drops 2nd dim)
-
-
-    If `lam` is None, prediction is done for all lambda values present in the
-    fitted model object.
-
-    Otherwise, predictions will be given for specified values of `lam`.
-
-    """
-
-    if output not in ("logit", "prob", "class"):
-        raise ValueError(
-            f"Only 'logit', 'prob', and 'class' output are supported, not [{output}]"
-        )
-
-    betas = bl_fit["df_weights"]
-    if Xnew.shape[1] != betas.shape[1] - 1:
-        raise ValueError(
-            f"Expected design matrix to have [{betas.shape[1] - 1}] columns, but it has [{Xnew.shape[1]}]."
-        )
-
-    if lam is not None:
-        if not hasattr(lam, "__iter__"):
-            lam = [lam]
-        betas = betas[betas.index.isin(lam)]
-
-    responses = (
-        betas.iloc[:, 0].to_numpy() + Xnew @ betas.iloc[:, 1:].to_numpy().transpose()
-    ).squeeze()
-
-    if output in ("prob", "class"):
-        responses = logit_to_prob(responses)
-
-    if output == "class":
-        responses = np.round(responses)
-
-    return responses
-
-
-def select_model(bl_fit, Xtrue, ytrue, lam=None, stat="deviance"):
-    def _compute_stat(ytrue, predmat, statfn):
-        return np.apply_along_axis(lambda col: statfn(ytrue, col), 0, predmat)
-
-    valid_stats = ("deviance", "logloss", "auc", "class")
-
-    if stat not in valid_stats:
-        raise ValueError(f"stat [{stat}] not among supported stats: [{valid_stats}]")
-
-    if lam is None:
-        lam = bl_fit["df_nlambda"].lambda_.to_numpy()
-
-    if stat in ("deviance", "logloss"):
-        predictions = predict(bl_fit, Xtrue, lam=lam, output="prob")
-        computed_stat = _compute_stat(ytrue, predictions, sklearn.metrics.log_loss)
-    elif stat == "auc":
-        predictions = predict(bl_fit, Xtrue, lam=lam, output="logit")
-        computed_stat = _compute_stat(ytrue, predictions, sklearn.metrics.roc_auc_score)
-    elif stat == "class":
-        predictions = predict(bl_fit, Xtrue, lam=lam, output="class")
-        computed_stat = _compute_stat(
-            ytrue, predictions, sklearn.metrics.accuracy_score
-        )
-
-    return pd.DataFrame({"lam": lam, stat: computed_stat})

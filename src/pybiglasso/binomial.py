@@ -6,15 +6,18 @@ import warnings
 
 import numba as nb
 import numpy as np
-import pandas as pd
+import scipy.sparse as sps
 from threadpoolctl import threadpool_limits
+
+from .path import INTERCEPT, BiglassoPath
 
 logger = logging.getLogger(__name__)
 
 
 BigLassoParams = collections.namedtuple(
     "BigLassoParams",
-    "alpha lambdas nlambda eps lambda_min lambda_log_scale multiplier dfmax max_iter",
+    "alpha lambdas nlambda eps lambda_min lambda_log_scale multiplier dfmax max_iter "
+    "stop_on_saturation",
 )
 
 
@@ -32,9 +35,29 @@ def biglasso(
     row_indices=None,
     dfmax=None,
     max_iter=1000,
-    X_names=None,
-    intercept_label="Intercept",
+    feature_names=None,
+    stop_on_saturation=True,
 ):
+    """Fit a lasso or elastic-net penalized logistic regression path.
+
+    This is a port of R biglasso's `biglasso(..., family = "binomial",
+    screen = "SSR")`, and uses its parameter names: `alpha` mixes the L1 and L2
+    penalties (1 is the lasso), and `lambdas` are penalty strengths.
+
+    X may be a numpy array or memmap, ideally in Fortran (column-major) order;
+    it is read a column at a time and never copied.
+
+    Like R, the path stops early once training deviance falls below 1% of the
+    null deviance; `stop_on_saturation=False` (not in R) fits every lambda.
+
+    Returns a `BiglassoPath`.
+    """
+
+    if feature_names is None and hasattr(X, "columns"):
+        feature_names = [str(c) for c in X.columns]
+    if not isinstance(X, np.ndarray):
+        X = np.asarray(X)
+    y = np.asarray(y)
 
     # -- first, a few checks on data shape and type
     if not np.isfortran(X):
@@ -74,15 +97,12 @@ def biglasso(
 
     nrow, ncol = get_nrow(X, row_indices), X.shape[1]
 
-    if X_names is not None:
-        if len(X_names) != ncol:
-            raise ValueError(
-                "X_names has different length than number of columns in X."
-            )
-        if intercept_label in X_names:
-            raise ValueError(
-                f"Column names conflict with intercept label: [{intercept_label}]"
-            )
+    if feature_names is not None:
+        feature_names = tuple(str(f) for f in feature_names)
+        if len(feature_names) != ncol:
+            raise ValueError("feature_names must have one entry per column of X.")
+        if INTERCEPT in feature_names:
+            raise ValueError(f"{INTERCEPT!r} is reserved for the intercept.")
 
     lambda_min_thresh = (0.001, 0.05)
     if lambda_min is None:
@@ -110,8 +130,8 @@ def biglasso(
     if dfmax is None:
         dfmax = ncol + 1
 
-    if X_names is None:
-        X_names = [f"c{e}" for e in range(ncol)]
+    if feature_names is None:
+        feature_names = tuple(f"x{e}" for e in range(ncol))
 
     y = y.astype(np.float64)
 
@@ -125,6 +145,7 @@ def biglasso(
         multiplier=multiplier,
         dfmax=dfmax,
         max_iter=max_iter,
+        stop_on_saturation=stop_on_saturation,
     )
     logger.info(
         "Starting fit. Design matrix size: [%d, %d]  Num λ values: %d",
@@ -138,53 +159,40 @@ def biglasso(
     with threadpool_limits(limits=1, user_api="blas"):
         results = binomial_hsr(X, y, row_indices, params)
 
-    # -- postprocess
-    #    1. untransform coefficients
-    results["weights"] = (
-        results["weights"] / results["scale"][results["col_map"], np.newaxis]
-    )
-    results["intercept"] -= results["center"][results["col_map"]] @ results["weights"]
-    _weights = np.zeros(
-        (len(results["center"]), len(results["lambda_"])),
-        dtype=results["weights"].dtype,
-    )
-    _weights[results["col_map"], :] = results["weights"]
-
-    # -- 2. truncate the path where fitting stopped early (saturation, dfmax)
-    sat_mask = results["iters"] >= 0
-
-    # -- 3. build output structures
-    df_ncol = pd.DataFrame(
-        dict(
-            feature=X_names,
-            center=results["center"],
-            scale=results["scale"],
-            penalty_factor=multiplier,
-        )
-    ).assign(feature_retained=[e in results["col_map"] for e in range(ncol)])
-
-    df_nlambda = pd.DataFrame(
-        dict(
-            deviance=results["deviance"][sat_mask],
-            lambda_=results["lambda_"][sat_mask],
-            iterations=results["iters"][sat_mask],
-            num_rejected=results["n_reject"][sat_mask],
-        )
+    # -- keep the part of the path that was fit (it stops early on saturation
+    #    or dfmax), and untransform coefficients back to the scale of X
+    fitted = np.flatnonzero(results["iters"] >= 0)
+    col_map, center, scale = results["col_map"], results["center"], results["scale"]
+    rows, vals, intercept = [], [], results["intercept"][fitted].copy()
+    for k, il in enumerate(fitted):
+        cols = col_map[results["coef_rows"][il]]
+        beta = results["coef_vals"][il] / scale[cols]
+        intercept[k] -= center[cols] @ beta
+        rows.append(cols)
+        vals.append(beta)
+    indptr = np.concatenate([[0], np.cumsum([len(r) for r in rows])])
+    coef = sps.csc_array(
+        (
+            np.concatenate(vals) if vals else np.zeros(0),
+            np.concatenate(rows) if rows else np.zeros(0, dtype=np.int64),
+            indptr,
+        ),
+        shape=(ncol, len(fitted)),
     )
 
-    coefs = np.column_stack(
-        [results["intercept"][sat_mask], _weights[:, sat_mask].transpose()]
-    )
-    df_weights = pd.DataFrame(
-        coefs,
-        index=results["lambda_"][sat_mask],
-        columns=[intercept_label] + list(X_names),
-    ).astype(pd.SparseDtype(coefs.dtype, fill_value=0.0))
-
-    return dict(
-        df_ncol=df_ncol,
-        df_nlambda=df_nlambda,
-        df_weights=df_weights,
+    return BiglassoPath(
+        lambdas=results["lambda_"][fitted],
+        intercept=intercept,
+        coef=coef,
+        # -- the solver tracks -log-likelihood, as R does; report true deviance
+        deviance=2.0 * results["deviance"][fitted],
+        iterations=results["iters"][fitted],
+        n_rejected=results["n_reject"][fitted],
+        center=center,
+        scale=scale,
+        penalty_factor=multiplier,
+        feature_names=feature_names,
+        alpha=alpha,
     )
 
 
@@ -390,7 +398,6 @@ def update_weights(
 
     max_update = 0.0
 
-    next_weights = a.copy()
     for j in range(len(col_map)):
         jj = col_map[j]
         if not e1[j]:
@@ -410,12 +417,12 @@ def update_weights(
         l2 = lam * multiplier[jj] * (1 - alpha)
 
         if abs(u) < l1:
-            next_weights[j] = 0
+            new_weight = 0.0
         else:
             sign = 1 if (u > 0) else -1
-            next_weights[j] = sign * (abs(u) - l1) / v / (1 + l2)
+            new_weight = sign * (abs(u) - l1) / v / (1 + l2)
 
-        shift = next_weights[j] - a[j]
+        shift = new_weight - a[j]
         if shift != 0:
             update = v * (shift**2)
             max_update = max(update, max_update)
@@ -424,9 +431,9 @@ def update_weights(
             eta += _si
             sum_w_residuals = r @ w
 
-        a[j] = next_weights[j]
+        a[j] = new_weight
 
-    return next_weights, sum_w_residuals, max_update
+    return sum_w_residuals, max_update
 
 
 @nb.njit()
@@ -562,7 +569,9 @@ def binomial_hsr(
         col_map=_col_map,
         lambda_=np.zeros(params.nlambda),
         intercept=np.zeros(params.nlambda),
-        weights=np.zeros((ncol_used, params.nlambda)),
+        # -- nonzero coefficients at each lambda, as (used-column index, value)
+        coef_rows=[None] * params.nlambda,
+        coef_vals=[None] * params.nlambda,
         iters=np.zeros(params.nlambda, dtype=np.int64),
         deviance=np.zeros(params.nlambda),
         n_reject=np.zeros(params.nlambda, np.int64),
@@ -591,6 +600,7 @@ def binomial_hsr(
         params.alpha,
         params.multiplier,
         params.max_iter,
+        params.stop_on_saturation,
         bl,
         bl_i,
     )
@@ -642,7 +652,7 @@ def binomial_hsr(
                 lambda_max, params.lambda_min * lambda_max, params.nlambda
             )
 
-        bl["weights"][:, 0] = bl_i["a"]
+        _record_coefs(bl, bl_i, 0)
         bl["n_reject"][0] = ncol_used
         lstart = 1
 
@@ -686,6 +696,7 @@ def binomial_hsr(
                 f"at λ[{il + 1}/{params.nlambda}].",
                 stacklevel=3,
             )
+        _record_coefs(bl, bl_i, il)
 
         t_end = time.process_time()
         logger.info(
@@ -697,6 +708,12 @@ def binomial_hsr(
         )
 
     return bl
+
+
+def _record_coefs(bl, bl_i, il):
+    nz = np.flatnonzero(bl_i["a"])
+    bl["coef_rows"][il] = nz
+    bl["coef_vals"][il] = bl_i["a"][nz].copy()
 
 
 @nb.njit()
@@ -722,6 +739,7 @@ def _fit_lambda(
     alpha,
     multiplier,
     max_iter,
+    stop_on_saturation,
     bl,
     bl_i,
     il,
@@ -745,14 +763,14 @@ def _fit_lambda(
         )
 
         # -- break early if model is saturated
-        if bl["deviance"][il] / null_deviance < 0.01:
+        if stop_on_saturation and bl["deviance"][il] / null_deviance < 0.01:
             return "saturated"
 
         # -- perform one round of weight updates
         bl["intercept"][il], bl_i["a0"], bl_i["sum_w_residuals"] = update_intercept(
             bl_i["w"], bl_i["r"], bl_i["a0"], bl_i["eta"]
         )
-        bl["weights"][:, il], bl_i["sum_w_residuals"], max_update = update_weights(
+        bl_i["sum_w_residuals"], max_update = update_weights(
             X,
             row_indices,
             lam,
