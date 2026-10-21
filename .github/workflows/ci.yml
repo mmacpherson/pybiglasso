@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Lint
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        run: |
+          uv run --all-groups ruff check src tests
+          uv run --all-groups ruff format --check src tests
+      - name: Tests (against stored R biglasso 1.4.1 output)
+        run: uv run --all-groups pytest
+
+  bare-install:
+    name: Core install, no extras
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: |
+          uv run --isolated --no-dev --with . python - <<'PY'
+          import sys, pybiglasso as bl
+          d = bl.common.generate_test_data(100, 5)
+          print(bl.biglasso(d["X"], d["y"], nlambda=5))
+          heavy = {"pandas", "polars", "sklearn", "seaborn", "matplotlib"} & set(sys.modules)
+          assert not heavy, heavy
+          PY

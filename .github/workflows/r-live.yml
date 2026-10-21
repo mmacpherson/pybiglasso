@@ -1,0 +1,38 @@
+name: Live R comparison
+
+# Fit the comparison grid in R biglasso itself: the version pybiglasso was
+# ported from, and whatever is current on CRAN.
+on:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  r-live:
+    name: R biglasso ${{ matrix.biglasso }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - biglasso: "1.4.1"
+            r_version: "4.0.3"
+          - biglasso: latest
+            r_version: latest
+    env:
+      CONTAINER: docker
+      R_IMAGE: pybiglasso-r:${{ matrix.biglasso }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - name: Build R image
+        run: >
+          docker build --build-arg R_VERSION=${{ matrix.r_version }}
+          -t "$R_IMAGE" -f docker/r-biglasso.Dockerfile docker
+      - name: R and biglasso versions
+        run: docker run --rm "$R_IMAGE" Rscript -e 'cat(R.version.string, "/ biglasso", format(packageVersion("biglasso")), "\n")'
+      - name: Compare against live R
+        run: uv run --all-groups pytest -m r
