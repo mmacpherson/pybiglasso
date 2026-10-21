@@ -94,8 +94,8 @@ def biglasso_generator(
         )
         dosages = rng.binomial(2, allele_frequencies, size=(nrow, len(weights)))
 
-        # -- generate response
-        probs = logit_to_prob(dosages @ weights)
+        # -- generate response; effects act on dosage deviations from the mean
+        probs = logit_to_prob((dosages - 2 * allele_frequencies) @ weights)
         response = rng.random(nrow) < probs
 
         yield dict(

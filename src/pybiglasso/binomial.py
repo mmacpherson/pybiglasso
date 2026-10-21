@@ -505,7 +505,7 @@ def check_rest(
         l1 = lam * multiplier[jj] * alpha
         l2 = lam * multiplier[jj] * (1 - alpha)
         if abs(z[j] - a[j] * l2) > l1:
-            e1[j] = 1
+            e1[j] = e2[j] = 1
             violations += 1
 
     return violations

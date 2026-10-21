@@ -12,14 +12,28 @@ lint:
 notebook:
 	uv run --group scripts jupyter notebook --no-browser
 
-R_IMAGE=rbox
-.PHONY: r-image
-r-image: Dockerfile.R-biglasso
-	docker build -t $(R_IMAGE) -f $^ .
+# -- R comparisons; set CONTAINER=podman to use podman instead
+CONTAINER ?= docker
+R_VERSION ?= 4.0.3
+R_TAG = $(if $(filter latest,$(R_VERSION)),latest,1.4.1)
+R_ENV = CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:$(R_TAG)
 
-.PHONY: run-py-vs-r
-run-py-vs-r: r-image
-	uv run --group scripts python scripts/compare_vs_R_biglasso.py
+.PHONY: r-image
+r-image:
+	$(CONTAINER) build --build-arg R_VERSION=$(R_VERSION) -t pybiglasso-r:$(R_TAG) -f docker/r-biglasso.Dockerfile docker
+
+.PHONY: test-r
+test-r: r-image
+	$(R_ENV) uv run pytest -m r
+
+.PHONY: soak
+soak: r-image
+	$(R_ENV) uv run pytest -m soak -s
+
+.PHONY: fixtures
+fixtures:
+	$(MAKE) r-image R_VERSION=4.0.3
+	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:1.4.1 uv run python scripts/make_r_fixtures.py
 
 .PHONY: build
 build:

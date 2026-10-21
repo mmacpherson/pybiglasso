@@ -48,7 +48,11 @@ scripts = ["click", "sh", "tqdm", "lets-plot", "pyarrow", "jupyter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-rxEfs --strict-markers --tb short"
+addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak'"
+markers = [
+    "r: runs R biglasso live (needs Rscript, or CONTAINER + R_IMAGE)",
+    "soak: large problems against live R; slow, meant for local runs",
+]
 
 [tool.ruff]
 line-length = 88
