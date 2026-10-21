@@ -120,6 +120,11 @@ def fast_grid():
             Case(**base, data="dosage", penalty="zeros", rows="half", memmap=True),
         ]
 
+    # -- hard-called genotypes stored compactly; dosages are exact in any dtype
+    for nrow, ncol in ((200, 30), (80, 150)):
+        cases.append(Case(nrow, ncol, alpha=0.8, data="dosage", dtype="int8"))
+    cases.append(Case(80, 150, seed=7, alpha=1.0, data="dosage", dtype="uint8"))
+
     # -- strongly separable data, so the path saturates before the end
     cases.append(Case(30, 60, 11, 1.0, 50, lambda_min=1e-4, tag="saturating"))
 
@@ -191,6 +196,9 @@ def make_case_data(case, workdir):
     if case.dtype == "float32":
         # -- round through float32 so that R sees exactly the values we fit
         Xbin[:] = Xbin.astype(np.float32)
+    elif case.dtype in ("int8", "uint8"):
+        if case.data != "dosage":
+            raise ValueError("integer dtypes are for dosage data")
     Xbin.flush()
 
     penalty_factor = None

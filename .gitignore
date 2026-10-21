@@ -21,3 +21,5 @@ scratch/
 scratch*
 benchmarks/results/*.tmp
 benchmarks/results/tmp/
+# -- stored R output for the test suite (a global *.gz ignore would hide it)
+!tests/fixtures/*.json.gz

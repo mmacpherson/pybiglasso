@@ -8,6 +8,9 @@ These follow scikit-learn's naming, which differs from R biglasso's:
     l1_ratio              alpha    (L1/L2 mix; 1 is the lasso)
 """
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import check_cv
@@ -138,6 +141,10 @@ class BiglassoClassifierCV(_BiglassoBase):
         Pick the best-scoring alpha, or the largest alpha within one standard
         error of it (glmnet's lambda.1se).
     penalty_factor, tol, max_iter : as in `BiglassoClassifier`.
+    n_jobs : int, optional
+        Folds to fit at once, in threads that share X (so a memmap is read
+        through one page cache). Each fold is single-threaded; results do not
+        depend on n_jobs. None or -1 uses all cores.
 
     Attributes
     ----------
@@ -160,6 +167,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         penalty_factor=None,
         tol=1e-7,
         max_iter=1000,
+        n_jobs=None,
     ):
         self.l1_ratio = l1_ratio
         self.n_alphas = n_alphas
@@ -171,6 +179,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         self.penalty_factor = penalty_factor
         self.tol = tol
         self.max_iter = max_iter
+        self.n_jobs = n_jobs
 
     def fit(self, X, y):
         if self.scoring not in METRICS:
@@ -195,12 +204,21 @@ class BiglassoClassifierCV(_BiglassoBase):
         splitter = check_cv(self.cv, y01, classifier=True)
         folds = list(splitter.split(np.zeros((len(y01), 1)), y01))
         scores = np.full((len(folds), len(grid)), np.nan)
-        for k, (train, test) in enumerate(folds):
-            fold_path = biglasso(X, y01, row_indices=train, lambdas=grid, **kwargs)
+
+        def score_fold(fold):
+            train, test = fold
+            fold_path = biglasso(
+                X, y01, row_indices=train, lambdas=grid, n_threads=1, **kwargs
+            )
             s = fold_path.score(X, y01, self.scoring, row_indices=test)
-            if self.scoring == "deviance":
-                s = s / len(test)
-            scores[k, : len(s)] = s
+            return s / len(test) if self.scoring == "deviance" else s
+
+        n_jobs = self.n_jobs
+        if n_jobs is None or n_jobs < 0:
+            n_jobs = os.cpu_count() or 1
+        with ThreadPoolExecutor(max_workers=min(n_jobs, len(folds))) as pool:
+            for k, s in enumerate(pool.map(score_fold, folds)):
+                scores[k, : len(s)] = s
         self.cv_scores_ = scores
         self.alphas_ = grid
 

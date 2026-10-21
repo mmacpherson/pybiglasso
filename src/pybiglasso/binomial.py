@@ -217,7 +217,7 @@ def biglasso(
     )
 
 
-@nb.njit(cache=True)
+@nb.njit(cache=True, nogil=True)
 def seqsum(a):  # pragma: no cover
     """Sequential sum, so parallel kernels don't turn it into a parallel reduction
     (whose rounding would depend on the thread count)."""
@@ -227,7 +227,7 @@ def seqsum(a):  # pragma: no cover
     return out
 
 
-@nb.njit(fastmath=True, cache=True)
+@nb.njit(fastmath=True, cache=True, nogil=True)
 def dot(a, b):  # pragma: no cover
     """Dot product accumulated in float64; works for mixed float32/float64 inputs."""
     out = 0.0
@@ -236,7 +236,7 @@ def dot(a, b):  # pragma: no cover
     return out
 
 
-@nb.njit(parallel=True, cache=True)
+@nb.njit(parallel=True, cache=True, nogil=True)
 def center_scale(X, row_indices):  # pragma: no cover
     """Compute the mean and std of matrix X.
 
@@ -268,7 +268,7 @@ def center_scale(X, row_indices):  # pragma: no cover
     return mean, std
 
 
-@nb.njit(parallel=True, cache=True)
+@nb.njit(parallel=True, cache=True, nogil=True)
 def build_sum_xy(X, y, row_indices, col_map):  # pragma: no cover
     """Compute columnwise dot product of X with y.
 
@@ -289,14 +289,14 @@ def build_sum_xy(X, y, row_indices, col_map):  # pragma: no cover
     return out
 
 
-@nb.njit(cache=True)
+@nb.njit(cache=True, nogil=True)
 def np_logspace(lo, hi, num):  # pragma: no cover
     """Alternate version of np.logspace that's closer to np.linspace."""
     # np.logspace(np.log(3), np.log(4), num=5, base=np.e)
     return np.exp(np.linspace(np.log(lo), np.log(hi), num))
 
 
-@nb.njit(fastmath=True, cache=True)
+@nb.njit(fastmath=True, cache=True, nogil=True)
 def column_moments(X, jj, row_indices, r, w):  # pragma: no cover
     """One pass over column jj: sum(x * r * w), sum(w * x^2), sum(w * x)."""
     sum_xwr, sum_wxx, sum_wx = 0.0, 0.0, 0.0
@@ -310,7 +310,7 @@ def column_moments(X, jj, row_indices, r, w):  # pragma: no cover
     return sum_xwr, sum_wxx, sum_wx
 
 
-@nb.njit(fastmath=True, cache=True)
+@nb.njit(fastmath=True, cache=True, nogil=True)
 def apply_shift(X, jj, row_indices, delta, c, r, eta, w):  # pragma: no cover
     """Move r and eta by delta * (x - c) for column jj; return the new sum(w * r)."""
     sum_wr = 0.0
@@ -324,7 +324,7 @@ def apply_shift(X, jj, row_indices, delta, c, r, eta, w):  # pragma: no cover
     return sum_wr
 
 
-@nb.njit(cache=True)
+@nb.njit(cache=True, nogil=True)
 def get_nrow(X, row_indices):  # pragma: no cover
     """Get number of rows."""
     if row_indices is None:
@@ -335,7 +335,7 @@ def get_nrow(X, row_indices):  # pragma: no cover
     return nrow
 
 
-@nb.njit(cache=True)
+@nb.njit(cache=True, nogil=True)
 def update_probs(
     y, row_indices, eta, p, w, s, r, eta_max=10, w_min=0.0001
 ):  # pragma: no cover
@@ -382,14 +382,14 @@ def update_probs(
     return deviance
 
 
-@nb.njit(cache=True)
+@nb.njit(cache=True, nogil=True)
 def update_intercept(w, r, a0, eta):  # pragma: no cover
     """Update intercept based on current state.
 
     Mutates: w, r, eta
     """
 
-    xwr = w @ r
+    xwr = dot(w, r)
     _si = xwr / w.sum()
     intercept = _si + a0
 
@@ -397,7 +397,7 @@ def update_intercept(w, r, a0, eta):  # pragma: no cover
         a0_out = intercept
         r -= _si
         eta += _si
-        sum_w_residuals = w @ r
+        sum_w_residuals = dot(w, r)
     else:
         # -- don't recompute if r hasn't changed
         a0_out = a0
@@ -406,7 +406,7 @@ def update_intercept(w, r, a0, eta):  # pragma: no cover
     return intercept, a0_out, sum_w_residuals
 
 
-@nb.njit(cache=True)
+@nb.njit(cache=True, nogil=True)
 def update_weights(
     X,
     # y,
@@ -473,7 +473,7 @@ def update_weights(
     return sum_w_residuals, max_update
 
 
-@nb.njit(parallel=True, cache=True)
+@nb.njit(parallel=True, cache=True, nogil=True)
 def check_strong_set(
     X,
     row_indices,
@@ -515,7 +515,7 @@ def check_strong_set(
     return violations
 
 
-@nb.njit(parallel=True, cache=True)
+@nb.njit(parallel=True, cache=True, nogil=True)
 def check_rest(
     X,
     row_indices,
@@ -756,7 +756,7 @@ def _record_coefs(bl, bl_i, il):
     bl["coef_vals"][il] = bl_i["a"][nz].copy()
 
 
-@nb.njit(parallel=True, cache=True)
+@nb.njit(parallel=True, cache=True, nogil=True)
 def compute_z(X, row_indices, col_map, center, scale, s):  # pragma: no cover
     """Standardized score x_j'(y - p) / n for every used column."""
     nrow = get_nrow(X, row_indices)

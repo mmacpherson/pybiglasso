@@ -85,3 +85,11 @@ def test_cv_folds_use_row_indices(data, tmp_path):
         np.load(tmp_path / "X.npy", mmap_mode="r"), y
     )
     np.testing.assert_allclose(a.cv_scores_, b.cv_scores_)
+
+
+def test_cv_n_jobs_does_not_change_results(data):
+    X, y = data
+    one = BiglassoClassifierCV(n_alphas=15, cv=5, n_jobs=1).fit(X, y)
+    many = BiglassoClassifierCV(n_alphas=15, cv=5, n_jobs=5).fit(X, y)
+    np.testing.assert_array_equal(one.cv_scores_, many.cv_scores_)
+    assert one.alpha_ == many.alpha_
