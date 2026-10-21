@@ -48,7 +48,7 @@ def generate_test_data(
 
     s = 1 / (1 + np.exp(-1.0 * features @ weights))
 
-    out = (rng.standard_normal(size=num_rows, dtype=dtype) < s).astype(dtype)
+    out = (rng.random(size=num_rows, dtype=dtype) < s).astype(dtype)
 
     return dict(
         y=out,

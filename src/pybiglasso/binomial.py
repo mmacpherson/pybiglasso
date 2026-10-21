@@ -2,6 +2,7 @@
 import collections
 import logging
 import time
+import warnings
 
 import numba as nb
 import numpy as np
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 BigLassoParams = collections.namedtuple(
     "BigLassoParams",
-    "alpha nlambda eps lambda_min lambda_log_scale multiplier dfmax max_iter",
+    "alpha lambdas nlambda eps lambda_min lambda_log_scale multiplier dfmax max_iter",
 )
 
 
@@ -23,19 +24,24 @@ def biglasso(
     alpha=1.0,
     family="binomial",
     nlambda=100,
+    lambdas=None,
     eps=1e-7,
     lambda_min=None,
+    lambda_log_scale=True,
     penalty_factor=None,
     row_indices=None,
+    dfmax=None,
+    max_iter=1000,
     X_names=None,
     intercept_label="Intercept",
 ):
 
     # -- first, a few checks on data shape and type
     if not np.isfortran(X):
-        logger.warn(
-            """The provided design matrix is not in Fortran order.
-            This algorithm performs best on Fortran-ordered arrays."""
+        warnings.warn(
+            "The design matrix is not in Fortran (column-major) order; "
+            "this algorithm performs best on Fortran-ordered arrays.",
+            stacklevel=2,
         )
 
     if alpha == 0:
@@ -47,11 +53,6 @@ def biglasso(
 
     if family != "binomial":
         raise NotImplementedError("Sorry, we only do binomial endpoints now.")
-    elif family == "binomial":
-        if set(y) != {0, 1}:
-            raise ValueError(
-                f"Family `binomial` specified, but set(response) is {set(y)} not {{0,1}}."
-            )
 
     if X.shape[0] != len(y):
         raise ValueError(
@@ -59,9 +60,17 @@ def biglasso(
         )
 
     if row_indices is not None:
+        row_indices = np.asarray(row_indices)
         if np.any((row_indices < 0) | (row_indices >= X.shape[0])):
-            raise ValueError("row_ix has indices outside valid range.")
+            raise ValueError("row_indices has indices outside valid range.")
         row_indices = row_indices.astype(np.uint32)
+
+    y_used = y if row_indices is None else y[row_indices]
+    if set(np.unique(y_used)) != {0, 1}:
+        raise ValueError(
+            "Family `binomial` requires a response with both 0s and 1s; "
+            f"got values {set(np.unique(y_used))}."
+        )
 
     nrow, ncol = get_nrow(X, row_indices), X.shape[1]
 
@@ -82,8 +91,24 @@ def biglasso(
     if penalty_factor is None:
         multiplier = np.ones(ncol)
     else:
-        assert len(penalty_factor) == ncol
-        multiplier = penalty_factor.copy()
+        multiplier = np.array(penalty_factor, dtype=np.float64)
+        if multiplier.shape != (ncol,):
+            raise ValueError("penalty_factor must have one entry per column of X.")
+        if np.any(multiplier < 0) or not np.any(multiplier > 0):
+            raise ValueError(
+                "penalty_factor must be non-negative, with at least one positive entry."
+            )
+
+    if lambdas is not None:
+        lambdas = np.array(lambdas, dtype=np.float64).ravel()
+        if len(lambdas) == 0 or np.any(lambdas < 0):
+            raise ValueError("lambdas must be a non-empty sequence of values >= 0.")
+        if np.any(np.diff(lambdas) > 0):
+            raise ValueError("lambdas must be in decreasing order.")
+        nlambda = len(lambdas)
+
+    if dfmax is None:
+        dfmax = ncol + 1
 
     if X_names is None:
         X_names = [f"c{e}" for e in range(ncol)]
@@ -92,13 +117,14 @@ def biglasso(
 
     params = BigLassoParams(
         alpha=alpha,
+        lambdas=lambdas,
         nlambda=nlambda,
         eps=eps,
         lambda_min=lambda_min,
-        lambda_log_scale=True,
+        lambda_log_scale=lambda_log_scale,
         multiplier=multiplier,
-        dfmax=-1,
-        max_iter=1000,
+        dfmax=dfmax,
+        max_iter=max_iter,
     )
     logger.info(
         "Starting fit. Design matrix size: [%d, %d]  Num λ values: %d",
@@ -124,8 +150,8 @@ def biglasso(
     )
     _weights[results["col_map"], :] = results["weights"]
 
-    # -- 2. truncate saturated models
-    sat_mask = np.isfinite(results["deviance"])
+    # -- 2. truncate the path where fitting stopped early (saturation, dfmax)
+    sat_mask = results["iters"] >= 0
 
     # -- 3. build output structures
     df_ncol = pd.DataFrame(
@@ -162,12 +188,21 @@ def biglasso(
     )
 
 
-@nb.njit()
+@nb.njit(fastmath=True)
 def dot3(a, b, c):  # pragma: no cover
     """Faster version of (a * b * c).sum()"""
     out = 0.0
     for ix in range(len(a)):
         out += a[ix] * b[ix] * c[ix]
+    return out
+
+
+@nb.njit(fastmath=True)
+def dot(a, b):  # pragma: no cover
+    """Dot product accumulated in float64; works for mixed float32/float64 inputs."""
+    out = 0.0
+    for ix in range(len(a)):
+        out += a[ix] * b[ix]
     return out
 
 
@@ -185,14 +220,20 @@ def center_scale(X, row_indices):  # pragma: no cover
     std = mean.copy()
 
     for ix in range(X.shape[1]):
-
         if row_indices is None:
             col = X[:, ix]
         else:
             col = X[row_indices, ix]
 
-        mean[ix] = np.mean(col)
-        std[ix] = np.std(col)
+        # -- two passes, accumulating in float64 regardless of X's dtype
+        acc = 0.0
+        for v in col:
+            acc += v
+        mean[ix] = acc / len(col)
+        acc = 0.0
+        for v in col:
+            acc += (v - mean[ix]) ** 2
+        std[ix] = np.sqrt(acc / len(col))
 
     return mean, std
 
@@ -210,10 +251,10 @@ def build_sum_xy(X, y, row_indices, col_map):  # pragma: no cover
 
     if row_indices is None:
         for j in range(len(col_map)):
-            out[j] = X[:, col_map[j]] @ y
+            out[j] = dot(X[:, col_map[j]], y)
     else:
         for j in range(len(col_map)):
-            out[j] = X[row_indices, col_map[j]] @ y[row_indices]
+            out[j] = dot(X[row_indices, col_map[j]], y[row_indices])
 
     return out
 
@@ -234,7 +275,7 @@ def weighted_sum_squares(Xcol, w, c, s):  # pragma: no cover
         sum_wx += w[ix] * Xcol[ix]
         sum_w += w[ix]
 
-    return (sum_wx_sq - 2 * c * sum_wx + (c ** 2) * sum_w) / (s ** 2)
+    return (sum_wx_sq - 2 * c * sum_wx + (c**2) * sum_w) / (s**2)
 
 
 @nb.njit()
@@ -259,7 +300,6 @@ def update_probs(
     """
 
     for ix in range(len(eta)):
-
         _eta = eta[ix]
 
         if _eta > eta_max:
@@ -282,7 +322,6 @@ def update_probs(
     # deviance += -1.0 * np.log(np.where(y == 1, p, 1 - p)).sum()
     dev_acc = 0.0
     for ix in range(len(eta)):
-
         if row_indices is None:
             yval = y[ix]
         else:
@@ -378,7 +417,7 @@ def update_weights(
 
         shift = next_weights[j] - a[j]
         if shift != 0:
-            update = v * (shift ** 2)
+            update = v * (shift**2)
             max_update = max(update, max_update)
             _si = shift * (Xcol - center[jj]) / scale[jj]
             r -= _si
@@ -418,9 +457,9 @@ def check_strong_set(
         if (e1[j] != 0) or (e2[j] != 1):
             continue
         if row_indices is None:
-            _sum = X[:, jj] @ s
+            _sum = dot(X[:, jj], s)
         else:
-            _sum = X[row_indices, jj] @ s
+            _sum = dot(X[row_indices, jj], s)
         z[j] = (_sum - center[jj] * s.sum()) / (scale[jj] * nrow)
         l1 = lam * multiplier[jj] * alpha
         l2 = lam * multiplier[jj] * (1 - alpha)
@@ -459,9 +498,9 @@ def check_rest(
         if e2[j] != 0:
             continue
         if row_indices is None:
-            _sum = X[:, jj] @ s
+            _sum = dot(X[:, jj], s)
         else:
-            _sum = X[row_indices, jj] @ s
+            _sum = dot(X[row_indices, jj], s)
         z[j] = (_sum - center[jj] * s.sum()) / (scale[jj] * nrow)
         l1 = lam * multiplier[jj] * alpha
         l2 = lam * multiplier[jj] * (1 - alpha)
@@ -483,6 +522,7 @@ def binomial_hsr(
 
     # -- PHASE 1: Initialization
     nrow = get_nrow(X, row_indices)
+    y_used = y if row_indices is None else y[row_indices]
 
     # -- compute means and stds online, ie one column at a time
     _center, _scale = center_scale(X, row_indices)
@@ -490,42 +530,23 @@ def binomial_hsr(
     # -- find reduced set of variable-enough columns/predictors to use during fit
     _col_map = np.where(_scale > scale_min_thresh)[0]
     ncol_used = len(_col_map)
+    multiplier = params.multiplier[_col_map]
 
     # -- a few preliminary calculations, to initialize the data structures
     sum_xy = build_sum_xy(X, y, row_indices, _col_map)
-    if row_indices is None:
-        z = (sum_xy - _center[_col_map] * y.sum()) / (
-            _scale[_col_map] * nrow
-        )  # residuals
-        ybar = y.mean()
-        null_deviance = -1.0 * (y * np.log(ybar) + (1 - y) * np.log(1 - ybar)).sum()
-    else:
-        z = (sum_xy - _center[_col_map] * y[row_indices].sum()) / (
-            _scale[_col_map] * nrow
-        )
-        ybar = y[row_indices].mean()
-        null_deviance = (
-            -1.0
-            * (
-                y[row_indices] * np.log(ybar) + (1 - y[row_indices]) * np.log(1 - ybar)
-            ).sum()
-        )
+    z = (sum_xy - _center[_col_map] * y_used.sum()) / (
+        _scale[_col_map] * nrow
+    )  # residuals
+    ybar = y_used.mean()
+    null_deviance = (
+        -1.0 * (y_used * np.log(ybar) + (1 - y_used) * np.log(1 - ybar)).sum()
+    )
     a0 = np.log(ybar / (1 - ybar))
     thresh = params.eps * null_deviance / nrow
 
-    lambda_max = np.abs(z).max() / params.alpha  # FIXFIX: alpha zero case?
-
-    # -- set up lambda-values grid if not provided
-    if params.lambda_log_scale:
-        lambda_ = np.flip(
-            np_logspace(
-                params.lambda_min * lambda_max,
-                lambda_max,
-                num=params.nlambda,
-            )
-        )
-    else:
-        lambda_ = np.linspace(params.lambda_min, lambda_max, params.nlambda)
+    # -- R biglasso's lambda_max, which ignores penalty factors; used as the
+    #    strong-rule reference for the first user-supplied lambda, as in R
+    lambda_max_r = np.abs(z).max() / params.alpha
 
     # -- here we initialize two largish collections of state, mainly to slim
     #    down the function signatures and make it easier to follow the code flow
@@ -539,7 +560,7 @@ def binomial_hsr(
         center=_center,
         scale=_scale,
         col_map=_col_map,
-        lambda_=lambda_,
+        lambda_=np.zeros(params.nlambda),
         intercept=np.zeros(params.nlambda),
         weights=np.zeros((ncol_used, params.nlambda)),
         iters=np.zeros(params.nlambda, dtype=np.int64),
@@ -562,123 +583,109 @@ def binomial_hsr(
         sum_w_residuals=0.0,
     )
 
-    # -- PHASE 2: Fitting
+    # -- kernels index penalty factors by raw column; `multiplier` is by used column
+    fit_args = (
+        X,
+        y,
+        row_indices,
+        params.alpha,
+        params.multiplier,
+        params.max_iter,
+        bl,
+        bl_i,
+    )
 
-    # -- population state for first lambda value
-    bl["deviance"][0] = null_deviance
-    bl["intercept"][0] = a0
-    lstart = 1
-    bl["n_reject"][0] = ncol_used
+    # -- PHASE 2: Lambda grid and starting point
+    if params.lambdas is not None:
+        # -- user-supplied grid: fit every value, starting from the null model
+        bl["lambda_"][:] = params.lambdas
+        lambda_max = lambda_max_r
+        lstart = 0
+    else:
+        unpenalized = multiplier == 0
+        if unpenalized.any():
+            # -- fit the unpenalized columns alone; that model is the solution at
+            #    lambda_max, and its residuals determine lambda_max
+            bl_i["e1"][unpenalized] = 1
+            bl_i["e2"][unpenalized] = 1
+            status = _fit_lambda(*fit_args, 0, 0.0, null_deviance, thresh, False)
+            if status == "saturated":
+                warnings.warn(
+                    "Model saturated by the unpenalized columns alone; no path fit.",
+                    stacklevel=3,
+                )
+                bl["iters"][:] = -1
+                return bl
+            update_probs(
+                y, row_indices, bl_i["eta"], bl_i["p"], bl_i["w"], bl_i["s"], bl_i["r"]
+            )
+            bl_i["z"] = z = compute_z(
+                X, row_indices, _col_map, _center, _scale, bl_i["s"]
+            )
+        else:
+            bl["deviance"][0] = null_deviance
+            bl["intercept"][0] = a0
+
+        penalized = multiplier > 0
+        lambda_max = (np.abs(z[penalized]) / multiplier[penalized]).max() / params.alpha
+
+        if params.lambda_log_scale:
+            bl["lambda_"][:] = np.flip(
+                np_logspace(
+                    params.lambda_min * lambda_max,
+                    lambda_max,
+                    num=params.nlambda,
+                )
+            )
+        else:
+            bl["lambda_"][:] = np.linspace(
+                lambda_max, params.lambda_min * lambda_max, params.nlambda
+            )
+
+        bl["weights"][:, 0] = bl_i["a"]
+        bl["n_reject"][0] = ncol_used
+        lstart = 1
 
     logger.info("λ[1/%d] = %0.2g", params.nlambda, bl["lambda_"][0])
 
-    # -- loop over remaining lambda values
-    for il in range(lstart, len(bl["lambda_"])):
-
+    # -- PHASE 3: Fitting
+    for il in range(lstart, params.nlambda):
         lam = bl["lambda_"][il]
         logger.info("λ[%d/%d] = %0.2g", il + 1, params.nlambda, lam)
         t_begin = time.process_time()
 
         if il > 0:
-            if params.dfmax > 0:
-                nv = (bl_i["a"] != 0).sum()
-                if nv > params.dfmax:
-                    raise ValueError("Exceeded max coefficients.")
+            if (bl_i["a"] != 0).sum() > params.dfmax:
+                warnings.warn(
+                    f"Exceeded dfmax={params.dfmax} nonzero coefficients; "
+                    f"path truncated at λ[{il + 1}/{params.nlambda}].",
+                    stacklevel=3,
+                )
+                bl["iters"][il:] = -1
+                return bl
 
             cutoff = 2 * lam - bl["lambda_"][il - 1]
         else:
             cutoff = 2 * lam - lambda_max
 
-        bl_i["e2"] = (
-            np.abs(z) > cutoff * params.alpha * params.multiplier[bl["col_map"]]
-        )
+        bl_i["e2"] = (np.abs(z) > cutoff * params.alpha * multiplier).astype(np.int64)
         bl["n_reject"][il] = ncol_used - bl_i["e2"].sum()
 
-        while bl["iters"][il] < params.max_iter:
+        status = _fit_lambda(*fit_args, il, lam, null_deviance, thresh, True)
 
-            bl["iters"][il] += 1
-
-            bl["deviance"][il] = update_probs(
-                y, row_indices, bl_i["eta"], bl_i["p"], bl_i["w"], bl_i["s"], bl_i["r"]
+        if status == "saturated":
+            warnings.warn(
+                f"Model saturated; path truncated at λ[{il + 1}/{params.nlambda}].",
+                stacklevel=3,
             )
-
-            # -- break early if model is saturated
-            if bl["deviance"][il] / null_deviance < 0.01:
-                logger.info("Model is saturated, exiting early.")
-                bl["deviance"][il:] = np.nan
-                return bl
-
-            # -- perform one round of weight updates
-            bl["intercept"][il], bl_i["a0"], bl_i["sum_w_residuals"] = update_intercept(
-                bl_i["w"], bl_i["r"], bl_i["a0"], bl_i["eta"]
+            bl["iters"][il:] = -1
+            return bl
+        elif status == "max_iter":
+            warnings.warn(
+                f"Failed to converge within max_iter={params.max_iter} iterations "
+                f"at λ[{il + 1}/{params.nlambda}].",
+                stacklevel=3,
             )
-            bl["weights"][:, il], bl["sum_w_residuals"], max_update = update_weights(
-                X,
-                # y,
-                row_indices,
-                lam,
-                params.alpha,
-                params.multiplier,
-                bl["col_map"],
-                bl["center"],
-                bl["scale"],
-                bl_i["e1"],
-                bl_i["w"],
-                bl_i["r"],
-                bl_i["sum_w_residuals"],
-                bl_i["eta"],
-                bl_i["a"],
-            )
-
-            if max_update < thresh:
-                logger.debug("max_update l.t. thresh")
-                pass
-            else:
-                continue
-
-            # -- check strong set
-            violations = check_strong_set(
-                X,
-                row_indices,
-                lam,
-                params.alpha,
-                params.multiplier,
-                bl["col_map"],
-                bl["center"],
-                bl["scale"],
-                bl_i["e1"],
-                bl_i["e2"],
-                bl_i["s"],
-                bl_i["z"],
-                bl_i["a"],
-            )
-            if violations == 0:
-                logger.debug("no strong set violations, proceeding to check of rest")
-            else:
-                # -- then re-eval icept and weights with updated strong set
-                continue
-
-            # -- check rest of predictors
-            violations = check_rest(
-                X,
-                row_indices,
-                lam,
-                params.alpha,
-                params.multiplier,
-                bl["col_map"],
-                bl["center"],
-                bl["scale"],
-                bl_i["e1"],
-                bl_i["e2"],
-                bl_i["s"],
-                bl_i["z"],
-                bl_i["a"],
-            )
-            if violations == 0:
-                logger.debug("no rest-of-set violations, lambda value is finished")
-                break
-            else:
-                continue  # redundant, but kept for continuity with strong-set check
 
         t_end = time.process_time()
         logger.info(
@@ -690,3 +697,105 @@ def binomial_hsr(
         )
 
     return bl
+
+
+@nb.njit()
+def compute_z(X, row_indices, col_map, center, scale, s):  # pragma: no cover
+    """Standardized score x_j'(y - p) / n for every used column."""
+    nrow = get_nrow(X, row_indices)
+    s_sum = s.sum()
+    z = np.zeros(len(col_map))
+    for j in range(len(col_map)):
+        jj = col_map[j]
+        if row_indices is None:
+            _sum = dot(X[:, jj], s)
+        else:
+            _sum = dot(X[row_indices, jj], s)
+        z[j] = (_sum - center[jj] * s_sum) / (scale[jj] * nrow)
+    return z
+
+
+def _fit_lambda(
+    X,
+    y,
+    row_indices,
+    alpha,
+    multiplier,
+    max_iter,
+    bl,
+    bl_i,
+    il,
+    lam,
+    null_deviance,
+    thresh,
+    check_kkt,
+):
+    """Run coordinate descent at one lambda value, writing results to slot `il`.
+
+    With `check_kkt=False`, only the columns already in the active set are fit.
+
+    Returns "converged", "saturated", or "max_iter".
+    """
+
+    while bl["iters"][il] < max_iter:
+        bl["iters"][il] += 1
+
+        bl["deviance"][il] = update_probs(
+            y, row_indices, bl_i["eta"], bl_i["p"], bl_i["w"], bl_i["s"], bl_i["r"]
+        )
+
+        # -- break early if model is saturated
+        if bl["deviance"][il] / null_deviance < 0.01:
+            return "saturated"
+
+        # -- perform one round of weight updates
+        bl["intercept"][il], bl_i["a0"], bl_i["sum_w_residuals"] = update_intercept(
+            bl_i["w"], bl_i["r"], bl_i["a0"], bl_i["eta"]
+        )
+        bl["weights"][:, il], bl_i["sum_w_residuals"], max_update = update_weights(
+            X,
+            row_indices,
+            lam,
+            alpha,
+            multiplier,
+            bl["col_map"],
+            bl["center"],
+            bl["scale"],
+            bl_i["e1"],
+            bl_i["w"],
+            bl_i["r"],
+            bl_i["sum_w_residuals"],
+            bl_i["eta"],
+            bl_i["a"],
+        )
+
+        if max_update >= thresh:
+            continue
+        if not check_kkt:
+            return "converged"
+
+        kkt_args = (
+            X,
+            row_indices,
+            lam,
+            alpha,
+            multiplier,
+            bl["col_map"],
+            bl["center"],
+            bl["scale"],
+            bl_i["e1"],
+            bl_i["e2"],
+            bl_i["s"],
+            bl_i["z"],
+            bl_i["a"],
+        )
+
+        # -- check strong set; if violated, re-fit with the enlarged active set
+        if check_strong_set(*kkt_args) > 0:
+            continue
+
+        # -- check rest of predictors
+        if check_rest(*kkt_args) == 0:
+            return "converged"
+
+    return "max_iter"
