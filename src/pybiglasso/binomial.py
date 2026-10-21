@@ -115,6 +115,7 @@ def biglasso(
     lambda_min_thresh = (0.001, 0.05)
     if lambda_min is None:
         lambda_min = lambda_min_thresh[0] if (nrow > ncol) else lambda_min_thresh[1]
+    lambda_min = max(lambda_min, 1e-6)  # as R does
 
     if penalty_factor is None:
         multiplier = np.ones(ncol)
@@ -288,8 +289,9 @@ def weighted_sum_squares(Xcol, w, c, s):  # pragma: no cover
     """Compute weighted sum of squares."""
     sum_wx_sq, sum_wx, sum_w = 0.0, 0.0, 0.0
     for ix in range(len(Xcol)):
-        sum_wx_sq += w[ix] * (Xcol[ix] ** 2)
-        sum_wx += w[ix] * Xcol[ix]
+        x = np.float64(Xcol[ix])  # square in float64 even when X is float32
+        sum_wx_sq += w[ix] * (x * x)
+        sum_wx += w[ix] * x
         sum_w += w[ix]
 
     return (sum_wx_sq - 2 * c * sum_wx + (c**2) * sum_w) / (s**2)

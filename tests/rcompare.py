@@ -31,7 +31,7 @@ TESTS_DIR = pathlib.Path(__file__).parent
 R_SCRIPT = TESTS_DIR / "r" / "fit_biglasso.R"
 FIXTURE_PATH = TESTS_DIR / "fixtures" / "r_biglasso.json.gz"
 
-RTOL, ATOL = 1e-5, 1e-8
+RTOL, ATOL = 1e-9, 1e-11
 EPS, MAX_ITER = 1e-7, 1000
 
 
