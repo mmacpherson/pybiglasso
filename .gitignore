@@ -14,3 +14,8 @@ htmlcov/
 *~
 *.swp
 .DS_Store
+
+# project specific
+py-vs-r*/
+scratch/
+scratch*

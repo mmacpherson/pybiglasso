@@ -6,7 +6,6 @@ import time
 import numba as nb
 import numpy as np
 import pandas as pd
-import scipy.sparse as sps
 from threadpoolctl import threadpool_limits
 
 logFormatter = "%(asctime)s - %(levelname)s - %(message)s"
@@ -150,15 +149,14 @@ def biglasso(
         )
     )
 
-    df_weights = pd.DataFrame.sparse.from_spmatrix(
-        sps.coo_matrix((sat_mask.sum(), ncol + 1)),
+    coefs = np.column_stack(
+        [results["intercept"][sat_mask], _weights[:, sat_mask].transpose()]
+    )
+    df_weights = pd.DataFrame(
+        coefs,
         index=results["lambda_"][sat_mask],
         columns=[intercept_label] + list(X_names),
-    )
-    df_weights.loc[:, intercept_label] = results["intercept"][sat_mask]
-    df_weights.loc[:, df_weights.columns != intercept_label] = _weights[
-        :, sat_mask
-    ].transpose()
+    ).astype(pd.SparseDtype(coefs.dtype, fill_value=0.0))
 
     return dict(
         df_ncol=df_ncol,

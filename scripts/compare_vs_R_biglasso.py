@@ -78,7 +78,7 @@ def main(workdir, r_docker_image):
             "/app",
             r_docker_image,
             "Rscript",
-            f"{this_dir}/run_biglasso.R",
+            "/app/scripts/run_biglasso.R",
             infile,
         )
 

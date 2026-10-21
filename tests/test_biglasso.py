@@ -1,5 +1,5 @@
-import glmnet
 import numpy as np
+import pytest
 import sklearn.linear_model
 
 import pybiglasso as bl
@@ -24,6 +24,7 @@ def test_output_shape():
 
 
 def test_binomial_against_glmnet():
+    glmnet = pytest.importorskip("glmnet")
 
     nrow = 100
     ncol = 10
