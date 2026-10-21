@@ -41,7 +41,7 @@ def main():
         sys.exit(f"Fixtures must come from biglasso 1.4.1, got {versions}")
 
     failures = 0
-    for case, (py, _), r in zip(cases, prepared, r_outputs, strict=True):
+    for case, (py, _, _), r in zip(cases, prepared, r_outputs, strict=True):
         problems = rcompare.compare(py, r)
         if problems:
             failures += 1
@@ -51,8 +51,10 @@ def main():
 
     rcompare.save_fixtures(
         {
-            c.name: (digest, r)
-            for c, (_, digest), r in zip(cases, prepared, r_outputs, strict=True)
+            c.name: (digest, lambdas, r)
+            for c, (_, digest, lambdas), r in zip(
+                cases, prepared, r_outputs, strict=True
+            )
         }
     )
     print(

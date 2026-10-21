@@ -38,6 +38,7 @@ def biglasso(
     feature_names=None,
     stop_on_saturation=True,
     r_compatible=False,
+    n_threads=None,
 ):
     """Fit a lasso or elastic-net penalized logistic regression path.
 
@@ -57,6 +58,10 @@ def biglasso(
     logistic update instead divides by v * (1 + l2) rather than v + l2, which
     solves a different problem; `r_compatible=True` reproduces R exactly. The
     two agree for the lasso (alpha = 1).
+
+    Column-wise work (standardization and the strong-rule and KKT scans) runs on
+    `n_threads` threads, by default numba's (all cores); coordinate descent
+    itself is sequential. Results do not depend on the thread count.
 
     Returns a `BiglassoPath`.
     """
@@ -166,8 +171,14 @@ def biglasso(
     # -- at least for the vector-vector dot products we do here, the overhead of
     #    openblas/mkl multithreading appears to slow down the program in tests,
     #    so we clamp those operations to a single thread
-    with threadpool_limits(limits=1, user_api="blas"):
-        results = binomial_hsr(X, y, row_indices, params)
+    prior_threads = nb.get_num_threads()
+    try:
+        if n_threads is not None:
+            nb.set_num_threads(n_threads)
+        with threadpool_limits(limits=1, user_api="blas"):
+            results = binomial_hsr(X, y, row_indices, params)
+    finally:
+        nb.set_num_threads(prior_threads)
 
     # -- keep the part of the path that was fit (it stops early on saturation
     #    or dfmax), and untransform coefficients back to the scale of X
@@ -206,16 +217,17 @@ def biglasso(
     )
 
 
-@nb.njit(fastmath=True)
-def dot3(a, b, c):  # pragma: no cover
-    """Faster version of (a * b * c).sum()"""
+@nb.njit(cache=True)
+def seqsum(a):  # pragma: no cover
+    """Sequential sum, so parallel kernels don't turn it into a parallel reduction
+    (whose rounding would depend on the thread count)."""
     out = 0.0
     for ix in range(len(a)):
-        out += a[ix] * b[ix] * c[ix]
+        out += a[ix]
     return out
 
 
-@nb.njit(fastmath=True)
+@nb.njit(fastmath=True, cache=True)
 def dot(a, b):  # pragma: no cover
     """Dot product accumulated in float64; works for mixed float32/float64 inputs."""
     out = 0.0
@@ -224,7 +236,7 @@ def dot(a, b):  # pragma: no cover
     return out
 
 
-@nb.njit()
+@nb.njit(parallel=True, cache=True)
 def center_scale(X, row_indices):  # pragma: no cover
     """Compute the mean and std of matrix X.
 
@@ -237,7 +249,7 @@ def center_scale(X, row_indices):  # pragma: no cover
     mean = np.zeros(X.shape[1], dtype=np.float64)
     std = mean.copy()
 
-    for ix in range(X.shape[1]):
+    for ix in nb.prange(X.shape[1]):
         if row_indices is None:
             col = X[:, ix]
         else:
@@ -256,7 +268,7 @@ def center_scale(X, row_indices):  # pragma: no cover
     return mean, std
 
 
-@nb.njit()
+@nb.njit(parallel=True, cache=True)
 def build_sum_xy(X, y, row_indices, col_map):  # pragma: no cover
     """Compute columnwise dot product of X with y.
 
@@ -268,36 +280,51 @@ def build_sum_xy(X, y, row_indices, col_map):  # pragma: no cover
     out = np.zeros(len(col_map))
 
     if row_indices is None:
-        for j in range(len(col_map)):
+        for j in nb.prange(len(col_map)):
             out[j] = dot(X[:, col_map[j]], y)
     else:
-        for j in range(len(col_map)):
+        for j in nb.prange(len(col_map)):
             out[j] = dot(X[row_indices, col_map[j]], y[row_indices])
 
     return out
 
 
-@nb.njit()
+@nb.njit(cache=True)
 def np_logspace(lo, hi, num):  # pragma: no cover
     """Alternate version of np.logspace that's closer to np.linspace."""
     # np.logspace(np.log(3), np.log(4), num=5, base=np.e)
     return np.exp(np.linspace(np.log(lo), np.log(hi), num))
 
 
-@nb.njit()
-def weighted_sum_squares(Xcol, w, c, s):  # pragma: no cover
-    """Compute weighted sum of squares."""
-    sum_wx_sq, sum_wx, sum_w = 0.0, 0.0, 0.0
-    for ix in range(len(Xcol)):
-        x = np.float64(Xcol[ix])  # square in float64 even when X is float32
-        sum_wx_sq += w[ix] * (x * x)
-        sum_wx += w[ix] * x
-        sum_w += w[ix]
+@nb.njit(fastmath=True, cache=True)
+def column_moments(X, jj, row_indices, r, w):  # pragma: no cover
+    """One pass over column jj: sum(x * r * w), sum(w * x^2), sum(w * x)."""
+    sum_xwr, sum_wxx, sum_wx = 0.0, 0.0, 0.0
+    n = X.shape[0] if row_indices is None else len(row_indices)
+    for i in range(n):
+        x = np.float64(X[i, jj] if row_indices is None else X[row_indices[i], jj])
+        wx = w[i] * x
+        sum_xwr += wx * r[i]
+        sum_wxx += wx * x
+        sum_wx += wx
+    return sum_xwr, sum_wxx, sum_wx
 
-    return (sum_wx_sq - 2 * c * sum_wx + (c**2) * sum_w) / (s**2)
+
+@nb.njit(fastmath=True, cache=True)
+def apply_shift(X, jj, row_indices, delta, c, r, eta, w):  # pragma: no cover
+    """Move r and eta by delta * (x - c) for column jj; return the new sum(w * r)."""
+    sum_wr = 0.0
+    n = X.shape[0] if row_indices is None else len(row_indices)
+    for i in range(n):
+        x = np.float64(X[i, jj] if row_indices is None else X[row_indices[i], jj])
+        d = delta * (x - c)
+        r[i] -= d
+        eta[i] += d
+        sum_wr += w[i] * r[i]
+    return sum_wr
 
 
-@nb.njit()
+@nb.njit(cache=True)
 def get_nrow(X, row_indices):  # pragma: no cover
     """Get number of rows."""
     if row_indices is None:
@@ -308,7 +335,7 @@ def get_nrow(X, row_indices):  # pragma: no cover
     return nrow
 
 
-@nb.njit()
+@nb.njit(cache=True)
 def update_probs(
     y, row_indices, eta, p, w, s, r, eta_max=10, w_min=0.0001
 ):  # pragma: no cover
@@ -355,7 +382,7 @@ def update_probs(
     return deviance
 
 
-@nb.njit()
+@nb.njit(cache=True)
 def update_intercept(w, r, a0, eta):  # pragma: no cover
     """Update intercept based on current state.
 
@@ -379,7 +406,7 @@ def update_intercept(w, r, a0, eta):  # pragma: no cover
     return intercept, a0_out, sum_w_residuals
 
 
-@nb.njit()
+@nb.njit(cache=True)
 def update_weights(
     X,
     # y,
@@ -407,6 +434,7 @@ def update_weights(
     """
 
     nrow = get_nrow(X, row_indices)
+    sum_w = seqsum(w)
 
     max_update = 0.0
 
@@ -415,13 +443,10 @@ def update_weights(
         if not e1[j]:
             continue
 
-        if row_indices is None:
-            Xcol = X[:, jj]
-        else:
-            Xcol = X[row_indices, jj]
-
-        xwr = (dot3(Xcol, r, w) - center[jj] * sum_w_residuals) / scale[jj]
-        v = weighted_sum_squares(Xcol, w, center[jj], scale[jj]) / nrow
+        c, sc = center[jj], scale[jj]
+        sum_xwr, sum_wxx, sum_wx = column_moments(X, jj, row_indices, r, w)
+        xwr = (sum_xwr - c * sum_w_residuals) / sc
+        v = (sum_wxx - 2 * c * sum_wx + c * c * sum_w) / (sc * sc) / nrow
 
         u = xwr / nrow + v * a[j]
 
@@ -441,17 +466,14 @@ def update_weights(
         if shift != 0:
             update = v * (shift**2)
             max_update = max(update, max_update)
-            _si = shift * (Xcol - center[jj]) / scale[jj]
-            r -= _si
-            eta += _si
-            sum_w_residuals = r @ w
+            sum_w_residuals = apply_shift(X, jj, row_indices, shift / sc, c, r, eta, w)
 
         a[j] = new_weight
 
     return sum_w_residuals, max_update
 
 
-@nb.njit()
+@nb.njit(parallel=True, cache=True)
 def check_strong_set(
     X,
     row_indices,
@@ -473,8 +495,9 @@ def check_strong_set(
     """Scan for violations in strong set."""
 
     nrow = get_nrow(X, row_indices)
+    s_sum = seqsum(s)
     violations = 0
-    for j in range(len(col_map)):
+    for j in nb.prange(len(col_map)):
         jj = col_map[j]
         if (e1[j] != 0) or (e2[j] != 1):
             continue
@@ -482,7 +505,7 @@ def check_strong_set(
             _sum = dot(X[:, jj], s)
         else:
             _sum = dot(X[row_indices, jj], s)
-        z[j] = (_sum - center[jj] * s.sum()) / (scale[jj] * nrow)
+        z[j] = (_sum - center[jj] * s_sum) / (scale[jj] * nrow)
         l1 = lam * multiplier[jj] * alpha
         l2 = lam * multiplier[jj] * (1 - alpha)
         if abs(z[j] - a[j] * l2) > l1:
@@ -492,7 +515,7 @@ def check_strong_set(
     return violations
 
 
-@nb.njit()
+@nb.njit(parallel=True, cache=True)
 def check_rest(
     X,
     row_indices,
@@ -514,8 +537,9 @@ def check_rest(
     """Scan for violations in rest of predictor columns."""
 
     nrow = get_nrow(X, row_indices)
+    s_sum = seqsum(s)
     violations = 0
-    for j in range(len(col_map)):
+    for j in nb.prange(len(col_map)):
         jj = col_map[j]
         if e2[j] != 0:
             continue
@@ -523,7 +547,7 @@ def check_rest(
             _sum = dot(X[:, jj], s)
         else:
             _sum = dot(X[row_indices, jj], s)
-        z[j] = (_sum - center[jj] * s.sum()) / (scale[jj] * nrow)
+        z[j] = (_sum - center[jj] * s_sum) / (scale[jj] * nrow)
         l1 = lam * multiplier[jj] * alpha
         l2 = lam * multiplier[jj] * (1 - alpha)
         if abs(z[j] - a[j] * l2) > l1:
@@ -732,13 +756,13 @@ def _record_coefs(bl, bl_i, il):
     bl["coef_vals"][il] = bl_i["a"][nz].copy()
 
 
-@nb.njit()
+@nb.njit(parallel=True, cache=True)
 def compute_z(X, row_indices, col_map, center, scale, s):  # pragma: no cover
     """Standardized score x_j'(y - p) / n for every used column."""
     nrow = get_nrow(X, row_indices)
-    s_sum = s.sum()
+    s_sum = seqsum(s)
     z = np.zeros(len(col_map))
-    for j in range(len(col_map)):
+    for j in nb.prange(len(col_map)):
         jj = col_map[j]
         if row_indices is None:
             _sum = dot(X[:, jj], s)

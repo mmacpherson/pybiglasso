@@ -31,8 +31,8 @@ def fixtures():
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("case", FAST, ids=lambda c: c.name)
 def test_matches_stored_r_output(case, fixtures, tmp_path):
-    digest, r = fixtures[case.name]
-    py, new_digest = rcompare.prepare_case(case, tmp_path)
+    digest, lambdas, r = fixtures[case.name]
+    py, new_digest, _ = rcompare.prepare_case(case, tmp_path, lambdas)
     assert new_digest == digest, (
         "Generated data differs from what the stored R output was fit on; "
         "regenerate with scripts/make_r_fixtures.py"
@@ -66,7 +66,7 @@ def test_matches_live_r(case, live_fast):
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("case", SOAK, ids=lambda c: c.name)
 def test_soak_matches_live_r(case, tmp_path):
-    py, _ = rcompare.prepare_case(case, tmp_path)
+    py, _, _ = rcompare.prepare_case(case, tmp_path)
     (r,) = rcompare.run_r([tmp_path])
     print(
         f"\n{case.name}: python {py['seconds']:.1f}s, R {r.get('seconds', float('nan')):.1f}s"

@@ -262,3 +262,17 @@ def test_float32_matches_float64(data):
     a = bl.biglasso(X32, y, nlambda=10)
     b = bl.biglasso(np.asfortranarray(X32.astype(np.float64)), y, nlambda=10)
     np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray())
+
+
+@pytest.mark.parametrize("penalty", [None, "zeros"])
+def test_thread_count_does_not_change_results(penalty):
+    d = bl.common.make_biglasso_dataset(nrow=150, ncol=400, seed=2)
+    pf = None
+    if penalty == "zeros":
+        pf = np.ones(400)
+        pf[:3] = 0
+    one = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=1)
+    many = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=4)
+    np.testing.assert_array_equal(one.coef.toarray(), many.coef.toarray())
+    np.testing.assert_array_equal(one.iterations, many.iterations)
+    np.testing.assert_array_equal(one.n_rejected, many.n_rejected)

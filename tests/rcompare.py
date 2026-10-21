@@ -220,12 +220,12 @@ def make_case_data(case, workdir):
     )
 
 
-def data_digest(case, data, lambdas):
-    """Hash of everything R is given, to detect stale fixtures."""
+def data_digest(data):
+    """Hash of the generated inputs, to detect stale fixtures."""
     h = hashlib.sha256()
     h.update(np.asarray(data["X"], dtype=np.float64).tobytes(order="F"))
     h.update(np.asarray(data["y"], dtype=np.float64).tobytes())
-    for extra in (data["penalty_factor"], data["row_indices"], lambdas):
+    for extra in (data["penalty_factor"], data["row_indices"]):
         h.update(b"|" if extra is None else np.asarray(extra, np.float64).tobytes())
     return h.hexdigest()
 
@@ -265,16 +265,22 @@ def fit_py(case, data, lambdas=None):
     )
 
 
-def prepare_case(case, workdir):
+def prepare_case(case, workdir, lambdas=None):
     """Write a case's inputs for R and fit it in Python.
 
-    Returns (python results, data digest).
+    When the case gives R a lambda grid, it is derived from pybiglasso's default
+    grid, unless `lambdas` (e.g. the grid a stored R fit was given) is passed.
+
+    Returns (python results, data digest, lambdas given to R or None).
     """
     workdir = pathlib.Path(workdir)
     data = make_case_data(case, workdir)
 
-    lambdas = None
-    if case.r_needs_lambdas:
+    if not case.r_needs_lambdas:
+        lambdas = None
+    elif lambdas is not None:
+        lambdas = np.asarray(lambdas, dtype=np.float64)
+    else:
         grid = fit_py(case, data)["lambda_"]
         if case.user_lambdas:
             lambdas = grid * 0.9
@@ -313,10 +319,8 @@ def prepare_case(case, workdir):
     params = {k: v for k, v in params.items() if v is not None}
     (workdir / "params.json").write_text(json.dumps(params))
 
-    digest = (
-        None if case.memmap and case.filebacked else data_digest(case, data, lambdas)
-    )
-    return py, digest
+    digest = None if case.memmap and case.filebacked else data_digest(data)
+    return py, digest, lambdas
 
 
 def r_available():
@@ -397,12 +401,13 @@ def compare(py, r):
 
 
 def save_fixtures(entries, path=FIXTURE_PATH):
-    """`entries` maps case name -> (digest, R output)."""
+    """`entries` maps case name -> (digest, lambdas given to R, R output)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {}
-    for name, (digest, r) in sorted(entries.items()):
+    for name, (digest, lambdas, r) in sorted(entries.items()):
         payload[name] = dict(
             digest=digest,
+            r_input_lambdas=None if lambdas is None else lambdas.tolist(),
             **{
                 k: (v.tolist() if isinstance(v, np.ndarray) else v)
                 for k, v in r.items()
@@ -425,5 +430,5 @@ def load_fixtures(path=FIXTURE_PATH):
         r["beta"] = np.array(entry["beta"], dtype=np.float64)
         for k in ("warnings", "biglasso_version", "r_version"):
             r[k] = entry[k]
-        out[name] = (entry["digest"], r)
+        out[name] = (entry["digest"], entry["r_input_lambdas"], r)
     return out
