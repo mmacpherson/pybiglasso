@@ -7,7 +7,6 @@ import click
 import numpy as np
 import sh
 import sklearn.linear_model
-from jax import random
 
 import pybiglasso as bl
 
@@ -23,12 +22,11 @@ def synthesize_logistic_dataset(
     ), f"nrow [{nrow}] is not multiple of batchsize [{batchsize}]"
     num_batches = nrow // batchsize
 
-    rng_key = random.PRNGKey(bl.common.DEFAULT_SEED)
-    rng_key, *subkeys = random.split(rng_key, 3)
+    rng = np.random.default_rng(bl.common.DEFAULT_SEED)
 
-    weights = bl.common.sample_biglasso_weights(subkeys[0], ncol)
+    weights = bl.common.sample_biglasso_weights(rng, ncol)
 
-    bg = bl.common.biglasso_generator(subkeys[1], weights, batchsize)
+    bg = bl.common.biglasso_generator(rng, weights, batchsize)
 
     y_batches = []
     with open(Xfile, "wt") as fp:

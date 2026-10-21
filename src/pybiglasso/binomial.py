@@ -8,8 +8,6 @@ import numpy as np
 import pandas as pd
 from threadpoolctl import threadpool_limits
 
-logFormatter = "%(asctime)s - %(levelname)s - %(message)s"
-logging.basicConfig(format=logFormatter, level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -66,7 +64,6 @@ def biglasso(
         row_indices = row_indices.astype(np.uint32)
 
     nrow, ncol = get_nrow(X, row_indices), X.shape[1]
-    print("nr nc", nrow, ncol)
 
     if X_names is not None:
         if len(X_names) != ncol:

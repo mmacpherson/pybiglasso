@@ -28,22 +28,22 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
 dependencies = [
-    "jax",
     "numba",
     "numpy",
-    "numpyro",
     "pandas",
-    "plotnine",
     "scikit-learn",
     "threadpoolctl",
 ]
+
+[project.optional-dependencies]
+viz = ["plotnine"]
 
 [project.urls]
 Homepage = "https://github.com/mmacpherson/pybiglasso"
 "R biglasso" = "https://github.com/pbreheny/biglasso"
 
 [dependency-groups]
-dev = ["pytest", "pytest-cov", "ruff"]
+dev = ["pytest", "pytest-cov", "ruff", "plotnine"]
 scripts = ["click", "sh", "tqdm", "lets-plot", "pyarrow", "jupyter"]
 
 [tool.pytest.ini_options]

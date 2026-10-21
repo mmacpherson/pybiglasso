@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 
-import jax.numpy as jnp
 import numpy as np
-
-# import numpyro
-import numpyro.distributions as dist
 import pandas as pd
 import sklearn.datasets
 import sklearn.metrics
-from jax import random
 from numpy.random import default_rng
 from sklearn.linear_model import LogisticRegression
 
@@ -63,25 +58,23 @@ def generate_test_data(
 
 
 def sample_biglasso_weights(
-    rng_key,
+    rng,
     ncol,
     proportion_associated_markers=0.5,
     marker_effect_sd=0.5,
 ):
+    """Sample sparse, heavy-tailed marker effects.
 
-    _, *subkeys = random.split(rng_key, 3)
-
-    is_associated = dist.Bernoulli(proportion_associated_markers).sample(
-        subkeys[0], sample_shape=(ncol,)
-    )
-    raw_weights = dist.StudentT(3, 0, marker_effect_sd).sample(
-        subkeys[1], sample_shape=(ncol,)
-    )
+    `rng` is a `numpy.random.Generator`, or anything `default_rng` accepts.
+    """
+    rng = default_rng(rng)
+    is_associated = rng.random(ncol) < proportion_associated_markers
+    raw_weights = marker_effect_sd * rng.standard_t(3, size=ncol)
     return is_associated * raw_weights
 
 
 def biglasso_generator(
-    rng_key,
+    rng,
     weights,
     nrow=50,
     allele_frequency_alpha=0.4,
@@ -89,26 +82,26 @@ def biglasso_generator(
     dtype=DEFAULT_DTYPE,
     fortran_order=True,
 ):
+    """Yield an endless stream of independent PRS-like batches of `nrow` rows."""
+    rng = default_rng(rng)
+    weights = np.asarray(weights, dtype=dtype)
+    order_str = "F" if fortran_order else "C"
 
     while True:
-        _, *subkeys = random.split(rng_key, 4)
-
         # -- generate dosages array
-        allele_frequencies = dist.Beta(
-            allele_frequency_alpha, allele_frequency_beta
-        ).sample(subkeys[0], sample_shape=(len(weights),))
-        dosages = dist.Binomial(2, probs=allele_frequencies).sample(
-            subkeys[1], sample_shape=(nrow,)
+        allele_frequencies = rng.beta(
+            allele_frequency_alpha, allele_frequency_beta, size=len(weights)
         )
+        dosages = rng.binomial(2, allele_frequencies, size=(nrow, len(weights)))
 
         # -- generate response
-        response = dist.Binomial(1, logits=jnp.dot(dosages, weights)).sample(subkeys[2])
+        probs = logit_to_prob(dosages @ weights)
+        response = rng.random(nrow) < probs
 
-        order_str = "F" if fortran_order else "C"
         yield dict(
             X=np.asarray(dosages, dtype=dtype, order=order_str),
-            w=np.asarray(weights, dtype=dtype),
-            y=np.asarray(response, dtype=dtype),
+            w=weights,
+            y=response.astype(dtype),
         )
 
 
@@ -129,14 +122,13 @@ def make_biglasso_dataset(
     memory; if it won't, you can drop down and use the generator functions this
     function uses.
     """
-    rng_key = random.PRNGKey(seed)
-    rng_key, *subkeys = random.split(rng_key, 3)
+    rng = default_rng(seed)
     weights = sample_biglasso_weights(
-        subkeys[0], ncol, proportion_associated_markers, marker_effect_sd
+        rng, ncol, proportion_associated_markers, marker_effect_sd
     )
     return next(
         biglasso_generator(
-            subkeys[1],
+            rng,
             weights,
             nrow,
             allele_frequency_alpha,
