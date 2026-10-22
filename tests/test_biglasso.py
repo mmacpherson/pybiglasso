@@ -276,3 +276,16 @@ def test_thread_count_does_not_change_results(penalty):
     np.testing.assert_array_equal(one.coef.toarray(), many.coef.toarray())
     np.testing.assert_array_equal(one.iterations, many.iterations)
     np.testing.assert_array_equal(one.n_rejected, many.n_rejected)
+
+
+def test_quickstart_example_runs():
+    for mod in ("polars", "sklearn", "seaborn"):
+        pytest.importorskip(mod)
+    import pathlib
+    import runpy
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    example = pathlib.Path(__file__).parents[1] / "examples" / "quickstart.py"
+    runpy.run_path(str(example), run_name="__main__")

@@ -8,10 +8,6 @@ test:
 lint:
 	uv run ruff check src tests
 
-.PHONY: notebook
-notebook:
-	uv run --group scripts jupyter notebook --no-browser
-
 # -- R comparisons; set CONTAINER=podman to use podman instead
 CONTAINER ?= docker
 R_VERSION ?= 4.0.3

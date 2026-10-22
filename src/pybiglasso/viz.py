@@ -36,6 +36,7 @@ def plot_coefficients(path, max_features=None):
         so.Plot(data, x="neg_log10_lambda", y="coefficient", color="feature")
         .add(so.Line())
         .label(x="−log10(λ)", y="Coefficient", color="Feature")
+        .layout(size=(7, 4.5), engine="constrained")
     )
 
 
@@ -48,4 +49,5 @@ def plot_deviance(path):
         .add(so.Line())
         .add(so.Dot())
         .label(x="−log10(λ)", y="Deviance")
+        .layout(size=(7, 4.5), engine="constrained")
     )
