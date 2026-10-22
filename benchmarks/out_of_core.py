@@ -135,8 +135,15 @@ def fit_py(workdir, threads):
         order="F",
     )
     y = np.fromfile(workdir / "y.bin")
-    # -- warm numba's cache on a tiny problem, outside the timing
-    bl.biglasso(np.asfortranarray(X[:50, :20]), y[:50], nlambda=2)
+    # -- compile on a tiny problem, outside the timing. It must be a read-only
+    #    Fortran memmap like X: numba compiles each array type separately, and
+    #    compiling inside the fit would also take memory from the page cache.
+    warm = np.lib.format.open_memmap(
+        workdir / "warm.npy", mode="w+", shape=(50, 20), fortran_order=True
+    )
+    warm[:] = X[:50, :20]
+    warm.flush()
+    bl.biglasso(np.load(workdir / "warm.npy", mmap_mode="r"), y[:50], nlambda=2)
     io0, t0 = read_bytes(), time.perf_counter()
     path = bl.biglasso(
         X,
