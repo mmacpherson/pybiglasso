@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import collections
 import logging
+import numbers
 import time
 import warnings
 
@@ -12,6 +13,18 @@ from threadpoolctl import threadpool_limits
 from .path import INTERCEPT, BiglassoPath
 
 logger = logging.getLogger(__name__)
+
+
+def _integer(name, value, minimum=1):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Integral):
+        raise ValueError(f"{name} must be an integer >= {minimum}.")
+    if value < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}.")
+
+
+def _finite_scalar(name, value):
+    if not isinstance(value, numbers.Real) or not np.isfinite(value):
+        raise ValueError(f"{name} must be a finite real number.")
 
 
 BigLassoParams = collections.namedtuple(
@@ -64,6 +77,13 @@ def biglasso(
     itself is sequential. Results do not depend on the thread count.
 
     Returns a `BiglassoPath`.
+
+    Automatic grids require nlambda >= 2; use lambdas=[value] for a single fit.
+    Designs with no varying
+    features (or no varying penalized features for an automatic grid) are
+    rejected. An exactly zero lambda_max produces a finite all-zero grid.
+    `deviance` is evaluated at the final fitted model; compatibility mode
+    retains R's historical pre-sweep loss instead.
     """
 
     if feature_names is None and hasattr(X, "columns"):
@@ -73,6 +93,34 @@ def biglasso(
     y = np.asarray(y)
 
     # -- first, a few checks on data shape and type
+    if X.ndim != 2 or not all(X.shape):
+        raise ValueError("X must be a non-empty two-dimensional design matrix.")
+    if X.dtype.kind not in "biuf" or X.dtype == np.float16 or not X.dtype.isnative:
+        raise ValueError(
+            "X must have a native real numeric dtype (float32/64 or integer)."
+        )
+    if X.dtype.kind == "f" and X.dtype.itemsize not in (4, 8):
+        raise ValueError("Floating-point X must have dtype float32 or float64.")
+    if y.ndim != 1 or y.dtype.kind not in "biuf":
+        raise ValueError("y must be a one-dimensional numeric response.")
+    _finite_scalar("Alpha", alpha)
+    _finite_scalar("eps", eps)
+    if eps <= 0:
+        raise ValueError("eps must be positive.")
+    _integer("max_iter", max_iter)
+    if lambdas is None:
+        if (
+            isinstance(nlambda, (bool, np.bool_))
+            or not isinstance(nlambda, numbers.Integral)
+            or nlambda < 2
+        ):
+            raise ValueError(
+                "nlambda must be at least 2 (an integer); to fit one value, pass lambdas=[value]."
+            )
+    if dfmax is not None:
+        _integer("dfmax", dfmax, minimum=0)
+    if n_threads is not None:
+        _integer("n_threads", n_threads)
     if not np.isfortran(X):
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
@@ -97,9 +145,19 @@ def biglasso(
 
     if row_indices is not None:
         row_indices = np.asarray(row_indices)
+        if (
+            row_indices.ndim != 1
+            or row_indices.size == 0
+            or row_indices.dtype.kind not in "iuf"
+            or not np.isfinite(row_indices).all()
+            or np.any(row_indices != np.floor(row_indices))
+        ):
+            raise ValueError(
+                "row_indices must be a non-empty one-dimensional sequence of integer indices."
+            )
         if np.any((row_indices < 0) | (row_indices >= X.shape[0])):
             raise ValueError("row_indices has indices outside valid range.")
-        row_indices = row_indices.astype(np.uint32)
+        row_indices = row_indices.astype(np.intp)
 
     y_used = y if row_indices is None else y[row_indices]
     if set(np.unique(y_used)) != {0, 1}:
@@ -120,23 +178,41 @@ def biglasso(
     lambda_min_thresh = (0.001, 0.05)
     if lambda_min is None:
         lambda_min = lambda_min_thresh[0] if (nrow > ncol) else lambda_min_thresh[1]
+    _finite_scalar("lambda_min", lambda_min)
+    if not 0 < lambda_min <= 1:
+        raise ValueError("lambda_min must be in (0, 1].")
     lambda_min = max(lambda_min, 1e-6)  # as R does
 
     if penalty_factor is None:
         multiplier = np.ones(ncol)
     else:
+        if np.iscomplexobj(penalty_factor):
+            raise ValueError("penalty_factor must contain real values.")
         multiplier = np.array(penalty_factor, dtype=np.float64)
         if multiplier.shape != (ncol,):
             raise ValueError("penalty_factor must have one entry per column of X.")
-        if np.any(multiplier < 0) or not np.any(multiplier > 0):
+        if (
+            not np.isfinite(multiplier).all()
+            or np.any(multiplier < 0)
+            or not np.any(multiplier > 0)
+        ):
             raise ValueError(
-                "penalty_factor must be non-negative, with at least one positive entry."
+                "penalty_factor must be finite and non-negative, with at least one positive entry."
             )
 
     if lambdas is not None:
-        lambdas = np.array(lambdas, dtype=np.float64).ravel()
-        if len(lambdas) == 0 or np.any(lambdas < 0):
-            raise ValueError("lambdas must be a non-empty sequence of values >= 0.")
+        if np.iscomplexobj(lambdas):
+            raise ValueError("lambdas must contain real values.")
+        lambdas = np.array(lambdas, dtype=np.float64)
+        if (
+            lambdas.ndim != 1
+            or lambdas.size == 0
+            or not np.isfinite(lambdas).all()
+            or np.any(lambdas < 0)
+        ):
+            raise ValueError(
+                "lambdas must be a non-empty one-dimensional sequence of finite values >= 0."
+            )
         if np.any(np.diff(lambdas) > 0):
             raise ValueError("lambdas must be in decreasing order.")
         nlambda = len(lambdas)
@@ -248,6 +324,7 @@ def center_scale(X, row_indices):  # pragma: no cover
 
     mean = np.zeros(X.shape[1], dtype=np.float64)
     std = mean.copy()
+    invalid = np.zeros(X.shape[1], dtype=np.bool_)
 
     for ix in nb.prange(X.shape[1]):
         if row_indices is None:
@@ -258,6 +335,8 @@ def center_scale(X, row_indices):  # pragma: no cover
         # -- two passes, accumulating in float64 regardless of X's dtype
         acc = 0.0
         for v in col:
+            if not np.isfinite(v):
+                invalid[ix] = True
             acc += v
         mean[ix] = acc / len(col)
         acc = 0.0
@@ -265,6 +344,12 @@ def center_scale(X, row_indices):  # pragma: no cover
             acc += (v - mean[ix]) ** 2
         std[ix] = np.sqrt(acc / len(col))
 
+    if invalid.any():
+        raise ValueError(
+            "X must contain only finite values (no NaN or infinity) in the rows used for fitting."
+        )
+    if not np.isfinite(mean).all() or not np.isfinite(std).all():
+        raise ValueError("X has values too large to standardize safely.")
     return mean, std
 
 
@@ -308,6 +393,50 @@ def column_moments(X, jj, row_indices, r, w):  # pragma: no cover
         sum_wxx += wx * x
         sum_wx += wx
     return sum_xwr, sum_wxx, sum_wx
+
+
+@nb.njit(cache=True, nogil=True)
+def centered_moments(X, jj, row_indices, r, w, center, scale):
+    """Stable weighted score and curvature; never subtract large raw moments.
+
+    No fastmath: reassociation must not undo centering for large offsets.
+    """
+    xwr, wxx = 0.0, 0.0
+    n = X.shape[0] if row_indices is None else len(row_indices)
+    for i in range(n):
+        x = np.float64(X[i, jj] if row_indices is None else X[row_indices[i], jj])
+        z = (x - center) / scale
+        xwr += z * w[i] * r[i]
+        wxx += w[i] * z * z
+    return xwr, wxx / n
+
+
+@nb.njit(cache=True, nogil=True)
+def standardized_score(X, jj, row_indices, s, s_sum, center, scale):
+    """Score with a centered fallback when raw-moment cancellation is unsafe."""
+    n = X.shape[0] if row_indices is None else len(row_indices)
+    if abs(center) > 100 * scale:
+        score = 0.0
+        for i in range(n):
+            x = np.float64(X[i, jj] if row_indices is None else X[row_indices[i], jj])
+            score += ((x - center) / scale) * s[i]
+        return score / n
+    if row_indices is None:
+        raw = dot(X[:, jj], s)
+    else:
+        raw = dot(X[row_indices, jj], s)
+    return (raw - center * s_sum) / (scale * n)
+
+
+@nb.njit(cache=True, nogil=True)
+def final_loss(y, row_indices, eta):
+    """Stable negative log likelihood of the final linear predictor."""
+    loss = 0.0
+    for i in range(len(eta)):
+        yi = y[i] if row_indices is None else y[row_indices[i]]
+        signed = -eta[i] if yi == 1 else eta[i]
+        loss += max(signed, 0.0) + np.log1p(np.exp(-abs(signed)))
+    return loss
 
 
 @nb.njit(fastmath=True, cache=True, nogil=True)
@@ -444,9 +573,22 @@ def update_weights(
             continue
 
         c, sc = center[jj], scale[jj]
-        sum_xwr, sum_wxx, sum_wx = column_moments(X, jj, row_indices, r, w)
-        xwr = (sum_xwr - c * sum_w_residuals) / sc
-        v = (sum_wxx - 2 * c * sum_wx + c * c * sum_w) / (sc * sc) / nrow
+        if abs(c) > 100 * sc:
+            xwr, v = centered_moments(X, jj, row_indices, r, w, c, sc)
+        else:
+            sum_xwr, sum_wxx, sum_wx = column_moments(X, jj, row_indices, r, w)
+            xwr = (sum_xwr - c * sum_w_residuals) / sc
+            numerator = sum_wxx - 2 * c * sum_wx + c * c * sum_w
+            magnitude = abs(sum_wxx) + abs(2 * c * sum_wx) + abs(c * c * sum_w)
+            v = numerator / (sc * sc) / nrow
+            # Recompute if subtraction has lost more than about eight digits,
+            # including a positive but unreliable curvature.
+            if not np.isfinite(v) or numerator <= 1e-8 * magnitude:
+                xwr, v = centered_moments(X, jj, row_indices, r, w, c, sc)
+        if not np.isfinite(v) or v <= 0 or not np.isfinite(xwr):
+            raise ValueError(
+                "Non-positive or non-finite coordinate curvature; cannot fit safely."
+            )
 
         u = xwr / nrow + v * a[j]
 
@@ -494,18 +636,13 @@ def check_strong_set(
 ):  # pragma: no cover
     """Scan for violations in strong set."""
 
-    nrow = get_nrow(X, row_indices)
     s_sum = seqsum(s)
     violations = 0
     for j in nb.prange(len(col_map)):
         jj = col_map[j]
         if (e1[j] != 0) or (e2[j] != 1):
             continue
-        if row_indices is None:
-            _sum = dot(X[:, jj], s)
-        else:
-            _sum = dot(X[row_indices, jj], s)
-        z[j] = (_sum - center[jj] * s_sum) / (scale[jj] * nrow)
+        z[j] = standardized_score(X, jj, row_indices, s, s_sum, center[jj], scale[jj])
         l1 = lam * multiplier[jj] * alpha
         l2 = lam * multiplier[jj] * (1 - alpha)
         if abs(z[j] - a[j] * l2) > l1:
@@ -536,18 +673,13 @@ def check_rest(
 ):  # pragma: no cover
     """Scan for violations in rest of predictor columns."""
 
-    nrow = get_nrow(X, row_indices)
     s_sum = seqsum(s)
     violations = 0
     for j in nb.prange(len(col_map)):
         jj = col_map[j]
         if e2[j] != 0:
             continue
-        if row_indices is None:
-            _sum = dot(X[:, jj], s)
-        else:
-            _sum = dot(X[row_indices, jj], s)
-        z[j] = (_sum - center[jj] * s_sum) / (scale[jj] * nrow)
+        z[j] = standardized_score(X, jj, row_indices, s, s_sum, center[jj], scale[jj])
         l1 = lam * multiplier[jj] * alpha
         l2 = lam * multiplier[jj] * (1 - alpha)
         if abs(z[j] - a[j] * l2) > l1:
@@ -577,12 +709,15 @@ def binomial_hsr(
     _col_map = np.where(_scale > scale_min_thresh)[0]
     ncol_used = len(_col_map)
     multiplier = params.multiplier[_col_map]
+    if ncol_used == 0:
+        raise ValueError("X has no varying features after standardization.")
+    if params.lambdas is None and not np.any(multiplier > 0):
+        raise ValueError(
+            "An automatic lambda grid requires at least one varying penalized feature; supply lambdas explicitly."
+        )
 
     # -- a few preliminary calculations, to initialize the data structures
-    sum_xy = build_sum_xy(X, y, row_indices, _col_map)
-    z = (sum_xy - _center[_col_map] * y_used.sum()) / (
-        _scale[_col_map] * nrow
-    )  # residuals
+    z = compute_z(X, row_indices, _col_map, _center, _scale, y_used)
     ybar = y_used.mean()
     null_deviance = (
         -1.0 * (y_used * np.log(ybar) + (1 - y_used) * np.log(1 - ybar)).sum()
@@ -666,6 +801,10 @@ def binomial_hsr(
                 )
                 bl["iters"][:] = -1
                 return bl
+            if status == "max_iter":
+                raise ValueError(
+                    "Unpenalized prefit failed to converge within max_iter; increase max_iter or supply lambdas explicitly."
+                )
             update_probs(
                 y, row_indices, bl_i["eta"], bl_i["p"], bl_i["w"], bl_i["s"], bl_i["r"]
             )
@@ -679,7 +818,9 @@ def binomial_hsr(
         penalized = multiplier > 0
         lambda_max = (np.abs(z[penalized]) / multiplier[penalized]).max() / params.alpha
 
-        if params.lambda_log_scale:
+        if lambda_max == 0:
+            bl["lambda_"][:] = lambda_max
+        elif params.lambda_log_scale:
             bl["lambda_"][:] = np.flip(
                 np_logspace(
                     params.lambda_min * lambda_max,
@@ -693,6 +834,8 @@ def binomial_hsr(
             )
 
         _record_coefs(bl, bl_i, 0)
+        if not params.r_compatible:
+            bl["deviance"][0] = final_loss(y, row_indices, bl_i["eta"])
         bl["n_reject"][0] = ncol_used
         lstart = 1
 
@@ -737,6 +880,8 @@ def binomial_hsr(
                 stacklevel=3,
             )
         _record_coefs(bl, bl_i, il)
+        if not params.r_compatible:
+            bl["deviance"][il] = final_loss(y, row_indices, bl_i["eta"])
 
         t_end = time.process_time()
         logger.info(
@@ -759,16 +904,11 @@ def _record_coefs(bl, bl_i, il):
 @nb.njit(parallel=True, cache=True, nogil=True)
 def compute_z(X, row_indices, col_map, center, scale, s):  # pragma: no cover
     """Standardized score x_j'(y - p) / n for every used column."""
-    nrow = get_nrow(X, row_indices)
     s_sum = seqsum(s)
     z = np.zeros(len(col_map))
     for j in nb.prange(len(col_map)):
         jj = col_map[j]
-        if row_indices is None:
-            _sum = dot(X[:, jj], s)
-        else:
-            _sum = dot(X[row_indices, jj], s)
-        z[j] = (_sum - center[jj] * s_sum) / (scale[jj] * nrow)
+        z[j] = standardized_score(X, jj, row_indices, s, s_sum, center[jj], scale[jj])
     return z
 
 

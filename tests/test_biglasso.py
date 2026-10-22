@@ -114,9 +114,8 @@ def test_predict_subsets(path, data):
 def test_score(path, data):
     metrics = pytest.importorskip("sklearn.metrics")
     X, y = data
-    # -- deviance on the training data matches the path's own, which is
-    #    measured just before the last coordinate-descent sweep
-    np.testing.assert_allclose(path.score(X, y), path.deviance, rtol=1e-4)
+    # -- default-mode deviance describes the returned model, after its last sweep
+    np.testing.assert_allclose(path.score(X, y), path.deviance, rtol=1e-12)
     eta = path.decision_function(X)
     auc = [metrics.roc_auc_score(y, eta[:, k]) for k in range(1, len(path))]
     np.testing.assert_allclose(path.score(X, y, "auc")[1:], auc)
