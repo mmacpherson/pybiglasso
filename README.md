@@ -2,20 +2,21 @@
 
 **Lasso and elastic-net logistic regression for data larger than memory.**
 
-pybiglasso fits the whole regularization path of a penalized logistic regression
-on a design matrix that lives on disk. Point it at a numpy memmap and it reads
-one column at a time, never loading or copying the matrix, and uses strong-rule
-screening to skip most columns at most steps. Cross-validation works the same
-way: folds are row indices into the one matrix on disk.
+If your penalized regression runs out of memory, or you're renting a huge
+instance just to hold the data, pybiglasso fits it where the data already is:
+on disk. A 12 GB design matrix fits under a 3 GB memory limit, on an ordinary
+desktop, in under two minutes (see [Performance](#performance)).
+
+Save the matrix as a numpy memmap and pybiglasso fits the whole regularization
+path, with cross-validation to choose the penalty, without loading it into
+memory.
+
+It's also fast when the data does fit: along a full 100-step path, 2.3–5.5x
+faster than R biglasso and 4–6x faster than skglm.
 
 It is an unofficial Python port of the R package
 [biglasso](https://github.com/pbreheny/biglasso), and reproduces its results to
-floating-point precision: coefficients typically agree to about 1e-15, and never
-by worse than about 1e-12 (see [Validation](#validation)).
-
-It's also fast in memory. Along a full 100-step path, pybiglasso is 2.3–5.5x
-faster than R biglasso and 4–6x faster than skglm. glum, even with every core,
-and scikit-learn take 10x as long or more (see [Performance](#performance)).
+floating-point precision (see [Validation](#validation)).
 
 ## Install
 
@@ -216,6 +217,10 @@ pybiglasso matches R biglasso except where R's behavior looks unintended:
   saturation cutoff.
 
 ## Threads, cross-validation, and storage
+
+pybiglasso reads the matrix one column at a time, through the memmap, and
+never loads or copies it; strong-rule screening skips most columns at most
+steps. Cross-validation folds are row indices into the same matrix on disk.
 
 - **A single fit is effectively single-threaded**, as is R biglasso's.
   Coordinate descent updates one coefficient at a time, and that sequential
