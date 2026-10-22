@@ -34,6 +34,21 @@ read_design <- function(case_dir, n, p, filebacked) {
   bm
 }
 
+# -- this process's cgroup v2 memory accounting. Only meaningful in a container
+#    (whose /sys/fs/cgroup is its own cgroup), so only read when params.json
+#    asks for it, as benchmarks/out_of_core.py does.
+cgroup_memory <- function() {
+  base <- "/sys/fs/cgroup"
+  stat <- read.table(file.path(base, "memory.stat"), col.names = c("key", "value"))
+  value <- function(key) as.numeric(stat$value[stat$key == key])
+  list(
+    peak = as.numeric(readLines(file.path(base, "memory.peak"))),
+    max = readLines(file.path(base, "memory.max")),
+    refaults = value("workingset_refault_file"),
+    major_faults = value("pgmajfault")
+  )
+}
+
 fit_case <- function(case_dir) {
   prm <- fromJSON(file.path(case_dir, "params.json"), simplifyVector = TRUE)
   n <- prm$nrow
@@ -56,6 +71,7 @@ fit_case <- function(case_dir) {
   if (!is.null(prm$dfmax)) args$dfmax <- prm$dfmax
 
   warns <- character()
+  if (isTRUE(prm$cgroup_stats)) before <- cgroup_memory()
   elapsed <- system.time(
     fit <- withCallingHandlers(
       do.call(biglasso, args),
@@ -66,6 +82,7 @@ fit_case <- function(case_dir) {
     )
   )[["elapsed"]]
 
+  if (isTRUE(prm$cgroup_stats)) after <- cgroup_memory()
   beta <- as.matrix(fit$beta)
   out <- list(
     biglasso_version = as.character(packageVersion("biglasso")),
@@ -81,6 +98,17 @@ fit_case <- function(case_dir) {
     warnings = warns,
     seconds = elapsed
   )
+  if (isTRUE(prm$cgroup_stats)) {
+    page <- as.numeric(system("getconf PAGESIZE", intern = TRUE))
+    out$cgroup <- list(
+      # -- the container's peak over its whole life, big.matrix setup included
+      peak_gb = after$peak / 1e9,
+      cap_gb = if (after$max == "max") NA else as.numeric(after$max) / 1e9,
+      # -- re-reads and major faults during the fit alone
+      refaulted_gb = (after$refaults - before$refaults) * page / 1e9,
+      major_faults = after$major_faults - before$major_faults
+    )
+  }
   writeLines(
     toJSON(out, digits = NA, auto_unbox = TRUE, na = "null"),
     file.path(case_dir, "out.json")

@@ -67,6 +67,7 @@ def write_params(workdir, nrow, ncol, nlambda, lambda_min):
         eps=1e-7,
         max_iter=1000,
         filebacked=True,
+        cgroup_stats=True,  # R reports its container's memory accounting
     )
     (pathlib.Path(workdir) / "params.json").write_text(json.dumps(params))
     return params
@@ -207,8 +208,10 @@ def run(args):
             image, "Rscript", str(script), str(workdir),
         ]  # fmt: skip
         evict_from_page_cache(workdir / "X.bin")
-        if (workdir / "X.bm").exists():
-            evict_from_page_cache(workdir / "X.bm")
+        # -- R builds its file-backed big.matrix from X.bin each run (timed in
+        #    wall_incl_filebacked_setup) and refuses to overwrite an old one
+        for stale in ("X.bm", "X.desc"):
+            (workdir / stale).unlink(missing_ok=True)
         t0 = time.perf_counter()
         subprocess.run(cmd, check=True)
         wall = time.perf_counter() - t0
@@ -217,8 +220,11 @@ def run(args):
         r = rcompare.load_r_output(workdir / "out.json")
         if "error" in r:
             sys.exit(f"R failed: {r['error']}")
+        raw = json.loads((workdir / "out.json").read_text())
         results["R biglasso"] = dict(
-            seconds=r["seconds"], wall_incl_filebacked_setup=wall
+            seconds=r["seconds"],
+            wall_incl_filebacked_setup=wall,
+            **raw.get("cgroup", {}),
         )
         ref = np.load(workdir / f"py-{args.threads[0]}.npz")
         py = dict(
@@ -230,8 +236,13 @@ def run(args):
             rejections=ref["rejections"],
             beta=np.vstack([ref["intercept"], ref["coef"]]),
         )
+        # -- pybiglasso's default deviance is the final model's; R's loss is
+        #    from before the final sweep (r_compatible=True would match it)
+        py["loss"] = r["loss"]
         problems = rcompare.compare(py, r)
-        results["agreement"] = problems or "agree (rtol=1e-9), identical iterations"
+        results["agreement"] = problems or (
+            "agree (rtol=1e-9), identical iterations; loss not compared"
+        )
 
     print(json.dumps(results, indent=2))
     out = HERE / "results" / f"out_of_core-{os.uname().nodename}.json"
