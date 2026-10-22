@@ -21,6 +21,7 @@ LABELS = {
     "glum": "glum",
     "sklearn-liblinear": "sklearn liblinear",
     "sklearn-saga": "sklearn saga",
+    "statsmodels": "statsmodels",
 }
 
 

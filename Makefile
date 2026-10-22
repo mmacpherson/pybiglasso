@@ -41,7 +41,7 @@ profile:
 	  run --sort tottime -l 15 benchmarks/profile_fit.py
 
 # -- the README's benchmark plot, from the committed results
-RESULTS = $(addprefix benchmarks/results/path,.jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -final.jsonl)
+RESULTS = $(addprefix benchmarks/results/path,.jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -statsmodels.jsonl -final.jsonl)
 
 docs/benchmarks.png: benchmarks/plot.py $(RESULTS)
 	uv run --group bench benchmarks/plot.py $(RESULTS) -o $@
