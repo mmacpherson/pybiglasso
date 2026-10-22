@@ -13,7 +13,9 @@ It is an unofficial Python port of the R package
 floating-point precision: coefficients typically agree to about 1e-15, and never
 by worse than about 1e-12 (see [Validation](#validation)).
 
-<!-- PERFORMANCE -->
+It's also fast in memory. Along a full 100-step path, pybiglasso is 2.3–6.1x
+faster than R biglasso and 4–7x faster than skglm. glum, even with every core,
+and scikit-learn take 10x as long or more (see [Performance](#performance)).
 
 ## Install
 
@@ -93,15 +95,15 @@ GPL-3 license. If you use it, please cite their paper (below).
 
 ## Validation
 
-Every push runs pybiglasso against stored R biglasso 1.4.1 output for 123
+Every push runs pybiglasso against stored R biglasso 1.4.1 output for 126
 configurations, comparing coefficients, deviance, the lambda grid, centering
 and scaling, strong-rule rejections, and the iteration count at every lambda,
 with `rtol=1e-9`.
-The grid covers wide and tall problems, genotype-like dosage data, memmaps,
+The grid covers wide and tall problems, genotype-like dosage data (including int8 and uint8 storage), memmaps,
 float32, row subsets, penalty factors (including zeros), user-supplied and
 linear lambda grids, `dfmax` truncation, and saturation. A weekly job reruns the
 grid live against R biglasso 1.4.1 and current CRAN (1.7.2 at last count); both
-agree on all 123.
+agree on all 126.
 
 The lasso also agrees with scikit-learn's `saga` solver to about 1e-7, and the
 elastic net to about 1e-6.
@@ -112,6 +114,71 @@ make test-r                 # live, in a container (CONTAINER=podman works too)
 make test-r R_VERSION=latest
 make soak                   # larger memory-mapped problems; for a big machine
 ```
+
+## Performance
+
+These benchmarks measure speed only. Correctness is established separately,
+against R biglasso itself (see [Validation](#validation)). Each solver fits the
+same problem along the same 100-value lambda path, at its own default
+tolerance, and its accuracy is reported alongside its time. Machine: AMD Ryzen 5
+5600X (6 cores, 12 threads) and 64 GB of RAM, with Python 3.14 and R 4.6.1. Each
+time is the best of 3 runs. Every multithreaded solver is shown at its fastest
+thread count: 1, 6, or 12. The scripts and raw results are in
+[`benchmarks/`](benchmarks/).
+
+![Time relative to pybiglasso, by dataset and solver](docs/benchmarks.png)
+
+**Other Python solvers.** Each competitor was stopped once it took 10x as long
+as pybiglasso, which would otherwise have stretched the run to many hours. Only
+skglm (lasso only) finishes within that on every dataset, at 4–7x. To show how
+large the gaps get, the smallest problem (5,000 x 1,000) also ran with no cap:
+
+| Solver | Lasso | Elastic net (α=0.5) | Worst relative suboptimality |
+|---|---|---|---|
+| pybiglasso | 0.74 s | 0.70 s | 1e-6 |
+| pybiglasso, `eps=1e-10` | 1.66 s | 1.56 s | 3e-10 |
+| skglm | 4.1 s (5.5x) | — | 2e-4 |
+| glum, 6 threads | 9.6 s (13x) | 10.9 s (16x) | 6e-9 |
+| sklearn liblinear | 20.5 s (28x) | — | 5e-6 |
+| sklearn saga | 90.7 s (122x) | 94.8 s (135x) | 1e-5 |
+
+**R biglasso 1.7.2.** Both packages fit identical paths. Times are in seconds;
+"best" is each package at its fastest thread count. For elastic net, R ran with
+its own update (see [Differences](#differences-from-r-biglasso)), and
+pybiglasso with the corrected one; with `r_compatible=True` pybiglasso is
+1–20% slower.
+
+| Dataset | Penalty | pybiglasso, 1 thread | R, 1 thread | pybiglasso, best | R, best | Speedup (best) |
+|---|---|---|---|---|---|---|
+| 5,000 x 1,000 | lasso | 0.74 | 4.06 | 0.64 | 3.92 | 6.1x |
+| 5,000 x 1,000 | elastic net | 0.74 | 4.17 | 0.72 | 4.04 | 5.6x |
+| 50,000 x 2,000 | lasso | 10.4 | 55.7 | 10.4 | 54.1 | 5.2x |
+| 50,000 x 2,000 | elastic net | 10.4 | 56.1 | 10.4 | 52.9 | 5.1x |
+| 2,000 x 20,000 | lasso | 1.26 | 4.71 | 1.09 | 2.90 | 2.7x |
+| 2,000 x 20,000 | elastic net | 1.28 | 4.80 | 1.14 | 2.99 | 2.6x |
+| 5,000 x 50,000 | lasso | 7.50 | 27.2 | 6.62 | 15.5 | 2.3x |
+| 5,000 x 50,000 | elastic net | 7.55 | 27.5 | 6.74 | 15.9 | 2.4x |
+
+R's adaptive screening rule is no faster than SSR on these problems.
+
+**Out of core.** This test fits a 12 GB float64 matrix (20,000 x 75,000) with
+memory capped at 3 GB. pybiglasso read a numpy memmap and was capped by a
+cgroup; R read a file-backed `big.matrix` under `docker --memory 3G`. Before
+each run, the matrix was evicted from the page cache. Both fit the same
+20-lambda lasso path and agree to 1e-9, with identical iteration counts.
+
+| | Time | Peak memory | Re-read from disk |
+|---|---|---|---|
+| pybiglasso, 1 thread | 107 s | 3.2 GB (at the cap) | 7.8 GB |
+| pybiglasso, 6 threads | 134 s | 3.2 GB (at the cap) | 17.5 GB |
+| R biglasso 1.7.2 | 189 s, plus 46 s to build the `big.matrix` | not measured | not measured |
+
+Under a tight cap, extra threads hurt: they evict pages each other still need.
+
+**Not compared.** RAPIDS cuML fits elastic-net logistic regression on a GPU,
+but only on data that fits in GPU memory, so it isn't an out-of-core
+alternative. benchopt's logistic-regression benchmark fits without an intercept
+or standardization, which pybiglasso doesn't support yet.
 
 ## Differences from R biglasso
 
@@ -135,13 +202,57 @@ pybiglasso matches R biglasso except where R's behavior looks unintended:
 - `stop_on_saturation=False` (not in R) fits every lambda, even past R's
   saturation cutoff.
 
+## Threads, cross-validation, and storage
+
+- **A single fit is effectively single-threaded**, as is R biglasso's.
+  Coordinate descent updates one coefficient at a time, and the strong-rule
+  scans that do run in parallel (`n_threads=`) are limited by memory bandwidth
+  more than by cores. Out of core, threads can help when memory to spare
+  holds the page cache, by keeping more disk reads in flight. Under a tight
+  memory limit they hurt (see [Performance](#performance)), so use
+  `n_threads=1` there. Results are bit-identical at any thread count.
+- **Cross-validation scales with cores.** `BiglassoClassifierCV(n_jobs=...)`
+  fits folds in parallel threads that share one X (and, for a memmap, one page
+  cache); results don't depend on `n_jobs`.
+- **Store genotypes compactly.** Since the work is mostly moving bytes, a
+  narrower dtype is faster: hard-called genotypes as `int8` or `uint8` take 8x
+  less memory and disk than float64, and fit about 2.5x faster, with the same
+  results to about 1e-13. `float32` dosages halve both.
+
+## How the code is organized
+
+R biglasso implements each family and screening rule as a single C++ function
+that runs the whole algorithm top to bottom: standardize, set up the lambda
+grid, then the coordinate-descent loop and its KKT checks at each lambda. That
+keeps each entry point self-contained and close to the algorithm as written in
+the papers.
+
+pybiglasso splits the same algorithm into one small numba kernel per step, each
+documenting the state it changes, plus a short driver, `_fit_lambda`, that reads
+like the algorithm's outline. To my eye that's easier to read, test, and modify.
+It's a matter of taste, though; some excellent programmers prefer the long
+inlined function you can read straight through (John Carmack has
+[a good essay](http://number-none.com/blow/john_carmack_on_inlined_code.html) on
+why). The split costs nothing at runtime: the kernels compile to native code,
+and the solver takes exactly the same iterations as R's.
+
+| pybiglasso (`src/pybiglasso/binomial.py`) | R biglasso 1.4.1 (`src/`) |
+|---|---|
+| `center_scale`, `build_sum_xy` | `standardize_and_get_residual` (utilities.cpp) |
+| `update_probs` | probability and weight update in `cdfit_binomial_ssr` (binomial.cpp) |
+| `update_intercept` | intercept update in `cdfit_binomial_ssr` |
+| `update_weights` (`column_moments`, `apply_shift`) | coordinate loop in `cdfit_binomial_ssr`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
+| `check_strong_set`, `check_rest` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
+| `binomial_hsr`, `_fit_lambda` | the lambda loop of `cdfit_binomial_ssr` |
+
 ## Scope
 
 - Binomial (logistic) family only; R's Gaussian and Cox families are not ported.
-- The SSR (sequential strong rule) screening; R's newer Hybrid and Adaptive
-  rules are not ported.
-- Single-threaded.
-- The first call in a session pays a few seconds of numba compilation.
+- SSR (sequential strong rule) screening only. R uses its newer Hybrid and
+  Adaptive rules only for the plain lasso without penalty factors, and they
+  were no faster than SSR on our benchmarks.
+- The first call in a session pays a few seconds of numba compilation; after
+  that, compiled kernels are cached on disk.
 
 ## Citation
 

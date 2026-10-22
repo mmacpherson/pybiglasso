@@ -31,6 +31,12 @@ fixtures:
 	$(MAKE) r-image R_VERSION=4.0.3
 	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:1.4.1 uv run python scripts/make_r_fixtures.py
 
+# -- the README's benchmark plot, from the committed results
+RESULTS = $(addprefix benchmarks/results/path,.jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl)
+
+docs/benchmarks.png: benchmarks/plot.py $(RESULTS)
+	uv run --group bench benchmarks/plot.py $(RESULTS) -o $@
+
 .PHONY: build
 build:
 	uv build
