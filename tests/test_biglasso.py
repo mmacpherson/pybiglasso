@@ -7,6 +7,21 @@ import scipy.sparse as sps
 import pybiglasso as bl
 
 
+def saga(sklm, C, l1_ratio):
+    """sklearn's saga at the given elastic-net mix, tightly converged.
+
+    Before scikit-learn 1.8, l1_ratio is ignored unless penalty="elasticnet";
+    from 1.8 the penalty argument is deprecated and l1_ratio sets the mix.
+    """
+    import sklearn
+
+    major, minor = (int(v) for v in sklearn.__version__.split(".")[:2])
+    extra = {} if (major, minor) >= (1, 8) else {"penalty": "elasticnet"}
+    return sklm.LogisticRegression(
+        C=C, l1_ratio=l1_ratio, solver="saga", tol=1e-12, max_iter=200_000, **extra
+    )
+
+
 @pytest.fixture(scope="module")
 def data():
     d = bl.common.generate_test_data(300, 12, seed=3)
@@ -51,9 +66,7 @@ def test_lasso_matches_independent_solver(data):
     p = bl.biglasso(X, y, alpha=1.0, nlambda=8, lambda_min=0.02, eps=1e-12)
     for k in (2, 4, 7):
         lam = p.lambdas[k]
-        sk = sklm.LogisticRegression(
-            C=1 / (n * lam), l1_ratio=1.0, solver="saga", tol=1e-12, max_iter=200_000
-        ).fit((X - X.mean(axis=0)) / sd, y)
+        sk = saga(sklm, C=1 / (n * lam), l1_ratio=1.0).fit((X - X.mean(axis=0)) / sd, y)
         np.testing.assert_allclose(
             p.coef[:, [k]].toarray().ravel() * sd, sk.coef_.ravel(), atol=1e-5
         )
@@ -69,13 +82,7 @@ def test_elastic_net_matches_independent_solver(data, alpha):
     p = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-12)
     r = bl.biglasso(X, y, alpha=alpha, lambdas=p.lambdas, eps=1e-12, r_compatible=True)
     for k in (2, 4, 7):
-        sk = sklm.LogisticRegression(
-            C=1 / (n * p.lambdas[k]),
-            l1_ratio=alpha,
-            solver="saga",
-            tol=1e-12,
-            max_iter=200_000,
-        ).fit(Xs, y)
+        sk = saga(sklm, C=1 / (n * p.lambdas[k]), l1_ratio=alpha).fit(Xs, y)
         ours = p.coef[:, [k]].toarray().ravel() * sd
         np.testing.assert_allclose(ours, sk.coef_.ravel(), atol=1e-5)
         # -- R's update solves a different problem, measurably so
