@@ -40,7 +40,7 @@ jobs:
         run: |
           uv run ruff check src tests
           uv run ruff format --check src tests
-      - name: Tests (against stored R biglasso 1.4.1 output)
+      - name: Tests (against stored R biglasso 1.7.2 output)
         run: uv run pytest
 
   latest-deps:

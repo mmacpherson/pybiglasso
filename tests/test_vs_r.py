@@ -1,6 +1,6 @@
 """Agreement with R biglasso, in three tiers.
 
-- default: compare against stored R biglasso 1.4.1 output (no R needed)
+- default: compare against stored R biglasso 1.7.2 output (no R needed)
 - `-m r`: run the same grid live in R (Rscript, or CONTAINER + R_IMAGE)
 - `-m soak`: larger memory-mapped problems, live in R; meant for a beefy box
 """

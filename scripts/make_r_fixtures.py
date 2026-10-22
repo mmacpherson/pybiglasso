@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Fit the fast comparison grid in R and store the results as test fixtures.
 
-    CONTAINER=docker R_IMAGE=pybiglasso-r:1.4.1 uv run scripts/make_r_fixtures.py
+    make fixtures     # builds the pinned R image, then runs this
 
-Fixtures are always generated against R biglasso 1.4.1, the version pybiglasso
-was ported from. Prints any disagreements with the current Python fits.
+Fixtures come from R biglasso FIXTURES_BIGLASSO, pinned through the R
+release whose package snapshot installs it (FIXTURES_R in the Makefile).
+Prints any disagreements with the current Python fits.
 """
 
 import pathlib
@@ -14,6 +15,8 @@ import tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "tests"))
 
 import rcompare  # noqa: E402
+
+FIXTURES_BIGLASSO = "1.7.2"
 
 
 def main():
@@ -37,8 +40,8 @@ def main():
         sys.exit(f"{len(errors)} cases failed in R; no fixtures written")
 
     versions = {r["biglasso_version"] for r in r_outputs}
-    if versions != {"1.4.1"}:
-        sys.exit(f"Fixtures must come from biglasso 1.4.1, got {versions}")
+    if versions != {FIXTURES_BIGLASSO}:
+        sys.exit(f"Fixtures must come from biglasso {FIXTURES_BIGLASSO}, got {versions}")
 
     failures = 0
     for case, (py, _, _), r in zip(cases, prepared, r_outputs, strict=True):

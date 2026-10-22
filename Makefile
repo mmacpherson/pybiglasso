@@ -10,8 +10,10 @@ lint:
 
 # -- R comparisons; set CONTAINER=podman to use podman instead
 CONTAINER ?= docker
-R_VERSION ?= 4.0.3
-R_TAG = $(if $(filter latest,$(R_VERSION)),latest,1.4.1)
+R_VERSION ?= latest
+R_TAG = $(if $(filter latest,$(R_VERSION)),latest,r$(R_VERSION))
+# -- the R release whose package snapshot made tests/fixtures (biglasso 1.7.2)
+FIXTURES_R = 4.6.1
 R_ENV = CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:$(R_TAG)
 
 .PHONY: r-image
@@ -28,8 +30,8 @@ soak: r-image
 
 .PHONY: fixtures
 fixtures:
-	$(MAKE) r-image R_VERSION=4.0.3
-	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:1.4.1 uv run python scripts/make_r_fixtures.py
+	$(MAKE) r-image R_VERSION=$(FIXTURES_R)
+	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:r$(FIXTURES_R) uv run python scripts/make_r_fixtures.py
 
 # -- where a fit spends its time, with Python 3.15's sampling profiler; runs in
 #    an isolated environment so the project's .venv keeps its Python

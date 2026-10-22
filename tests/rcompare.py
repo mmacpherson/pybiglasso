@@ -343,7 +343,7 @@ def run_r(case_dirs):
     case_dirs = [pathlib.Path(d).absolute() for d in case_dirs]
     container = os.environ.get("CONTAINER")
     if container:
-        image = os.environ.get("R_IMAGE", "pybiglasso-r:1.4.1")
+        image = os.environ.get("R_IMAGE", "pybiglasso-r:latest")
         cmd = [container, "run", "--rm"]
         if pathlib.Path(container).name == "docker":
             cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
