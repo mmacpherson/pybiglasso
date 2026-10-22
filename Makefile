@@ -31,6 +31,13 @@ fixtures:
 	$(MAKE) r-image R_VERSION=4.0.3
 	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:1.4.1 uv run python scripts/make_r_fixtures.py
 
+# -- where a fit spends its time, with Python 3.15's sampling profiler; runs in
+#    an isolated environment so the project's .venv keeps its Python
+.PHONY: profile
+profile:
+	uv run --python 3.15 --isolated --with-editable . python -m profiling.sampling \
+	  run --sort tottime -l 15 benchmarks/profile_fit.py
+
 # -- the README's benchmark plot, from the committed results
 RESULTS = $(addprefix benchmarks/results/path,.jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl)
 

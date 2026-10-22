@@ -126,7 +126,7 @@ time is the best of 3 runs. Every multithreaded solver is shown at its fastest
 thread count: 1, 6, or 12. The scripts and raw results are in
 [`benchmarks/`](benchmarks/).
 
-![Time relative to pybiglasso, by dataset and solver](docs/benchmarks.png)
+![Time relative to pybiglasso, by dataset and solver](https://raw.githubusercontent.com/mmacpherson/pybiglasso/v0.1.0/docs/benchmarks.png)
 
 **Other Python solvers.** Each competitor was stopped once it took 10x as long
 as pybiglasso, which would otherwise have stretched the run to many hours. Only
@@ -198,16 +198,29 @@ pybiglasso matches R biglasso except where R's behavior looks unintended:
 - **Default `lambda_min`.** R chooses 0.001 or 0.05 by comparing `nrow(X)` with
   `ncol(X)`; pybiglasso compares the number of rows actually fit, which differs
   when `row_indices` is given.
-- `deviance` is the deviance, -2 log-likelihood; R's `loss` is half of that.
+- **Data far from zero.** On columns whose mean is large relative to their
+  spread (say, values near 1e8 that vary by 1), R biglasso's standardization
+  loses precision (its scales come out wrong, even NaN), and it silently
+  returns a wrong fit. pybiglasso detects the cancellation and recomputes those columns'
+  moments centered, so a constant shift of X doesn't change the solution.
+- **Invalid input is an error.** NaN or infinite values in the rows being fit,
+  and non-finite penalty factors or lambdas, raise `ValueError` instead of
+  quietly dropping a column or returning the null model.
+- `deviance` is the deviance, -2 log-likelihood, of the returned model; R's
+  `loss` is half of that, and is computed before the final coordinate sweep,
+  with probabilities clipped at 0 and 1 (so it can be infinite).
+  `r_compatible=True` keeps R's version.
 - `stop_on_saturation=False` (not in R) fits every lambda, even past R's
   saturation cutoff.
 
 ## Threads, cross-validation, and storage
 
 - **A single fit is effectively single-threaded**, as is R biglasso's.
-  Coordinate descent updates one coefficient at a time, and the strong-rule
-  scans that do run in parallel (`n_threads=`) are limited by memory bandwidth
-  more than by cores. Out of core, threads can help when memory to spare
+  Coordinate descent updates one coefficient at a time, and that sequential
+  sweep is most of the work: profiling an elastic-net path on 5,000 x 1,000
+  puts over 80% of the time in it, against 1-2% in the strong-rule and KKT
+  scans that run in parallel (`n_threads=`). `make profile` reproduces this
+  with Python 3.15's sampling profiler. Out of core, threads can help when memory to spare
   holds the page cache, by keeping more disk reads in flight. Under a tight
   memory limit they hurt (see [Performance](#performance)), so use
   `n_threads=1` there. Results are bit-identical at any thread count.
@@ -236,9 +249,17 @@ inlined function you can read straight through (John Carmack has
 why). The split costs nothing at runtime: the kernels compile to native code,
 and the solver takes exactly the same iterations as R's.
 
+The kernels also lean on numpy expressions, which numba compiles, where the
+C++ writes out loops: a column's score is `X[:, j] @ s` rather than a loop
+over rows, and the strong rule is one mask over all columns. Explicit loops
+remain where they pay their way: where the arithmetic branches, where one pass
+can compute several sums at once, and where a fixed summation order keeps
+results identical at any thread count (hence the small `dot` and `seqsum`
+kernels in place of `@` and `.sum()`).
+
 | pybiglasso (`src/pybiglasso/binomial.py`) | R biglasso 1.4.1 (`src/`) |
 |---|---|
-| `center_scale`, `build_sum_xy` | `standardize_and_get_residual` (utilities.cpp) |
+| `center_scale`, `compute_z` | `standardize_and_get_residual` (utilities.cpp) |
 | `update_probs` | probability and weight update in `cdfit_binomial_ssr` (binomial.cpp) |
 | `update_intercept` | intercept update in `cdfit_binomial_ssr` |
 | `update_weights` (`column_moments`, `apply_shift`) | coordinate loop in `cdfit_binomial_ssr`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
