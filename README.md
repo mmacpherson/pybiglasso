@@ -13,8 +13,8 @@ It is an unofficial Python port of the R package
 floating-point precision: coefficients typically agree to about 1e-15, and never
 by worse than about 1e-12 (see [Validation](#validation)).
 
-It's also fast in memory. Along a full 100-step path, pybiglasso is 2.3–6.1x
-faster than R biglasso and 4–7x faster than skglm. glum, even with every core,
+It's also fast in memory. Along a full 100-step path, pybiglasso is 2.3–5.5x
+faster than R biglasso and 4–6x faster than skglm. glum, even with every core,
 and scikit-learn take 10x as long or more (see [Performance](#performance)).
 
 ## Install
@@ -130,50 +130,52 @@ thread count: 1, 6, or 12. The scripts and raw results are in
 
 **Other Python solvers.** Each competitor was stopped once it took 10x as long
 as pybiglasso, which would otherwise have stretched the run to many hours. Only
-skglm (lasso only) finishes within that on every dataset, at 4–7x. To show how
+skglm (lasso only) finishes within that on every dataset, at 4–6x. To show how
 large the gaps get, the smallest problem (5,000 x 1,000) also ran with no cap:
 
 | Solver | Lasso | Elastic net (α=0.5) | Worst relative suboptimality |
 |---|---|---|---|
-| pybiglasso | 0.74 s | 0.70 s | 1e-6 |
-| pybiglasso, `eps=1e-10` | 1.66 s | 1.56 s | 3e-10 |
-| skglm | 4.1 s (5.5x) | — | 2e-4 |
-| glum, 6 threads | 9.6 s (13x) | 10.9 s (16x) | 6e-9 |
-| sklearn liblinear | 20.5 s (28x) | — | 5e-6 |
-| sklearn saga | 90.7 s (122x) | 94.8 s (135x) | 1e-5 |
+| pybiglasso | 0.71 s | 0.74 s | 1e-6 |
+| pybiglasso, `eps=1e-10` | 1.62 s | 1.54 s | 3e-10 |
+| skglm | 4.1 s (6x) | — | 2e-4 |
+| glum, 6 threads | 9.6 s (14x) | 10.9 s (15x) | 6e-9 |
+| sklearn liblinear | 20.5 s (29x) | — | 5e-6 |
+| sklearn saga | 90.7 s (128x) | 94.8 s (128x) | 1e-5 |
 
 **R biglasso 1.7.2.** Both packages fit identical paths. Times are in seconds;
 "best" is each package at its fastest thread count. For elastic net, R ran with
 its own update (see [Differences](#differences-from-r-biglasso)), and
-pybiglasso with the corrected one; with `r_compatible=True` pybiglasso is
-1–20% slower.
+pybiglasso with the corrected one; `r_compatible=True` is within about 20%
+of the default's time.
 
 | Dataset | Penalty | pybiglasso, 1 thread | R, 1 thread | pybiglasso, best | R, best | Speedup (best) |
 |---|---|---|---|---|---|---|
-| 5,000 x 1,000 | lasso | 0.74 | 4.06 | 0.64 | 3.92 | 6.1x |
-| 5,000 x 1,000 | elastic net | 0.74 | 4.17 | 0.72 | 4.04 | 5.6x |
-| 50,000 x 2,000 | lasso | 10.4 | 55.7 | 10.4 | 54.1 | 5.2x |
-| 50,000 x 2,000 | elastic net | 10.4 | 56.1 | 10.4 | 52.9 | 5.1x |
-| 2,000 x 20,000 | lasso | 1.26 | 4.71 | 1.09 | 2.90 | 2.7x |
-| 2,000 x 20,000 | elastic net | 1.28 | 4.80 | 1.14 | 2.99 | 2.6x |
-| 5,000 x 50,000 | lasso | 7.50 | 27.2 | 6.62 | 15.5 | 2.3x |
-| 5,000 x 50,000 | elastic net | 7.55 | 27.5 | 6.74 | 15.9 | 2.4x |
+| 5,000 x 1,000 | lasso | 0.77 | 4.06 | 0.71 | 3.92 | 5.5x |
+| 5,000 x 1,000 | elastic net | 0.74 | 4.17 | 0.74 | 4.04 | 5.5x |
+| 50,000 x 2,000 | lasso | 11.5 | 55.7 | 10.6 | 54.1 | 5.1x |
+| 50,000 x 2,000 | elastic net | 11.7 | 56.1 | 10.6 | 52.9 | 5.0x |
+| 2,000 x 20,000 | lasso | 1.33 | 4.71 | 1.13 | 2.90 | 2.6x |
+| 2,000 x 20,000 | elastic net | 1.35 | 4.80 | 1.15 | 2.99 | 2.6x |
+| 5,000 x 50,000 | lasso | 8.61 | 27.2 | 6.86 | 15.5 | 2.3x |
+| 5,000 x 50,000 | elastic net | 8.05 | 27.5 | 6.86 | 15.9 | 2.3x |
 
 R's adaptive screening rule is no faster than SSR on these problems.
 
 **Out of core.** This test fits a 12 GB float64 matrix (20,000 x 75,000) with
-memory capped at 3 GB. pybiglasso read a numpy memmap and was capped by a
-cgroup; R read a file-backed `big.matrix` under `docker --memory 3G`. Before
-each run, the matrix was evicted from the page cache. Both fit the same
-20-lambda lasso path and agree to 1e-9, with identical iteration counts.
+memory capped at 3 GB. pybiglasso read a numpy memmap under a cgroup memory
+limit; R read a file-backed `big.matrix` in a container with the same limit,
+and both were measured from their cgroup's accounting. Before each run, the
+matrix was evicted from the page cache. Both fit the same 20-lambda lasso path
+and agree to 1e-9, with identical iteration counts.
 
-| | Time | Peak memory | Re-read from disk |
+| | Fit time | Peak memory | Re-read from disk during the fit |
 |---|---|---|---|
-| pybiglasso, 1 thread | 107 s | 3.2 GB (at the cap) | 7.8 GB |
-| pybiglasso, 6 threads | 134 s | 3.2 GB (at the cap) | 17.5 GB |
-| R biglasso 1.7.2 | 189 s, plus 46 s to build the `big.matrix` | not measured | not measured |
+| pybiglasso, 1 thread | 108 s | 3.2 GB (at the cap) | 8.6 GB |
+| pybiglasso, 6 threads | 137 s | 3.2 GB (at the cap) | 16.0 GB |
+| R biglasso 1.7.2 | 182 s, plus 43 s to build the `big.matrix` | 3.2 GB (at the cap) | 16.5 GB |
 
-Under a tight cap, extra threads hurt: they evict pages each other still need.
+Under the same limit, R re-reads about twice as much of the matrix from disk.
+Extra threads hurt here: they evict pages each other still need.
 
 **Not compared.** RAPIDS cuML fits elastic-net logistic regression on a GPU,
 but only on data that fits in GPU memory, so it isn't an out-of-core

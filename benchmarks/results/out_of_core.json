@@ -4,13 +4,13 @@
   "gb": 12.0,
   "mem": "3G",
   "pybiglasso threads=1": {
-    "seconds": 106.89144439797383,
-    "read_gb": 20.540317696,
-    "max_rss_gb": 12.311128,
+    "seconds": 108.06364971399307,
+    "read_gb": 20.68432896,
+    "max_rss_gb": 3.232928,
     "cap_gb": 3.221225472,
     "peak_gb": 3.221225472,
-    "major_faults": 23308,
-    "refaulted_gb": 7.832215552,
+    "major_faults": 24065,
+    "refaulted_gb": 8.583553024,
     "threads": 1,
     "n_nonzero": [
       0,
@@ -36,13 +36,13 @@
     ]
   },
   "pybiglasso threads=6": {
-    "seconds": 134.30904120602645,
-    "read_gb": 28.435972096,
-    "max_rss_gb": 12.311128,
+    "seconds": 137.18006084201625,
+    "read_gb": 28.700418048,
+    "max_rss_gb": 3.215116,
     "cap_gb": 3.221225472,
     "peak_gb": 3.221225472,
-    "major_faults": 59240,
-    "refaulted_gb": 17.495351296,
+    "major_faults": 60373,
+    "refaulted_gb": 15.982436352,
     "threads": 6,
     "n_nonzero": [
       0,
@@ -68,8 +68,12 @@
     ]
   },
   "R biglasso": {
-    "seconds": 188.805,
-    "wall_incl_filebacked_setup": 234.54971312300768
+    "seconds": 181.61,
+    "wall_incl_filebacked_setup": 224.27037728205323,
+    "peak_gb": 3.221225472,
+    "cap_gb": 3.221225472,
+    "refaulted_gb": 16.525672448,
+    "major_faults": 48912
   },
-  "agreement": "agree (rtol=1e-9), identical iterations"
+  "agreement": "agree (rtol=1e-9), identical iterations; loss not compared"
 }
