@@ -53,7 +53,7 @@ Homepage = "https://github.com/mmacpherson/pybiglasso"
 
 [dependency-groups]
 dev = ["pytest", "pytest-cov", "ruff", "pybiglasso[all]"]
-bench = ["glum", "skglm", "scikit-learn", "benchopt", "seaborn"]
+bench = ["glum", "skglm", "scikit-learn", "statsmodels", "benchopt", "seaborn"]
 
 [tool.hatch.build.targets.sdist]
 exclude = ["/benchmarks/results", "/docs", "/.github"]

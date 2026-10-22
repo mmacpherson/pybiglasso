@@ -44,16 +44,19 @@ SOLVERS = [
     "skglm",
     "sklearn-liblinear",
     "sklearn-saga",
+    "statsmodels",
 ]
 TIMING_START = "--timing-start--"
 # -- lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
-LASSO_ONLY = {"skglm", "sklearn-liblinear", "r-biglasso-adaptive"}
+LASSO_ONLY = {"skglm", "sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
 # -- R's elastic-net update; identical to pybiglasso's for the lasso
 ENET_ONLY = {"pybiglasso-rcompat"}
 # -- these run R in a container; their time is R's own system.time() of the fit
 R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive"}
 # -- these don't use more than one thread; running them at more is redundant
 SINGLE_THREADED = {"skglm", "sklearn-liblinear", "sklearn-saga"}
+# -- statsmodels' L1 fit needs memory quadratic in the column count
+STATSMODELS_MAX_GB = 8
 
 
 # -- data -----------------------------------------------------------------
@@ -167,6 +170,33 @@ def fit_sklearn_saga(X, Xs, y, lambdas, alpha, threads):
     return _fit_sklearn("saga", Xs, y, lambdas, alpha)
 
 
+def fit_statsmodels(X, Xs, y, lambdas, alpha, threads):
+    import numpy as np
+    import statsmodels.api as sm
+
+    n, p = Xs.shape
+    model = sm.Logit(y, np.column_stack([np.ones(n), Xs]))
+    coefs, intercepts, start = [], [], None
+    for lam in lambdas:
+        # -- statsmodels penalizes the summed log-likelihood, per coefficient;
+        #    n * lambda matches the mean-scaled objective. Intercept unpenalized.
+        weights = np.full(p + 1, n * lam)
+        weights[0] = 0.0
+        res = model.fit_regularized(
+            method="l1", alpha=weights, start_params=start, disp=False
+        )
+        start = res.params
+        coefs.append(res.params[1:].copy())
+        intercepts.append(float(res.params[0]))
+    return np.array(coefs), np.array(intercepts)
+
+
+def statsmodels_memory_gb(ncol):
+    """SLSQP, behind statsmodels' L1 fit, works with dense matrices over the
+    2p + 1 split variables."""
+    return (2 * ncol + 1) ** 2 * 8 / 1e9
+
+
 def fit_pybiglasso_tight(X, Xs, y, lambdas, alpha, threads):
     # -- R's default eps=1e-7 stops earlier than glum's default; this matches it
     return fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, eps=1e-10)
@@ -234,6 +264,7 @@ FITTERS = {
     "skglm": fit_skglm,
     "sklearn-liblinear": fit_sklearn_liblinear,
     "sklearn-saga": fit_sklearn_saga,
+    "statsmodels": fit_statsmodels,
 }
 
 
@@ -297,7 +328,15 @@ def environment():
     import importlib.metadata as md
 
     versions = {}
-    for pkg in ("pybiglasso", "numpy", "numba", "glum", "skglm", "scikit-learn"):
+    for pkg in (
+        "pybiglasso",
+        "numpy",
+        "numba",
+        "glum",
+        "skglm",
+        "scikit-learn",
+        "statsmodels",
+    ):
         try:
             versions[pkg] = md.version(pkg)
         except md.PackageNotFoundError:
@@ -368,6 +407,16 @@ def main():
                     if alpha < 1 and solver in LASSO_ONLY:
                         continue
                     if alpha == 1 and solver in ENET_ONLY:
+                        continue
+                    if (
+                        solver == "statsmodels"
+                        and statsmodels_memory_gb(X.shape[1]) > STATSMODELS_MAX_GB
+                    ):
+                        print(
+                            f"{dataset} alpha={alpha} statsmodels: skipped, needs "
+                            f"~{statsmodels_memory_gb(X.shape[1]):.0f} GB",
+                            flush=True,
+                        )
                         continue
                     for t in threads:
                         if solver in SINGLE_THREADED and t != min(threads):
