@@ -19,7 +19,8 @@ class BiglassoPath:
       lambdas: (nlambda,) penalty strengths, decreasing
       intercept: (nlambda,) intercept at each lambda
       coef: (ncol, nlambda) sparse coefficients, one column per lambda
-      deviance: (nlambda,) training deviance at each lambda
+      deviance: (nlambda,) training deviance, -2 log-likelihood, of the model at
+        each lambda (with r_compatible=True, R's pre-final-sweep value, doubled)
       iterations: (nlambda,) coordinate-descent iterations at each lambda
       n_rejected: (nlambda,) columns excluded by the strong rule at each lambda
       center, scale: (ncol,) column means and standard deviations of X
@@ -44,9 +45,14 @@ class BiglassoPath:
         return len(self.lambdas)
 
     def __repr__(self):
+        span = (
+            f" from {self.lambdas[0]:.3g} to {self.lambdas[-1]:.3g}"
+            if len(self)
+            else ""
+        )
         return (
-            f"BiglassoPath({self.coef.shape[0]} features, {len(self)} lambdas "
-            f"from {self.lambdas[0]:.3g} to {self.lambdas[-1]:.3g}, alpha={self.alpha})"
+            f"BiglassoPath({self.coef.shape[0]} features, {len(self)} lambdas"
+            f"{span}, alpha={self.alpha})"
         )
 
     @property
@@ -78,16 +84,9 @@ class BiglassoPath:
             raise ValueError(
                 f"X has {X.shape[1]} columns; the model was fit on {self.coef.shape[0]}."
             )
-        coef = self.coef[:, index]
-        used = np.unique(coef.indices)
-        nrow = X.shape[0] if row_indices is None else len(row_indices)
-        eta = np.broadcast_to(self.intercept[index], (nrow, len(index))).copy()
-        if len(used):
-            Xu = np.asarray(X[:, used], dtype=np.float64)
-            if row_indices is not None:
-                Xu = Xu[row_indices]
-            eta += Xu @ coef[used, :].toarray()
-        return eta
+        return linear_predictor(
+            X, self.coef[:, index], self.intercept[index], row_indices
+        )
 
     def predict_proba(self, X, lambdas=None, row_indices=None):
         """Probability that y == 1, shape (nrow, nlambda)."""
@@ -169,6 +168,44 @@ class BiglassoPath:
                 "to_pandas() needs pandas: pip install 'pybiglasso[pandas]'"
             ) from e
         return pd.DataFrame(self._frames()[kind])
+
+
+def linear_predictor(X, coef, intercept, row_indices=None):
+    """`X[row_indices] @ coef + intercept`, without copying X.
+
+    `coef` is (ncol, k), sparse or dense; `intercept` is (k,). Only the columns
+    with a nonzero coefficient are read, in blocks of rows and columns, so at
+    most CHUNK_ELEMENTS values of X are converted to float64 at once, whatever
+    X's dtype or size; coefficients stay sparse. Besides the (nrow, k) result,
+    that bounds the memory used. Raises ValueError if the values read aren't
+    all finite.
+    """
+    coef = sps.csc_array(coef)
+    used = np.unique(coef.indices)
+    nrow = X.shape[0] if row_indices is None else len(row_indices)
+    eta = np.broadcast_to(intercept, (nrow, coef.shape[1])).copy()
+    if len(used) == 0:
+        return eta
+    width = min(len(used), CHUNK_ELEMENTS)
+    height = CHUNK_ELEMENTS // width
+    for c0 in range(0, len(used), width):
+        cols = used[c0 : c0 + width]
+        beta = sps.csr_array(coef[cols, :])
+        for start in range(0, nrow, height):
+            stop = min(start + height, nrow)
+            if row_indices is None:
+                block = X[start:stop][:, cols]
+            else:
+                block = X[np.ix_(row_indices[start:stop], cols)]
+            block = np.asarray(block, dtype=np.float64)
+            if not np.isfinite(block).all():
+                raise ValueError("X contains NaN or infinity.")
+            eta[start:stop] += block @ beta
+    return eta
+
+
+# -- rows x columns of X gathered at once by `linear_predictor` (32 MB as float64)
+CHUNK_ELEMENTS = 1 << 22
 
 
 def _expit(x):

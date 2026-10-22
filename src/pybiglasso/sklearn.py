@@ -18,16 +18,32 @@ from sklearn.utils.multiclass import check_classification_targets, type_of_targe
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .binomial import biglasso
-from .path import METRICS, _expit
+from .path import METRICS, _expit, linear_predictor
 
 __all__ = ["BiglassoClassifier", "BiglassoClassifierCV"]
+
+
+def _as_design(X):
+    """X as the kernels read it: numeric dtypes and memmaps pass through uncopied.
+
+    Booleans become a uint8 view, and float16 becomes float32 (numba has no
+    float16 arithmetic); everything else numeric is used as is, so an int8
+    genotype memmap stays an int8 memmap. Finiteness is checked by `biglasso`
+    and `linear_predictor` as they read X, not by a separate pass here.
+    """
+    if X.dtype.kind == "b":
+        return X.view(np.uint8)
+    if X.dtype.kind == "f" and X.dtype.itemsize < 4:
+        return X.astype(np.float32)
+    return X
 
 
 class _BiglassoBase(ClassifierMixin, BaseEstimator):
     def _validate_xy(self, X, y):
         X, y = validate_data(
-            self, X, y, dtype=[np.float64, np.float32], order=None, copy=False
+            self, X, y, dtype="numeric", order=None, copy=False, ensure_all_finite=False
         )
+        X = _as_design(X)
         check_classification_targets(y)
         y_type = type_of_target(y, input_name="y", raise_unknown=True)
         if y_type != "binary":
@@ -55,10 +71,10 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
 
     def decision_function(self, X):
         check_is_fitted(self)
-        X = validate_data(
-            self, X, reset=False, dtype=[np.float64, np.float32], order=None
-        )
-        return X @ self.coef_[0] + self.intercept_[0]
+        # -- unlike fit, check every column for NaN/inf: scikit-learn requires it,
+        #    and for float X it costs one read (a sum), not a copy
+        X = validate_data(self, X, reset=False, dtype="numeric", order=None)
+        return linear_predictor(_as_design(X), self.coef_.T, self.intercept_)[:, 0]
 
     def predict(self, X):
         check_is_fitted(self)
@@ -203,6 +219,14 @@ class BiglassoClassifierCV(_BiglassoBase):
 
         splitter = check_cv(self.cv, y01, classifier=True)
         folds = list(splitter.split(np.zeros((len(y01), 1)), y01))
+        if self.scoring == "auc":
+            for k, (_, test) in enumerate(folds):
+                if len(np.unique(y01[test])) < 2:
+                    raise ValueError(
+                        f"The held-out rows of fold {k} are all one class, so AUC "
+                        "is undefined there; use fewer folds, a stratified "
+                        "splitter, or scoring='deviance'."
+                    )
         scores = np.full((len(folds), len(grid)), np.nan)
 
         def score_fold(fold):
