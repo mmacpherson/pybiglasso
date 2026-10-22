@@ -49,6 +49,9 @@ Homepage = "https://github.com/mmacpherson/pybiglasso"
 dev = ["pytest", "pytest-cov", "ruff", "pybiglasso[all]"]
 bench = ["glum", "skglm", "scikit-learn", "benchopt", "seaborn"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/benchmarks/results", "/docs", "/.github"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak'"
