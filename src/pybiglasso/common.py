@@ -70,13 +70,13 @@ def biglasso_generator(
     order_str = "F" if fortran_order else "C"
 
     while True:
-        # -- generate dosages array
+        # generate dosages array
         allele_frequencies = rng.beta(
             allele_frequency_alpha, allele_frequency_beta, size=len(weights)
         )
         dosages = rng.binomial(2, allele_frequencies, size=(nrow, len(weights)))
 
-        # -- generate response; effects act on dosage deviations from the mean
+        # generate response; effects act on dosage deviations from the mean
         probs = logit_to_prob((dosages - 2 * allele_frequencies) @ weights)
         response = rng.random(nrow) < probs
 

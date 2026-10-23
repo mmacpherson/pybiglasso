@@ -204,7 +204,7 @@ def linear_predictor(X, coef, intercept, row_indices=None):
     return eta
 
 
-# -- rows x columns of X gathered at once by `linear_predictor` (32 MB as float64)
+# rows x columns of X gathered at once by `linear_predictor` (32 MB as float64)
 CHUNK_ELEMENTS = 1 << 22
 
 
@@ -220,7 +220,7 @@ def binomial_deviance(y, eta):
     y = np.asarray(y, dtype=np.float64)
     if eta.ndim == 2:
         y = y[:, np.newaxis]
-    # -- log(1 + exp(eta)) - y * eta, computed stably
+    # log(1 + exp(eta)) - y * eta, computed stably
     return 2.0 * (np.logaddexp(0.0, eta) - y * eta).sum(axis=0)
 
 
@@ -233,7 +233,7 @@ def roc_auc(y, score):
     order = np.argsort(score, kind="mergesort")
     ranks = np.empty(len(score), dtype=np.float64)
     sorted_scores = score[order]
-    # -- average ranks within ties
+    # average ranks within ties
     _, first, counts = np.unique(sorted_scores, return_index=True, return_counts=True)
     avg = first + (counts + 1) / 2.0
     ranks[order] = np.repeat(avg, counts)

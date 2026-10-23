@@ -47,19 +47,19 @@ SOLVERS = [
     "statsmodels",
 ]
 TIMING_START = "--timing-start--"
-# -- lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
+# lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
 LASSO_ONLY = {"skglm", "sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
-# -- R's elastic-net update; identical to pybiglasso's for the lasso
+# R's elastic-net update; identical to pybiglasso's for the lasso
 ENET_ONLY = {"pybiglasso-rcompat"}
-# -- these run R in a container; their time is R's own system.time() of the fit
+# these run R in a container; their time is R's own system.time() of the fit
 R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive"}
-# -- these don't use more than one thread; running them at more is redundant
+# these don't use more than one thread; running them at more is redundant
 SINGLE_THREADED = {"skglm", "sklearn-liblinear", "sklearn-saga"}
-# -- statsmodels' L1 fit needs memory quadratic in the column count
+# statsmodels' L1 fit needs memory quadratic in the column count
 STATSMODELS_MAX_GB = 8
 
 
-# -- data -----------------------------------------------------------------
+# data -----------------------------------------------------------------
 
 
 def make_data(name, seed=0):
@@ -89,8 +89,8 @@ def lambda_grid(X, y, alpha):
     return path.lambdas
 
 
-# -- solvers: each returns (L, ncol) coefficients and (L,) intercepts, on the
-#    standardized scale ------------------------------------------------------
+# solvers: each returns (L, ncol) coefficients and (L,) intercepts, on the
+# standardized scale ------------------------------------------------------
 
 
 def fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, eps=1e-7, r_compatible=False):
@@ -109,7 +109,7 @@ def fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, eps=1e-7, r_compatible=Fal
     )
     coef = path.coef.toarray().T * path.scale
     intercept = path.intercept + path.coef.toarray().T @ path.center
-    L = len(lambdas)  # -- the path can stop early on saturation
+    L = len(lambdas)  # the path can stop early on saturation
     pad = np.full((L - len(path), coef.shape[1]), np.nan)
     return np.vstack([coef, pad]), np.concatenate(
         [intercept, np.full(L - len(path), np.nan)]
@@ -154,7 +154,7 @@ def _fit_sklearn(solver, Xs, y, lambdas, alpha):
     n = len(y)
     kw = dict(solver=solver, warm_start=True, max_iter=10_000)
     if solver == "liblinear":
-        # -- liblinear penalizes the intercept; a large scaling makes that negligible
+        # liblinear penalizes the intercept; a large scaling makes that negligible
         kw.update(penalty="l1", intercept_scaling=100.0)
     else:
         kw.update(l1_ratio=alpha)
@@ -178,8 +178,8 @@ def fit_statsmodels(X, Xs, y, lambdas, alpha, threads):
     model = sm.Logit(y, np.column_stack([np.ones(n), Xs]))
     coefs, intercepts, start = [], [], None
     for lam in lambdas:
-        # -- statsmodels penalizes the summed log-likelihood, per coefficient;
-        #    n * lambda matches the mean-scaled objective. Intercept unpenalized.
+        # statsmodels penalizes the summed log-likelihood, per coefficient;
+        # n * lambda matches the mean-scaled objective. Intercept unpenalized.
         weights = np.full(p + 1, n * lam)
         weights[0] = 0.0
         res = model.fit_regularized(
@@ -198,7 +198,7 @@ def statsmodels_memory_gb(ncol):
 
 
 def fit_pybiglasso_tight(X, Xs, y, lambdas, alpha, threads):
-    # -- R's default eps=1e-7 stops earlier than glum's default; this matches it
+    # R's default eps=1e-7 stops earlier than glum's default; this matches it
     return fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, eps=1e-10)
 
 
@@ -218,7 +218,7 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen):
         d = pathlib.Path(d)
         np.asfortranarray(X, dtype=np.float64).ravel(order="F").tofile(d / "X.bin")
         np.asarray(y, dtype=np.float64).tofile(d / "y.bin")
-        # -- R's default grid on unit penalty factors is exactly pybiglasso's
+        # R's default grid on unit penalty factors is exactly pybiglasso's
         params = dict(
             nrow=nrow,
             ncol=ncol,
@@ -268,7 +268,7 @@ FITTERS = {
 }
 
 
-# -- one run, in a subprocess ---------------------------------------------
+# one run, in a subprocess ---------------------------------------------
 
 
 def run_one(args):
@@ -280,22 +280,22 @@ def run_one(args):
     X, Xs, y = make_data(args.dataset)
     lambdas = np.load(args.lambdas)
     if args.solver in ("pybiglasso", "pybiglasso-tight", "skglm"):
-        # -- numba-based solvers: compile (or load cached kernels) before timing
+        # numba-based solvers: compile (or load cached kernels) before timing
         FITTERS[args.solver](
             X[:50, :20], Xs[:50, :20], y[:50], lambdas[:2], args.alpha, 1
         )
-    print(TIMING_START, flush=True)  # -- the parent's time cap starts here
+    print(TIMING_START, flush=True)  # the parent's time cap starts here
     t0 = time.perf_counter()
     out = FITTERS[args.solver](X, Xs, y, lambdas, args.alpha, args.threads)
     seconds = time.perf_counter() - t0
-    if len(out) == 3:  # -- the solver timed its own fit (R)
+    if len(out) == 3:  # the solver timed its own fit (R)
         coef, intercept, seconds = out
     else:
         coef, intercept = out
     np.savez(args.out, coef=coef, intercept=intercept, seconds=seconds)
 
 
-# -- orchestration ----------------------------------------------------------
+# orchestration ----------------------------------------------------------
 
 
 def run_capped(cmd, env, cap):
@@ -442,8 +442,8 @@ def main():
                                 "--lambdas", f"{tmp}/lambdas.npy",
                                 res,
                             ]  # fmt: skip
-                            # -- R's clock covers container start and data
-                            #    loading, which its reported time excludes
+                            # R's clock covers container start and data
+                            # loading, which its reported time excludes
                             cap = args.cap if solver in R_SOLVERS else run_cap
                             if not run_capped(cmd, env, cap):
                                 times.append(float("inf"))
@@ -452,11 +452,11 @@ def main():
                             times.append(float(r["seconds"]))
                             result = (r["coef"], r["intercept"])
                             if times[-1] > run_cap / 3:
-                                break  # -- slow; one measurement will do
+                                break  # slow; one measurement will do
                         runs[(solver, t)] = (times, result)
                         if solver == "pybiglasso" and t == 1 and np.isfinite(times[0]):
-                            # -- a floor only lengthens the cap, so a timeout still
-                            #    means "over ratio_cap times slower"
+                            # a floor only lengthens the cap, so a timeout still
+                            # means "over ratio_cap times slower"
                             run_cap = min(
                                 args.cap,
                                 max(5.0, args.ratio_cap * float(np.median(times))),
@@ -467,7 +467,7 @@ def main():
                             flush=True,
                         )
 
-            # -- accuracy: objective at each lambda vs the best any solver found
+            # accuracy: objective at each lambda vs the best any solver found
             objs = {}
             for key, (_times, result) in runs.items():
                 if result is None:

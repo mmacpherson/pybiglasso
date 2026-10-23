@@ -1,5 +1,6 @@
 import warnings
 
+import numba
 import numpy as np
 import pytest
 import scipy.sparse as sps
@@ -34,7 +35,7 @@ def path(data):
     return bl.biglasso(X, y, alpha=1.0, nlambda=15)
 
 
-# -- the path object ------------------------------------------------------
+# the path object ------------------------------------------------------
 
 
 def test_path_shapes(path, data):
@@ -85,12 +86,12 @@ def test_elastic_net_matches_independent_solver(data, alpha):
         sk = saga(sklm, C=1 / (n * p.lambdas[k]), l1_ratio=alpha).fit(Xs, y)
         ours = p.coef[:, [k]].toarray().ravel() * sd
         np.testing.assert_allclose(ours, sk.coef_.ravel(), atol=1e-6)
-        # -- R's update solves a different problem, measurably so
+        # R's update solves a different problem, measurably so
         r_coef = r.coef[:, [k]].toarray().ravel() * sd
         assert np.abs(r_coef - sk.coef_.ravel()).max() > 1e-3
 
 
-# -- prediction and scoring -----------------------------------------------
+# prediction and scoring -----------------------------------------------
 
 
 def test_predict(path, data):
@@ -121,7 +122,7 @@ def test_predict_subsets(path, data):
 def test_score(path, data):
     metrics = pytest.importorskip("sklearn.metrics")
     X, y = data
-    # -- default-mode deviance describes the returned model, after its last sweep
+    # default-mode deviance describes the returned model, after its last sweep
     np.testing.assert_allclose(path.score(X, y), path.deviance, rtol=1e-12)
     eta = path.decision_function(X)
     auc = [metrics.roc_auc_score(y, eta[:, k]) for k in range(1, len(path))]
@@ -151,7 +152,7 @@ def test_plots(path):
         plot.plot()
 
 
-# -- input handling -------------------------------------------------------
+# input handling -------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -212,7 +213,7 @@ def test_memmap_matches_in_memory(data, tmp_path):
     np.testing.assert_array_equal(a.coef.toarray(), b.coef.toarray())
 
 
-# -- the lambda path ------------------------------------------------------
+# the lambda path ------------------------------------------------------
 
 
 @pytest.mark.parametrize("penalty", ["zeros", "varied"])
@@ -238,7 +239,7 @@ def test_unpenalized_columns_enter_at_lambda_max(data):
     first = p.coef[:, [0]].toarray().ravel()
     assert np.all(first[:2] != 0), "unpenalized columns should be fit at lambda_max"
     assert np.all(first[2:] == 0), "penalized columns should be zero at lambda_max"
-    # -- and just below lambda_max, a penalized column enters
+    # and just below lambda_max, a penalized column enters
     assert p.n_nonzero[1] > 2
 
 
@@ -272,13 +273,17 @@ def test_float32_matches_float64(data):
 
 @pytest.mark.parametrize("penalty", [None, "zeros"])
 def test_thread_count_does_not_change_results(penalty):
+    # numba refuses more threads than the machine has (3 on CI's macOS)
+    threads = min(4, numba.config.NUMBA_NUM_THREADS)
+    if threads < 2:
+        pytest.skip("needs at least two cores")
     d = bl.common.make_biglasso_dataset(nrow=150, ncol=400, seed=2)
     pf = None
     if penalty == "zeros":
         pf = np.ones(400)
         pf[:3] = 0
     one = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=1)
-    many = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=4)
+    many = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=threads)
     np.testing.assert_array_equal(one.coef.toarray(), many.coef.toarray())
     np.testing.assert_array_equal(one.iterations, many.iterations)
     np.testing.assert_array_equal(one.n_rejected, many.n_rejected)

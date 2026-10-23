@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 
@@ -34,7 +36,7 @@ def test_classifier_matches_functional_api(data):
     ref = bl.biglasso(X, y, alpha=0.7, lambdas=[lam])
     np.testing.assert_allclose(clf.coef_.ravel(), ref.coef.toarray().ravel())
     np.testing.assert_allclose(clf.intercept_, ref.intercept)
-    # -- and close to the warm-started path solution at the same lambda
+    # and close to the warm-started path solution at the same lambda
     np.testing.assert_allclose(
         clf.coef_.ravel(), path.coef[:, [6]].toarray().ravel(), atol=1e-4
     )
@@ -93,3 +95,28 @@ def test_cv_n_jobs_does_not_change_results(data):
     many = BiglassoClassifierCV(n_alphas=15, cv=5, n_jobs=5).fit(X, y)
     np.testing.assert_array_equal(one.cv_scores_, many.cv_scores_)
     assert one.alpha_ == many.alpha_
+
+
+def test_cv_under_workqueue_runs_folds_one_at_a_time():
+    """numba's workqueue layer (macOS's default) aborts on concurrent kernels."""
+    import subprocess
+    import sys
+
+    code = """
+import warnings
+import pybiglasso as bl
+from pybiglasso import BiglassoClassifierCV
+d = bl.common.generate_test_data(200, 8, seed=1)
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    BiglassoClassifierCV(n_alphas=8, cv=4, n_jobs=4).fit(d["X"], d["y"])
+    BiglassoClassifierCV(n_alphas=8, cv=4).fit(d["X"], d["y"])
+print(sum("one at a time" in str(x.message) for x in w))
+"""
+    env = {**os.environ, "NUMBA_THREADING_LAYER": "workqueue"}
+    out = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    # a warning for the explicit n_jobs=4, none for the default
+    assert out.stdout.split()[-1] == "1"

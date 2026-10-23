@@ -170,8 +170,8 @@ jobs:
         )"
         DRAFT=()
         if [ "$HOOKS_VALID" != "true" ]; then
-          # -- the updated hooks still fail: open a draft that says which, rather
-          #    than nothing at all
+          # the updated hooks still fail: open a draft that says which, rather
+          # than nothing at all
           TITLE="[hooks failing] $TITLE"
           BODY="$BODY
 

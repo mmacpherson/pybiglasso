@@ -9,8 +9,10 @@ These follow scikit-learn's naming, which differs from R biglasso's:
 """
 
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
+import numba
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import check_cv
@@ -71,8 +73,8 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
 
     def decision_function(self, X):
         check_is_fitted(self)
-        # -- unlike fit, check every column for NaN/inf: scikit-learn requires it,
-        #    and for float X it costs one read (a sum), not a copy
+        # unlike fit, check every column for NaN/inf: scikit-learn requires it,
+        # and for float X it costs one read (a sum), not a copy
         X = validate_data(self, X, reset=False, dtype="numeric", order=None)
         return linear_predictor(_as_design(X), self.coef_.T, self.intercept_)[:, 0]
 
@@ -160,7 +162,9 @@ class BiglassoClassifierCV(_BiglassoBase):
     n_jobs : int, optional
         Folds to fit at once, in threads that share X (so a memmap is read
         through one page cache). Each fold is single-threaded; results do not
-        depend on n_jobs. None or -1 uses all cores.
+        depend on n_jobs. None or -1 uses all cores. Needs numba's tbb or omp
+        threading layer; with workqueue, its fallback when neither is
+        installed (as on macOS by default), folds run one at a time.
 
     Attributes
     ----------
@@ -240,13 +244,24 @@ class BiglassoClassifierCV(_BiglassoBase):
         n_jobs = self.n_jobs
         if n_jobs is None or n_jobs < 0:
             n_jobs = os.cpu_count() or 1
+        # numba's workqueue layer aborts the process if parallel kernels
+        # launch from two threads at once; the full fit above has chosen
+        # the layer
+        if n_jobs > 1 and numba.threading_layer() == "workqueue":
+            if self.n_jobs is not None and self.n_jobs != 1:
+                warnings.warn(
+                    "numba's workqueue threading layer can't fit folds in "
+                    "parallel, so they run one at a time.",
+                    stacklevel=2,
+                )
+            n_jobs = 1
         with ThreadPoolExecutor(max_workers=min(n_jobs, len(folds))) as pool:
             for k, s in enumerate(pool.map(score_fold, folds)):
                 scores[k, : len(s)] = s
         self.cv_scores_ = scores
         self.alphas_ = grid
 
-        # -- only consider alphas that every fold reached (paths can stop early)
+        # only consider alphas that every fold reached (paths can stop early)
         complete = ~np.isnan(scores).any(axis=0)
         if not complete.any():
             raise ValueError(
@@ -257,7 +272,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         best = int(np.argmin(mean))
         if self.rule == "1se":
             se = np.nanstd(scores[:, best], ddof=1) / np.sqrt(len(folds))
-            # -- alphas are decreasing, so the first qualifying index is largest
+            # alphas are decreasing, so the first qualifying index is largest
             best = int(np.flatnonzero(mean <= mean[best] + se)[0])
 
         self.alpha_ = grid[best]
