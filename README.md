@@ -308,7 +308,9 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   `n_threads=1` there. Results are bit-identical at any thread count.
 - **Cross-validation scales with cores.** `BiglassoClassifierCV(n_jobs=...)`
   fits folds in parallel threads that share one X (and, for a memmap, one page
-  cache); results don't depend on `n_jobs`.
+  cache); results don't depend on `n_jobs`. This needs numba's tbb or omp
+  threading layer; where numba falls back to workqueue, as on macOS by default,
+  folds run one at a time.
 - **Store X compactly.** Since the work is mostly moving bytes, a narrower
   dtype is faster: small integers (counts, categories, 0/1 indicators) as
   `int8` or `uint8` take 8x less memory and disk than float64, and fit about
