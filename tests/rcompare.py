@@ -46,7 +46,7 @@ class Case:
     lambda_log_scale: bool = True
     data: str = "normal"  # "normal" | "dosage"
     frac_mono: float = 0.0
-    penalty: str = "none"  # "none" | "varied" | "zeros"
+    penalty: str = "none"  # "none" | "varied" | "heavy" | "zeros"
     rows: str = "all"  # "all" | "half"
     dtype: str = "float64"
     memmap: bool = False
@@ -110,6 +110,7 @@ def fast_grid():
             Case(**base, data="dosage"),
             Case(nrow, ncol, seed=7, alpha=1.0, data="dosage"),
             Case(**base, penalty="varied"),
+            Case(**base, penalty="heavy"),
             Case(**base, penalty="zeros"),
             Case(**base, rows="half"),
             Case(**base, dtype="float32"),
@@ -204,6 +205,10 @@ def make_case_data(case, workdir):
     penalty_factor = None
     if case.penalty == "varied":
         penalty_factor = rng.uniform(0.5, 2.0, case.ncol)
+    elif case.penalty == "heavy":
+        # -- far from 1, so lambda_max differs a lot with and without them
+        penalty_factor = np.ones(case.ncol)
+        penalty_factor[::3] = 4.0
     elif case.penalty == "zeros":
         penalty_factor = np.ones(case.ncol)
         penalty_factor[: min(3, case.ncol - 1)] = 0.0

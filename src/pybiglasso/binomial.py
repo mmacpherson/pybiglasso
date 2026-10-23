@@ -725,9 +725,12 @@ def binomial_hsr(
     a0 = np.log(ybar / (1 - ybar))
     thresh = params.eps * null_deviance / nrow
 
-    # -- R biglasso's lambda_max, which ignores penalty factors; used as the
-    #    strong-rule reference for the first user-supplied lambda, as in R
-    lambda_max_r = np.abs(z).max() / params.alpha
+    # -- R biglasso's lambda_max, from the null model; used as the strong-rule
+    #    reference for the first user-supplied lambda, as in R
+    penalized = multiplier > 0
+    lambda_max_r = (
+        np.max(np.abs(z[penalized]) / multiplier[penalized], initial=0.0) / params.alpha
+    )
 
     # -- here we initialize two largish collections of state, mainly to slim
     #    down the function signatures and make it easier to follow the code flow
