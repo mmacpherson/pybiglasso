@@ -55,7 +55,8 @@ to observed output.
   versions `pyproject.toml` allows, which is what a new install gets.
 - **R**: the R comparison runs in a container (`docker/r-biglasso.Dockerfile`),
   pinned by R version; packages come from that R release's P3M snapshot.
-- Python 3.10 is supported until its dependencies drop it.
+- Supported Pythons are those not yet at end of life (3.11 and up; 3.10 reached
+  it on 2026-10-01).
 
 ## Development Commands
 
