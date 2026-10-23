@@ -22,26 +22,24 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
         include:
-          - os: macos-latest
-            python: "3.13"
-          - os: windows-latest
-            python: "3.13"
+        - os: macos-latest
+          python: '3.13'
+        - os: windows-latest
+          python: '3.13'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Lint
-        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
-        run: |
-          uv run ruff check src tests
-          uv run ruff format --check src tests
-      - name: Tests (against stored R biglasso 1.7.2 output)
-        run: uv run pytest
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78    # v7.6.0
+      with:
+        python-version: ${{ matrix.python }}
+    - name: Pre-commit hooks
+      if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+      run: make run-hooks-all-files
+    - name: Tests (against stored R biglasso 1.7.2 output)
+      run: make test
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
@@ -49,38 +47,28 @@ jobs:
     env:
       UV_LOCKED: false
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
-        with:
-          python-version: "3.15"
-      - run: uv run --upgrade pytest
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78    # v7.6.0
+      with:
+        python-version: '3.15'
+    - run: make test-latest
 
   dist:
     name: Build the package; install the wheel with no extras
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
-        with:
-          enable-cache: false  # this build is what release.yml publishes
-      - run: uv build
-      - name: Check the metadata PyPI will render
-        run: uvx twine check --strict dist/*
-      - name: Fit a path from the installed wheel, with no extras
-        run: |
-          uv run --isolated --no-project --with dist/*.whl python - <<'PY'
-          import sys, pybiglasso as bl
-          d = bl.common.generate_test_data(100, 5)
-          print(bl.biglasso(d["X"], d["y"], nlambda=5))
-          heavy = {"pandas", "polars", "sklearn", "seaborn", "matplotlib"} & set(sys.modules)
-          assert not heavy, heavy
-          PY
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: dist-package
-          path: dist/
-          retention-days: 7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78    # v7.6.0
+      with:
+        enable-cache: false    # this build is what release.yml publishes
+    - name: Build, check the metadata PyPI will render, and fit from the wheel
+      run: make check-dist
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
+      with:
+        name: dist-package
+        path: dist/
+        retention-days: 7

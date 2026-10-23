@@ -41,7 +41,9 @@ def main():
 
     versions = {r["biglasso_version"] for r in r_outputs}
     if versions != {FIXTURES_BIGLASSO}:
-        sys.exit(f"Fixtures must come from biglasso {FIXTURES_BIGLASSO}, got {versions}")
+        sys.exit(
+            f"Fixtures must come from biglasso {FIXTURES_BIGLASSO}, got {versions}"
+        )
 
     failures = 0
     for case, (py, _, _), r in zip(cases, prepared, r_outputs, strict=True):

@@ -5,7 +5,7 @@ name: Live R comparison
 on:
   pull_request:
   schedule:
-    - cron: "17 6 * * 1"
+  - cron: 17 6 * * 1
   workflow_dispatch:
 
 permissions:
@@ -18,21 +18,14 @@ jobs:
   r-live:
     name: R biglasso (current CRAN)
     runs-on: ubuntu-latest
-    env:
-      CONTAINER: docker
-      R_IMAGE: pybiglasso-r:latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
-        with:
-          python-version: "3.13"
-      - name: Build R image
-        run: >
-          docker build --build-arg R_VERSION=latest
-          -t "$R_IMAGE" -f docker/r-biglasso.Dockerfile docker
-      - name: R and biglasso versions
-        run: docker run --rm "$R_IMAGE" Rscript -e 'cat(R.version.string, "/ biglasso", format(packageVersion("biglasso")), "\n")'
-      - name: Compare against live R
-        run: uv run pytest -m r
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78    # v7.6.0
+      with:
+        python-version: '3.13'
+    - name: R and biglasso versions
+      run: make r-versions R_VERSION=latest
+    - name: Compare against live R
+      run: make test-r R_VERSION=latest

@@ -4,9 +4,22 @@ default: test
 test:
 	uv run pytest
 
+# -- the newest versions pyproject.toml allows, ignoring uv.lock: what a new
+#    install gets
+.PHONY: test-latest
+test-latest:
+	UV_LOCKED=false uv run --upgrade pytest
+
 .PHONY: lint
 lint:
 	uv run ruff check src tests
+
+.PHONY: update-hooks run-hooks-all-files
+update-hooks:
+	uv run pre-commit autoupdate
+
+run-hooks-all-files:
+	uv run pre-commit run --all-files
 
 # -- R comparisons; set CONTAINER=podman to use podman instead
 CONTAINER ?= docker
@@ -19,6 +32,10 @@ R_ENV = CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:$(R_TAG)
 .PHONY: r-image
 r-image:
 	$(CONTAINER) build --build-arg R_VERSION=$(R_VERSION) -t pybiglasso-r:$(R_TAG) -f docker/r-biglasso.Dockerfile docker
+
+.PHONY: r-versions
+r-versions: r-image
+	$(CONTAINER) run --rm pybiglasso-r:$(R_TAG) Rscript -e 'cat(R.version.string, "/ biglasso", format(packageVersion("biglasso")), "\n")'
 
 .PHONY: test-r
 test-r: r-image
@@ -48,4 +65,12 @@ docs/benchmarks.png: benchmarks/plot.py $(RESULTS)
 
 .PHONY: build
 build:
+	rm -rf dist
 	uv build
+
+# -- what release.yml publishes: build it, check the metadata PyPI will render,
+#    and fit from the installed wheel with no extras
+.PHONY: check-dist
+check-dist: build
+	uvx twine check --strict dist/*
+	uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py

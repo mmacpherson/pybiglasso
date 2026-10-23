@@ -25,3 +25,10 @@ benchmarks/results/tmp/
 !tests/fixtures/*.json.gz
 benchmarks/results/*.aborted.*
 benchmarks/results/*.failed.*
+# Beads / Dolt files (added by bd init); beads stays local, untracked
+.beads/
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
