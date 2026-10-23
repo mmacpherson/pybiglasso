@@ -60,7 +60,7 @@ Homepage = "https://github.com/mmacpherson/pybiglasso"
 "R biglasso" = "https://github.com/pbreheny/biglasso"
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/benchmarks/results", "/docs", "/.github"]
+exclude = ["/benchmarks/results", "/docs", "/.github", "/uv.lock"]
 
 [tool.pytest.ini_options]
 addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak'"
