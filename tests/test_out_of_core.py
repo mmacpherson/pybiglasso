@@ -28,7 +28,7 @@ def genotypes(tmp_path_factory):
     X.flush()
     del X
     X, y = np.load(file, mmap_mode="r"), data["y"].astype(np.float64)
-    # -- compile the kernels for read-only int8 input outside the measurements
+    # compile the kernels for read-only int8 input outside the measurements
     bl.biglasso(X, y, nlambda=2)
     bl.biglasso(X, y, nlambda=2, row_indices=np.arange(0, NROW, 2), n_threads=1)
     return X, y

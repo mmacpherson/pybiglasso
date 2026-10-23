@@ -15,11 +15,11 @@ read_design <- function(case_dir, n, p, filebacked) {
   path <- file.path(case_dir, "X.bin")
   if (!filebacked) {
     X <- matrix(readBin(path, "double", n * p), n, p)
-    # -- shared = FALSE: ordinary memory, not /dev/shm (64 MB in containers)
+    # shared = FALSE: ordinary memory, not /dev/shm (64 MB in containers)
     return(as.big.matrix(X, shared = FALSE))
   }
-  # -- fill a file-backed big.matrix a block of columns at a time, so that
-  #    designs larger than memory never have to be materialized
+  # fill a file-backed big.matrix a block of columns at a time, so that
+  # designs larger than memory never have to be materialized
   bm <- filebacked.big.matrix(
     n, p, type = "double", backingpath = case_dir,
     backingfile = "X.bm", descriptorfile = "X.desc"
@@ -34,9 +34,9 @@ read_design <- function(case_dir, n, p, filebacked) {
   bm
 }
 
-# -- this process's cgroup v2 memory accounting. Only meaningful in a container
-#    (whose /sys/fs/cgroup is its own cgroup), so only read when params.json
-#    asks for it, as benchmarks/out_of_core.py does.
+# this process's cgroup v2 memory accounting. Only meaningful in a container
+# (whose /sys/fs/cgroup is its own cgroup), so only read when params.json
+# asks for it, as benchmarks/out_of_core.py does.
 cgroup_memory <- function() {
   base <- "/sys/fs/cgroup"
   stat <- read.table(file.path(base, "memory.stat"), col.names = c("key", "value"))
@@ -101,10 +101,10 @@ fit_case <- function(case_dir) {
   if (isTRUE(prm$cgroup_stats)) {
     page <- as.numeric(system("getconf PAGESIZE", intern = TRUE))
     out$cgroup <- list(
-      # -- the container's peak over its whole life, big.matrix setup included
+      # the container's peak over its whole life, big.matrix setup included
       peak_gb = after$peak / 1e9,
       cap_gb = if (after$max == "max") NA else as.numeric(after$max) / 1e9,
-      # -- re-reads and major faults during the fit alone
+      # re-reads and major faults during the fit alone
       refaulted_gb = (after$refaults - before$refaults) * page / 1e9,
       major_faults = after$major_faults - before$major_faults
     )
@@ -115,7 +115,7 @@ fit_case <- function(case_dir) {
   )
 }
 
-# -- record failures per case rather than abandoning the whole batch
+# record failures per case rather than abandoning the whole batch
 for (case_dir in commandArgs(trailingOnly = TRUE)) {
   tryCatch(fit_case(case_dir), error = function(e) {
     writeLines(

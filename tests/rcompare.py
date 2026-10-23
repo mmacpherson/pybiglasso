@@ -94,7 +94,7 @@ def fast_grid():
     """Cases small enough to run on every push, against stored R output."""
     cases = []
 
-    # -- core grid: shape x regularization x monomorphic columns
+    # core grid: shape x regularization x monomorphic columns
     for seed in (123, 456, 789):
         for nrow, ncol in ((7, 3), (100, 10), (300, 40), (60, 200)):
             for alpha in (0.1, 0.5, 0.9, 1.0):
@@ -103,7 +103,7 @@ def fast_grid():
     for alpha in (0.1, 0.5, 0.9, 1.0):
         cases.append(Case(100, 10, 123, alpha, 5))
 
-    # -- one feature at a time, on a tall and a wide problem
+    # one feature at a time, on a tall and a wide problem
     for nrow, ncol in ((200, 30), (80, 150)):
         base = dict(nrow=nrow, ncol=ncol, alpha=0.8)
         cases += [
@@ -121,12 +121,12 @@ def fast_grid():
             Case(**base, data="dosage", penalty="zeros", rows="half", memmap=True),
         ]
 
-    # -- hard-called genotypes stored compactly; dosages are exact in any dtype
+    # hard-called genotypes stored compactly; dosages are exact in any dtype
     for nrow, ncol in ((200, 30), (80, 150)):
         cases.append(Case(nrow, ncol, alpha=0.8, data="dosage", dtype="int8"))
     cases.append(Case(80, 150, seed=7, alpha=1.0, data="dosage", dtype="uint8"))
 
-    # -- strongly separable data, so the path saturates before the end
+    # strongly separable data, so the path saturates before the end
     cases.append(Case(30, 60, 11, 1.0, 50, lambda_min=1e-4, tag="saturating"))
 
     return cases
@@ -154,7 +154,7 @@ def soak_grid(scale=None):
     return cases
 
 
-# -- data -----------------------------------------------------------------
+# data -----------------------------------------------------------------
 
 
 def make_case_data(case, workdir):
@@ -164,7 +164,7 @@ def make_case_data(case, workdir):
     rng = np.random.default_rng(case.seed + 1)
     xpath = workdir / "X.bin"
 
-    # -- X.bin is raw column-major float64, readable by R and by np.memmap
+    # X.bin is raw column-major float64, readable by R and by np.memmap
     Xbin = np.memmap(
         xpath, dtype=np.float64, mode="w+", shape=(case.nrow, case.ncol), order="F"
     )
@@ -195,7 +195,7 @@ def make_case_data(case, workdir):
         Xbin[:, np.sort(rng.choice(case.ncol, nmono, replace=False))] = 1.0
 
     if case.dtype == "float32":
-        # -- round through float32 so that R sees exactly the values we fit
+        # round through float32 so that R sees exactly the values we fit
         Xbin[:] = Xbin.astype(np.float32)
     elif case.dtype in ("int8", "uint8"):
         if case.data != "dosage":
@@ -206,7 +206,7 @@ def make_case_data(case, workdir):
     if case.penalty == "varied":
         penalty_factor = rng.uniform(0.5, 2.0, case.ncol)
     elif case.penalty == "heavy":
-        # -- far from 1, so lambda_max differs a lot with and without them
+        # far from 1, so lambda_max differs a lot with and without them
         penalty_factor = np.ones(case.ncol)
         penalty_factor[::3] = 4.0
     elif case.penalty == "zeros":
@@ -243,7 +243,7 @@ def data_digest(data):
     return h.hexdigest()
 
 
-# -- fitting --------------------------------------------------------------
+# fitting --------------------------------------------------------------
 
 
 def fit_py(case, data, lambdas=None):
@@ -269,7 +269,7 @@ def fit_py(case, data, lambdas=None):
         center=fit.center,
         scale=fit.scale,
         lambda_=fit.lambdas,
-        # -- R's `loss` is the negative log-likelihood, half the deviance
+        # R's `loss` is the negative log-likelihood, half the deviance
         loss=fit.deviance / 2,
         iter=fit.iterations,
         rejections=fit.n_rejected,
@@ -298,9 +298,9 @@ def prepare_case(case, workdir, lambdas=None):
         if case.user_lambdas:
             lambdas = grid * 0.9
         else:
-            # -- grid[0] is lambda_max, where the leading column sits exactly on
-            #    the KKT boundary; nudge it so last-bit differences in z between
-            #    R and numba can't flip that check and shift iteration counts
+            # grid[0] is lambda_max, where the leading column sits exactly on
+            # the KKT boundary; nudge it so last-bit differences in z between
+            # R and numba can't flip that check and shift iteration counts
             lambdas = grid.copy()
             lambdas[0] *= 1 + 1e-9
     py = fit_py(case, data, lambdas)
@@ -371,7 +371,7 @@ def load_r_output(path):
         for k in ("center", "scale", "lambda", "loss", "iter", "rejections")
     }
     out["lambda_"] = out.pop("lambda")
-    # -- R truncates the path when it stops early, except for `rejections`
+    # R truncates the path when it stops early, except for `rejections`
     out["rejections"] = out["rejections"][: len(out["lambda_"])]
     out["beta"] = beta.reshape(raw["beta_dim"], order="F")
     out["warnings"] = list(np.atleast_1d(raw.get("warnings") or []))
@@ -381,7 +381,7 @@ def load_r_output(path):
     return out
 
 
-# -- comparison -----------------------------------------------------------
+# comparison -----------------------------------------------------------
 
 
 def compare(py, r):
@@ -410,7 +410,7 @@ def compare(py, r):
     return problems
 
 
-# -- fixtures -------------------------------------------------------------
+# fixtures -------------------------------------------------------------
 
 
 def save_fixtures(entries, path=FIXTURE_PATH):

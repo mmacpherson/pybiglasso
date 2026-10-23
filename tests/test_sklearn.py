@@ -36,7 +36,7 @@ def test_classifier_matches_functional_api(data):
     ref = bl.biglasso(X, y, alpha=0.7, lambdas=[lam])
     np.testing.assert_allclose(clf.coef_.ravel(), ref.coef.toarray().ravel())
     np.testing.assert_allclose(clf.intercept_, ref.intercept)
-    # -- and close to the warm-started path solution at the same lambda
+    # and close to the warm-started path solution at the same lambda
     np.testing.assert_allclose(
         clf.coef_.ravel(), path.coef[:, [6]].toarray().ravel(), atol=1e-4
     )
@@ -118,5 +118,5 @@ print(sum("one at a time" in str(x.message) for x in w))
         [sys.executable, "-c", code], env=env, capture_output=True, text=True
     )
     assert out.returncode == 0, out.stderr[-2000:]
-    # -- a warning for the explicit n_jobs=4, none for the default
+    # a warning for the explicit n_jobs=4, none for the default
     assert out.stdout.split()[-1] == "1"

@@ -91,7 +91,7 @@ def biglasso(
         X = np.asarray(X)
     y = np.asarray(y)
 
-    # -- first, a few checks on data shape and type
+    # first, a few checks on data shape and type
     if X.ndim != 2 or not all(X.shape):
         raise ValueError("X must be a non-empty two-dimensional design matrix.")
     if X.dtype.kind not in "biuf" or X.dtype == np.float16 or not X.dtype.isnative:
@@ -174,8 +174,8 @@ def biglasso(
         if INTERCEPT in feature_names:
             raise ValueError(f"{INTERCEPT!r} is reserved for the intercept.")
 
-    # -- Differs from R biglasso: R compares nrow(X) with ncol(X); this
-    #    compares the rows actually fit, which differ when row_indices is given
+    # Differs from R biglasso: R compares nrow(X) with ncol(X); this
+    # compares the rows actually fit, which differ when row_indices is given
     lambda_min_thresh = (0.001, 0.05)
     if lambda_min is None:
         lambda_min = lambda_min_thresh[0] if (nrow > ncol) else lambda_min_thresh[1]
@@ -253,8 +253,8 @@ def biglasso(
     finally:
         nb.set_num_threads(prior_threads)
 
-    # -- keep the part of the path that was fit (it stops early on saturation
-    #    or dfmax), and untransform coefficients back to the scale of X
+    # keep the part of the path that was fit (it stops early on saturation
+    # or dfmax), and untransform coefficients back to the scale of X
     fitted = np.flatnonzero(results["iters"] >= 0)
     col_map, center, scale = results["col_map"], results["center"], results["scale"]
     rows, vals, intercept = [], [], results["intercept"][fitted].copy()
@@ -278,7 +278,7 @@ def biglasso(
         lambdas=results["lambda_"][fitted],
         intercept=intercept,
         coef=coef,
-        # -- the solver tracks -log-likelihood, as R does; report true deviance
+        # the solver tracks -log-likelihood, as R does; report true deviance
         deviance=2.0 * results["deviance"][fitted],
         iterations=results["iters"][fitted],
         n_rejected=results["n_reject"][fitted],
@@ -334,7 +334,7 @@ def center_scale(X, row_indices):  # pragma: no cover
         else:
             col = X[row_indices, ix]
 
-        # -- two passes, accumulating in float64 regardless of X's dtype
+        # two passes, accumulating in float64 regardless of X's dtype
         acc = 0.0
         for v in col:
             if not np.isfinite(v):
@@ -504,7 +504,7 @@ def update_probs(
             s[ix] = y[row_indices[ix]] - p[ix]
         r[ix] = s[ix] / w[ix]
 
-    # -- faster to do this, like above, in numba bc lazy eval
+    # faster to do this, like above, in numba bc lazy eval
     # deviance += -1.0 * np.log(np.where(y == 1, p, 1 - p)).sum()
     dev_acc = 0.0
     for ix in range(len(eta)):
@@ -539,7 +539,7 @@ def update_intercept(w, r, a0, eta):  # pragma: no cover
         eta += _si
         sum_w_residuals = dot(w, r)
     else:
-        # -- don't recompute if r hasn't changed
+        # don't recompute if r hasn't changed
         a0_out = a0
         sum_w_residuals = xwr
 
@@ -583,8 +583,8 @@ def update_weights(
         if not e1[j]:
             continue
 
-        # -- Differs from R biglasso, which always uses the raw moments; see
-        #    standardized_score
+        # Differs from R biglasso, which always uses the raw moments; see
+        # standardized_score
         c, sc = center[jj], scale[jj]
         if abs(c) > 100 * sc:
             xwr, v = centered_moments(X, jj, row_indices, r, w, c, sc)
@@ -612,9 +612,9 @@ def update_weights(
             new_weight = 0.0
         else:
             sign = 1 if (u > 0) else -1
-            # -- Differs from R biglasso: R divides by v * (1 + l2), where the
-            #    documented elastic-net objective calls for v + l2. The two
-            #    agree for the lasso (l2 = 0).
+            # Differs from R biglasso: R divides by v * (1 + l2), where the
+            # documented elastic-net objective calls for v + l2. The two
+            # agree for the lasso (l2 = 0).
             if r_compatible:
                 new_weight = sign * (abs(u) - l1) / v / (1 + l2)
             else:
@@ -710,18 +710,18 @@ def binomial_hsr(
     y,
     row_indices,
     params,
-    # -- constants basically
+    # constants basically
     scale_min_thresh=1e-6,
 ):
 
-    # -- PHASE 1: Initialization
+    # PHASE 1: Initialization
     nrow = get_nrow(X, row_indices)
     y_used = y if row_indices is None else y[row_indices]
 
-    # -- compute means and stds online, ie one column at a time
+    # compute means and stds online, ie one column at a time
     _center, _scale = center_scale(X, row_indices)
 
-    # -- find reduced set of variable-enough columns/predictors to use during fit
+    # find reduced set of variable-enough columns/predictors to use during fit
     _col_map = np.where(_scale > scale_min_thresh)[0]
     ncol_used = len(_col_map)
     multiplier = params.multiplier[_col_map]
@@ -732,7 +732,7 @@ def binomial_hsr(
             "An automatic lambda grid requires at least one varying penalized feature; supply lambdas explicitly."
         )
 
-    # -- a few preliminary calculations, to initialize the data structures
+    # a few preliminary calculations, to initialize the data structures
     z = compute_z(X, row_indices, _col_map, _center, _scale, y_used)
     ybar = y_used.mean()
     null_deviance = (
@@ -741,28 +741,29 @@ def binomial_hsr(
     a0 = np.log(ybar / (1 - ybar))
     thresh = params.eps * null_deviance / nrow
 
-    # -- R biglasso's lambda_max, from the null model; used as the strong-rule
-    #    reference for the first user-supplied lambda, as in R
+    # R biglasso's lambda_max, from the null model; used as the strong-rule
+    # reference for the first user-supplied lambda, as in R
     penalized = multiplier > 0
     lambda_max_r = (
         np.max(np.abs(z[penalized]) / multiplier[penalized], initial=0.0) / params.alpha
     )
 
-    # -- here we initialize two largish collections of state, mainly to slim
-    #    down the function signatures and make it easier to follow the code flow
-    # -- the reason there are two collections, instead of one, is that the first
-    #    contains the state that is to be returned from this function, where the
-    #    second contains state internal to this function that needn't be
-    #    returned
+    # here we initialize two largish collections of state, mainly to slim
+    # down the function signatures and make it easier to follow the code flow
+    #
+    # the reason there are two collections, instead of one, is that the first
+    # contains the state that is to be returned from this function, where the
+    # second contains state internal to this function that needn't be
+    # returned
 
-    # -- init to-be-returned state
+    # init to-be-returned state
     bl = dict(
         center=_center,
         scale=_scale,
         col_map=_col_map,
         lambda_=np.zeros(params.nlambda),
         intercept=np.zeros(params.nlambda),
-        # -- nonzero coefficients at each lambda, as (used-column index, value)
+        # nonzero coefficients at each lambda, as (used-column index, value)
         coef_rows=[None] * params.nlambda,
         coef_vals=[None] * params.nlambda,
         iters=np.zeros(params.nlambda, dtype=np.int64),
@@ -770,7 +771,7 @@ def binomial_hsr(
         n_reject=np.zeros(params.nlambda, np.int64),
     )
 
-    # -- init internal-only state
+    # init internal-only state
     bl_i = dict(
         eta=np.repeat(a0, nrow),
         z=z,
@@ -785,7 +786,7 @@ def binomial_hsr(
         sum_w_residuals=0.0,
     )
 
-    # -- kernels index penalty factors by raw column; `multiplier` is by used column
+    # kernels index penalty factors by raw column; `multiplier` is by used column
     fit_args = (
         X,
         y,
@@ -799,19 +800,20 @@ def binomial_hsr(
         bl_i,
     )
 
-    # -- PHASE 2: Lambda grid and starting point
+    # PHASE 2: Lambda grid and starting point
     if params.lambdas is not None:
-        # -- user-supplied grid: fit every value, starting from the null model
+        # user-supplied grid: fit every value, starting from the null model
         bl["lambda_"][:] = params.lambdas
         lambda_max = lambda_max_r
         lstart = 0
     else:
         unpenalized = multiplier == 0
         if unpenalized.any():
-            # -- fit the unpenalized columns alone; that model is the solution at
-            #    lambda_max, and its residuals determine lambda_max
-            # -- Differs from R biglasso, whose default grid is then lambda = 0
-            #    at every step (an unregularized fit)
+            # fit the unpenalized columns alone; that model is the solution at
+            # lambda_max, and its residuals determine lambda_max
+            #
+            # Differs from R biglasso, whose default grid is then lambda = 0
+            # at every step (an unregularized fit)
             bl_i["e1"][unpenalized] = 1
             bl_i["e2"][unpenalized] = 1
             status = _fit_lambda(*fit_args, 0, 0.0, null_deviance, thresh, False)
@@ -862,7 +864,7 @@ def binomial_hsr(
 
     logger.info("λ[1/%d] = %0.2g", params.nlambda, bl["lambda_"][0])
 
-    # -- PHASE 3: Fitting
+    # PHASE 3: Fitting
     for il in range(lstart, params.nlambda):
         lam = bl["lambda_"][il]
         logger.info("λ[%d/%d] = %0.2g", il + 1, params.nlambda, lam)
@@ -964,13 +966,14 @@ def _fit_lambda(
             y, row_indices, bl_i["eta"], bl_i["p"], bl_i["w"], bl_i["s"], bl_i["r"]
         )
 
-        # -- break early if model is saturated
-        # -- Differs from R biglasso, which always stops here; the option to
-        #    go on (stop_on_saturation=False) is not in R
+        # break early if model is saturated
+        #
+        # Differs from R biglasso, which always stops here; the option to
+        # go on (stop_on_saturation=False) is not in R
         if stop_on_saturation and bl["deviance"][il] / null_deviance < 0.01:
             return "saturated"
 
-        # -- perform one round of weight updates
+        # perform one round of weight updates
         bl["intercept"][il], bl_i["a0"], bl_i["sum_w_residuals"] = update_intercept(
             bl_i["w"], bl_i["r"], bl_i["a0"], bl_i["eta"]
         )
@@ -1013,11 +1016,11 @@ def _fit_lambda(
             bl_i["a"],
         )
 
-        # -- check strong set; if violated, re-fit with the enlarged active set
+        # check strong set; if violated, re-fit with the enlarged active set
         if check_strong_set(*kkt_args) > 0:
             continue
 
-        # -- check rest of predictors
+        # check rest of predictors
         if check_rest(*kkt_args) == 0:
             return "converged"
 

@@ -55,8 +55,7 @@ to observed output.
   versions `pyproject.toml` allows, which is what a new install gets.
 - **R**: the R comparison runs in a container (`docker/r-biglasso.Dockerfile`),
   pinned by R version; packages come from that R release's P3M snapshot.
-- Supported Pythons are those not yet at end of life (3.11 and up; 3.10 reached
-  it on 2026-10-01).
+- Supported Pythons are those not yet at end of life.
 
 ## Development Commands
 
@@ -79,7 +78,7 @@ to observed output.
 
 - Use modern type hints (PEP 604 unions with `|`, generics without `typing` module)
 - Prefer `pathlib.Path` over `os.path`
-- Comment the why, not the what; match the surrounding comment style (`# -- `)
+- Comment the why, not the what
 - Use descriptive variable names over comments
 - Keep functions focused and small
 - Prefer explicit imports over star imports
