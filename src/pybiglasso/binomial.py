@@ -174,6 +174,8 @@ def biglasso(
         if INTERCEPT in feature_names:
             raise ValueError(f"{INTERCEPT!r} is reserved for the intercept.")
 
+    # -- Differs from R biglasso: R compares nrow(X) with ncol(X); this
+    #    compares the rows actually fit, which differ when row_indices is given
     lambda_min_thresh = (0.001, 0.05)
     if lambda_min is None:
         lambda_min = lambda_min_thresh[0] if (nrow > ncol) else lambda_min_thresh[1]
@@ -314,7 +316,12 @@ def center_scale(X, row_indices):  # pragma: no cover
     Spares memory by working a column at a time; suitable for use with memory
     mapped arrays (or in-memory arrays).
 
-    Becase by column, you want X to be in Fortran order.
+    Because by column, you want X to be in Fortran order.
+
+    Differs from R biglasso: R computes the std from raw sums (sum x^2 minus
+    n mean^2), which lose precision for columns far from zero (scales can
+    come out inaccurate, or NaN); this uses two passes. R also drops a column holding NaN or
+    infinity (its scale is NaN), where this raises.
     """
 
     mean = np.zeros(X.shape[1], dtype=np.float64)
@@ -408,7 +415,12 @@ def centered_moments(X, jj, row_indices, r, w, center, scale):
 
 @nb.njit(cache=True, nogil=True)
 def standardized_score(X, jj, row_indices, s, s_sum, center, scale):
-    """Score with a centered fallback when raw-moment cancellation is unsafe."""
+    """Score with a centered fallback when raw-moment cancellation is unsafe.
+
+    Differs from R biglasso, which always uses the raw moments; they lose
+    precision for columns whose mean is large next to their spread, which can
+    affect the fit. The fallback costs about 2% on ordinary data.
+    """
     n = X.shape[0] if row_indices is None else len(row_indices)
     if abs(center) > 100 * scale:
         score = 0.0
@@ -425,7 +437,11 @@ def standardized_score(X, jj, row_indices, s, s_sum, center, scale):
 
 @nb.njit(cache=True, nogil=True)
 def final_loss(y, row_indices, eta):
-    """Stable negative log likelihood of the final linear predictor."""
+    """Stable negative log likelihood of the final linear predictor.
+
+    Differs from R biglasso, whose loss is from before the final coordinate
+    sweep, with probabilities clipped at 0 and 1; r_compatible keeps R's.
+    """
     loss = 0.0
     for i in range(len(eta)):
         yi = y[i] if row_indices is None else y[row_indices[i]]
@@ -567,6 +583,8 @@ def update_weights(
         if not e1[j]:
             continue
 
+        # -- Differs from R biglasso, which always uses the raw moments; see
+        #    standardized_score
         c, sc = center[jj], scale[jj]
         if abs(c) > 100 * sc:
             xwr, v = centered_moments(X, jj, row_indices, r, w, c, sc)
@@ -594,6 +612,9 @@ def update_weights(
             new_weight = 0.0
         else:
             sign = 1 if (u > 0) else -1
+            # -- Differs from R biglasso: R divides by v * (1 + l2), where the
+            #    documented elastic-net objective calls for v + l2. The two
+            #    agree for the lasso (l2 = 0).
             if r_compatible:
                 new_weight = sign * (abs(u) - l1) / v / (1 + l2)
             else:
@@ -789,6 +810,8 @@ def binomial_hsr(
         if unpenalized.any():
             # -- fit the unpenalized columns alone; that model is the solution at
             #    lambda_max, and its residuals determine lambda_max
+            # -- Differs from R biglasso, whose default grid is then lambda = 0
+            #    at every step (an unregularized fit)
             bl_i["e1"][unpenalized] = 1
             bl_i["e2"][unpenalized] = 1
             status = _fit_lambda(*fit_args, 0, 0.0, null_deviance, thresh, False)
@@ -942,6 +965,8 @@ def _fit_lambda(
         )
 
         # -- break early if model is saturated
+        # -- Differs from R biglasso, which always stops here; the option to
+        #    go on (stop_on_saturation=False) is not in R
         if stop_on_saturation and bl["deviance"][il] / null_deviance < 0.01:
             return "saturated"
 

@@ -68,7 +68,7 @@ def test_lasso_matches_independent_solver(data):
         lam = p.lambdas[k]
         sk = saga(sklm, C=1 / (n * lam), l1_ratio=1.0).fit((X - X.mean(axis=0)) / sd, y)
         np.testing.assert_allclose(
-            p.coef[:, [k]].toarray().ravel() * sd, sk.coef_.ravel(), atol=1e-5
+            p.coef[:, [k]].toarray().ravel() * sd, sk.coef_.ravel(), atol=1e-6
         )
 
 
@@ -84,7 +84,7 @@ def test_elastic_net_matches_independent_solver(data, alpha):
     for k in (2, 4, 7):
         sk = saga(sklm, C=1 / (n * p.lambdas[k]), l1_ratio=alpha).fit(Xs, y)
         ours = p.coef[:, [k]].toarray().ravel() * sd
-        np.testing.assert_allclose(ours, sk.coef_.ravel(), atol=1e-5)
+        np.testing.assert_allclose(ours, sk.coef_.ravel(), atol=1e-6)
         # -- R's update solves a different problem, measurably so
         r_coef = r.coef[:, [k]].toarray().ravel() * sd
         assert np.abs(r_coef - sk.coef_.ravel()).max() > 1e-3
