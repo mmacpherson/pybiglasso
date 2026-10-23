@@ -24,8 +24,8 @@ floating-point precision (see [Validation](#validation)).
 pip install pybiglasso
 ```
 
-The core depends only on numpy, scipy, numba, and threadpoolctl. Extras add
-optional integrations:
+The core depends only on numba, numpy, and scipy. Extras add optional
+integrations:
 
 | extra | adds |
 |---|---|

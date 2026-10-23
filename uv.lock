@@ -2672,7 +2672,6 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "threadpoolctl" },
 ]
 
 [package.optional-dependencies]
@@ -2726,7 +2725,6 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.6" },
     { name = "scipy" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13" },
-    { name = "threadpoolctl" },
 ]
 provides-extras = ["polars", "pandas", "sklearn", "viz", "all"]
 

@@ -8,7 +8,6 @@ import warnings
 import numba as nb
 import numpy as np
 import scipy.sparse as sps
-from threadpoolctl import threadpool_limits
 
 from .path import INTERCEPT, BiglassoPath
 
@@ -244,15 +243,11 @@ def biglasso(
         ncol,
         nlambda,
     )
-    # -- at least for the vector-vector dot products we do here, the overhead of
-    #    openblas/mkl multithreading appears to slow down the program in tests,
-    #    so we clamp those operations to a single thread
     prior_threads = nb.get_num_threads()
     try:
         if n_threads is not None:
             nb.set_num_threads(n_threads)
-        with threadpool_limits(limits=1, user_api="blas"):
-            results = binomial_hsr(X, y, row_indices, params)
+        results = binomial_hsr(X, y, row_indices, params)
     finally:
         nb.set_num_threads(prior_threads)
 

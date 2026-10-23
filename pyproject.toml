@@ -37,7 +37,6 @@ dependencies = [
     "numba",
     "numpy",
     "scipy",
-    "threadpoolctl",
 ]
 
 [project.optional-dependencies]
