@@ -25,7 +25,7 @@ from scipy.special import expit
 
 import pybiglasso as bl
 
-# -- on gradients of the mean log-likelihood. The solver stops when no update's
+# on gradients of the mean log-likelihood. The solver stops when no update's
 # v * (change in b_j)^2 exceeds eps * null deviance / n, so its gradients are
 # accurate to about sqrt(eps); the tests run at eps=1e-14.
 KKT_TOL = 1e-6
@@ -36,7 +36,7 @@ def kkt_residual(path, X, y, k):
     lam, alpha, pf = path.lambdas[k], path.alpha, path.penalty_factor
     eta = path.intercept[k] + X @ path.coef[:, [k]].toarray().ravel()
     resid = y - expit(eta)
-    # -- standardize independently of the solver: population mean and sd
+    # standardize independently of the solver: population mean and sd
     center, scale = X.mean(axis=0), X.std(axis=0)
     np.testing.assert_allclose(path.center, center, rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(path.scale, scale, rtol=1e-10)

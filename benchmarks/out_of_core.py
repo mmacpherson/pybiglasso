@@ -135,9 +135,9 @@ def fit_py(workdir, threads):
         order="F",
     )
     y = np.fromfile(workdir / "y.bin")
-    # -- compile on a tiny problem, outside the timing. It must be a read-only
-    #    Fortran memmap like X: numba compiles each array type separately, and
-    #    compiling inside the fit would also take memory from the page cache.
+    # compile on a tiny problem, outside the timing. It must be a read-only
+    # Fortran memmap like X: numba compiles each array type separately, and
+    # compiling inside the fit would also take memory from the page cache.
     warm = np.lib.format.open_memmap(
         workdir / "warm.npy", mode="w+", shape=(50, 20), fortran_order=True
     )
@@ -215,8 +215,8 @@ def run(args):
             image, "Rscript", str(script), str(workdir),
         ]  # fmt: skip
         evict_from_page_cache(workdir / "X.bin")
-        # -- R builds its file-backed big.matrix from X.bin each run (timed in
-        #    wall_incl_filebacked_setup) and refuses to overwrite an old one
+        # R builds its file-backed big.matrix from X.bin each run (timed in
+        # wall_incl_filebacked_setup) and refuses to overwrite an old one
         for stale in ("X.bm", "X.desc"):
             (workdir / stale).unlink(missing_ok=True)
         t0 = time.perf_counter()
@@ -243,8 +243,8 @@ def run(args):
             rejections=ref["rejections"],
             beta=np.vstack([ref["intercept"], ref["coef"]]),
         )
-        # -- pybiglasso's default deviance is the final model's; R's loss is
-        #    from before the final sweep (r_compatible=True would match it)
+        # pybiglasso's default deviance is the final model's; R's loss is
+        # from before the final sweep (r_compatible=True would match it)
         py["loss"] = r["loss"]
         problems = rcompare.compare(py, r)
         results["agreement"] = problems or (
