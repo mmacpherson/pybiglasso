@@ -9,8 +9,10 @@ These follow scikit-learn's naming, which differs from R biglasso's:
 """
 
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
+import numba
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import check_cv
@@ -160,7 +162,9 @@ class BiglassoClassifierCV(_BiglassoBase):
     n_jobs : int, optional
         Folds to fit at once, in threads that share X (so a memmap is read
         through one page cache). Each fold is single-threaded; results do not
-        depend on n_jobs. None or -1 uses all cores.
+        depend on n_jobs. None or -1 uses all cores. Needs numba's tbb or omp
+        threading layer; with workqueue, its fallback when neither is
+        installed (as on macOS by default), folds run one at a time.
 
     Attributes
     ----------
@@ -240,6 +244,17 @@ class BiglassoClassifierCV(_BiglassoBase):
         n_jobs = self.n_jobs
         if n_jobs is None or n_jobs < 0:
             n_jobs = os.cpu_count() or 1
+        # -- numba's workqueue layer aborts the process if parallel kernels
+        #    launch from two threads at once; the full fit above has chosen
+        #    the layer
+        if n_jobs > 1 and numba.threading_layer() == "workqueue":
+            if self.n_jobs is not None and self.n_jobs != 1:
+                warnings.warn(
+                    "numba's workqueue threading layer can't fit folds in "
+                    "parallel, so they run one at a time.",
+                    stacklevel=2,
+                )
+            n_jobs = 1
         with ThreadPoolExecutor(max_workers=min(n_jobs, len(folds))) as pool:
             for k, s in enumerate(pool.map(score_fold, folds)):
                 scores[k, : len(s)] = s
