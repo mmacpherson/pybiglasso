@@ -12,10 +12,10 @@
 # including R's file-backed copy).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-tag="${1:-$(hostname)}"
+tag="${1:+-$1}"
 out=benchmarks/results
 mkdir -p "$out"
-exec >>"$out/extra-${tag}.log" 2>&1
+exec >>"$out/extra${tag}.log" 2>&1
 
 all_threads="$(nproc --all)"
 uv run -q --group bench python benchmarks/path.py \
@@ -24,7 +24,7 @@ uv run -q --group bench python benchmarks/path.py \
   --solver pybiglasso --solver glum \
   --alpha 1.0 --alpha 0.5 --threads 1 --threads "$all_threads" \
   --repeats 3 --cap 900 --ratio-cap 10 \
-  --out "$out/path-${tag}-allthreads.jsonl"
+  --out "$out/path${tag}-allthreads.jsonl"
 
 CONTAINER="${CONTAINER:-docker}" R_IMAGE="${R_IMAGE:-pybiglasso-r:latest}" \
   uv run -q python benchmarks/out_of_core.py run "${OOC_DIR:-/scratch/biglasso-ooc}" \

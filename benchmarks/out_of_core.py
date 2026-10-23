@@ -252,7 +252,7 @@ def run(args):
         )
 
     print(json.dumps(results, indent=2))
-    out = HERE / "results" / f"out_of_core-{os.uname().nodename}.json"
+    out = HERE / "results" / "out_of_core.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         json.dumps(

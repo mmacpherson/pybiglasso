@@ -350,7 +350,6 @@ def environment():
     except OSError:
         pass
     return dict(
-        host=platform.node(),
         cpu=cpu,
         cores=os.cpu_count(),
         python=platform.python_version(),
