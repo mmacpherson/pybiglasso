@@ -14,6 +14,17 @@ test-latest:
 lint:
 	uv run ruff check src tests
 
+# the Rust backend, built in place for the tests and benchmarks (Linux)
+.PHONY: rust
+rust:
+	cargo build --release --manifest-path rust/Cargo.toml
+	cp rust/target/release/lib_rust.so src/pybiglasso/_rust.abi3.so
+
+# its kernels against plain scalar sums, at every SIMD width this CPU runs
+.PHONY: test-rust
+test-rust:
+	cargo test --release --manifest-path rust/Cargo.toml
+
 .PHONY: update-hooks run-hooks-all-files
 update-hooks:
 	uv run pre-commit autoupdate

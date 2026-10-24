@@ -1,0 +1,11 @@
+[build-system]
+build-backend = "maturin"
+requires = ["maturin>=1.9,<2"]
+
+[project]
+name = "pybiglasso-rs"
+requires-python = ">=3.11"
+version = "0.1.0"
+
+[tool.maturin]
+module-name = "pybiglasso._rust"

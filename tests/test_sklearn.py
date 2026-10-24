@@ -109,11 +109,11 @@ from pybiglasso import BiglassoClassifierCV
 d = bl.common.generate_test_data(200, 8, seed=1)
 with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
-    BiglassoClassifierCV(n_alphas=8, cv=4, n_jobs=4).fit(d["X"], d["y"])
-    BiglassoClassifierCV(n_alphas=8, cv=4).fit(d["X"], d["y"])
+    BiglassoClassifierCV(n_alphas=8, cv=4, n_jobs=4, backend="numba").fit(d["X"], d["y"])
+    BiglassoClassifierCV(n_alphas=8, cv=4, backend="numba").fit(d["X"], d["y"])
 print(sum("one at a time" in str(x.message) for x in w))
 """
-    env = {**os.environ, "NUMBA_THREADING_LAYER": "workqueue"}
+    env = os.environ | {"NUMBA_THREADING_LAYER": "workqueue"}
     out = subprocess.run(
         [sys.executable, "-c", code], env=env, capture_output=True, text=True
     )

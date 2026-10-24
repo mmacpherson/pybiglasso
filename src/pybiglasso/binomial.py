@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import collections
 import logging
+import math
 import numbers
 import time
 import warnings
@@ -9,6 +10,7 @@ import numba as nb
 import numpy as np
 import scipy.sparse as sps
 
+from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ def biglasso(
     stop_on_saturation=True,
     r_compatible=False,
     n_threads=None,
+    backend=None,
 ):
     """Fit a lasso or elastic-net penalized logistic regression path.
 
@@ -74,6 +77,9 @@ def biglasso(
     Column-wise work (standardization and the strong-rule and KKT scans) runs on
     `n_threads` threads, by default numba's (all cores); coordinate descent
     itself is sequential. Results do not depend on the thread count.
+
+    `backend` picks the solver's implementation, "numba" or "rust"; by default,
+    the `backend` setting (see `pybiglasso.config`).
 
     Returns a `BiglassoPath`.
 
@@ -120,6 +126,7 @@ def biglasso(
         _integer("dfmax", dfmax, minimum=0)
     if n_threads is not None:
         _integer("n_threads", n_threads)
+    backend = settings.backend if backend is None else check_backend(backend)
     if not np.isfortran(X):
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
@@ -245,13 +252,16 @@ def biglasso(
         ncol,
         nlambda,
     )
-    prior_threads = nb.get_num_threads()
-    try:
-        if n_threads is not None:
-            nb.set_num_threads(n_threads)
-        results = binomial_hsr(X, y, row_indices, params)
-    finally:
-        nb.set_num_threads(prior_threads)
+    if backend == "rust":
+        results = binomial_rust(X, y, row_indices, params, n_threads)
+    else:
+        prior_threads = nb.get_num_threads()
+        try:
+            if n_threads is not None:
+                nb.set_num_threads(n_threads)
+            results = binomial_hsr(X, y, row_indices, params)
+        finally:
+            nb.set_num_threads(prior_threads)
 
     # keep the part of the path that was fit (it stops early on saturation
     # or dfmax), and untransform coefficients back to the scale of X
@@ -261,7 +271,8 @@ def biglasso(
     for k, il in enumerate(fitted):
         cols = col_map[results["coef_rows"][il]]
         beta = results["coef_vals"][il] / scale[cols]
-        intercept[k] -= center[cols] @ beta
+        # fsum, not @: BLAS picks its summation order by CPU and thread count
+        intercept[k] -= math.fsum(center[cols] * beta)
         rows.append(cols)
         vals.append(beta)
     indptr = np.concatenate([[0], np.cumsum([len(r) for r in rows])])
@@ -915,6 +926,52 @@ def binomial_hsr(
             (bl_i["a"] != 0).sum(),
         )
 
+    return bl
+
+
+def binomial_rust(X, y, row_indices, params, n_threads):
+    """binomial_hsr, run by the Rust backend in one call."""
+    from . import _rust
+
+    if not X.flags.aligned:
+        # the kernels read X through typed pointers; numpy can build arrays
+        # whose elements aren't aligned for their type (offset buffers)
+        raise ValueError(
+            'The rust backend needs X aligned to its dtype; use backend="numba".'
+        )
+    y_used = y if row_indices is None else y[row_indices]
+    ybar = y_used.mean()
+    null_deviance = (
+        -1.0 * (y_used * np.log(ybar) + (1 - y_used) * np.log(1 - ybar)).sum()
+    )
+    bl = _rust.fit_path(
+        X,
+        y,
+        None if row_indices is None else row_indices.astype(np.int64),
+        float(params.alpha),
+        params.lambdas,
+        params.nlambda,
+        float(params.eps),
+        float(params.lambda_min),
+        bool(params.lambda_log_scale),
+        params.multiplier,
+        params.dfmax,
+        params.max_iter,
+        bool(params.stop_on_saturation),
+        bool(params.r_compatible),
+        float(ybar),
+        float(null_deviance),
+        n_threads or 0,
+    )
+    for kind, il in bl.pop("events"):
+        where = f"λ[{il + 1}/{params.nlambda}]"
+        message = {
+            "prefit_saturated": "Model saturated by the unpenalized columns alone; no path fit.",
+            "dfmax": f"Exceeded dfmax={params.dfmax} nonzero coefficients; path truncated at {where}.",
+            "saturated": f"Model saturated; path truncated at {where}.",
+            "max_iter": f"Failed to converge within max_iter={params.max_iter} iterations at {where}.",
+        }[kind]
+        warnings.warn(message, stacklevel=3)
     return bl
 
 

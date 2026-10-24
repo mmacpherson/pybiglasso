@@ -20,6 +20,7 @@ from sklearn.utils.multiclass import check_classification_targets, type_of_targe
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .binomial import biglasso
+from .config import settings
 from .path import METRICS, _expit, linear_predictor
 
 __all__ = ["BiglassoClassifier", "BiglassoClassifierCV"]
@@ -69,6 +70,7 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
             penalty_factor=self.penalty_factor,
             eps=self.tol,
             max_iter=self.max_iter,
+            backend=self.backend,
         )
 
     def decision_function(self, X):
@@ -108,16 +110,24 @@ class BiglassoClassifier(_BiglassoBase):
     penalty_factor : array of shape (n_features,), optional
         Per-feature penalty multipliers; 0 leaves a feature unpenalized.
     tol, max_iter : convergence settings, as R biglasso's `eps` and `max.iter`.
+    backend : "numba" or "rust", optional; as in `biglasso`.
     """
 
     def __init__(
-        self, alpha=1e-3, l1_ratio=1.0, penalty_factor=None, tol=1e-7, max_iter=1000
+        self,
+        alpha=1e-3,
+        l1_ratio=1.0,
+        penalty_factor=None,
+        tol=1e-7,
+        max_iter=1000,
+        backend=None,
     ):
         self.alpha = alpha
         self.l1_ratio = l1_ratio
         self.penalty_factor = penalty_factor
         self.tol = tol
         self.max_iter = max_iter
+        self.backend = backend
 
     def fit(self, X, y):
         X, y = self._validate_xy(X, y)
@@ -158,7 +168,7 @@ class BiglassoClassifierCV(_BiglassoBase):
     rule : {"min", "1se"}
         Pick the best-scoring alpha, or the largest alpha within one standard
         error of it (glmnet's lambda.1se).
-    penalty_factor, tol, max_iter : as in `BiglassoClassifier`.
+    penalty_factor, tol, max_iter, backend : as in `BiglassoClassifier`.
     n_jobs : int, optional
         Folds to fit at once, in threads that share X (so a memmap is read
         through one page cache). Each fold is single-threaded; results do not
@@ -188,6 +198,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         tol=1e-7,
         max_iter=1000,
         n_jobs=None,
+        backend=None,
     ):
         self.l1_ratio = l1_ratio
         self.n_alphas = n_alphas
@@ -200,6 +211,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         self.tol = tol
         self.max_iter = max_iter
         self.n_jobs = n_jobs
+        self.backend = backend
 
     def fit(self, X, y):
         if self.scoring not in METRICS:
@@ -247,7 +259,8 @@ class BiglassoClassifierCV(_BiglassoBase):
         # numba's workqueue layer aborts the process if parallel kernels
         # launch from two threads at once; the full fit above has chosen
         # the layer
-        if n_jobs > 1 and numba.threading_layer() == "workqueue":
+        backend = settings.backend if self.backend is None else self.backend
+        if n_jobs > 1 and backend == "numba" and numba.threading_layer() == "workqueue":
             if self.n_jobs is not None and self.n_jobs != 1:
                 warnings.warn(
                     "numba's workqueue threading layer can't fit folds in "

@@ -44,6 +44,6 @@ repos:
     # differently). The weekly update-pre-commit-hooks workflow bumps this pin.
     additional_dependencies: [toml-sort==0.25.0]
     # Lockfiles are machine-written; reformatting them only makes churn.
-    exclude: ^uv\.lock$
+    exclude: ^(uv\.lock|rust/Cargo\.lock)$
   - id: pretty-format-yaml
     args: [--autofix, --indent, '2']
