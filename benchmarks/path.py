@@ -40,6 +40,7 @@ SOLVERS = [
     "pybiglasso-rcompat",
     "r-biglasso-ssr",
     "r-biglasso-adaptive",
+    "r-glmnet",
     "glum",
     "skglm",
     "sklearn-liblinear",
@@ -52,9 +53,9 @@ LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
 # R's elastic-net update; identical to pybiglasso's for the lasso
 ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
-R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive"}
+R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
 # these don't use more than one thread; running them at more is redundant
-SINGLE_THREADED = {"skglm", "sklearn-liblinear", "sklearn-saga"}
+SINGLE_THREADED = {"skglm", "sklearn-liblinear", "sklearn-saga", "r-glmnet"}
 # statsmodels' L1 fit needs memory quadratic in the column count
 STATSMODELS_MAX_GB = 8
 
@@ -258,11 +259,42 @@ def fit_r_adaptive(X, Xs, y, lambdas, alpha, threads):
     return _fit_r(X, Xs, y, lambdas, alpha, threads, "Adaptive")
 
 
+def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads):
+    """Fit in R's glmnet; returns (coef, intercept, R's own fit seconds,
+    glmnet's version)."""
+    import numpy as np
+
+    sys.path.insert(0, str(HERE.parent / "tests"))
+    import rcompare
+
+    def load(path):
+        return json.loads(pathlib.Path(path).read_text())
+
+    nrow, ncol = Xs.shape
+    with tempfile.TemporaryDirectory(dir=os.environ.get("R_WORKDIR")) as d:
+        d = pathlib.Path(d)
+        np.asfortranarray(Xs, dtype=np.float64).ravel(order="F").tofile(d / "X.bin")
+        np.asarray(y, dtype=np.float64).tofile(d / "y.bin")
+        params = dict(nrow=nrow, ncol=ncol, alpha=alpha, lambdas=list(lambdas))
+        (d / "params.json").write_text(json.dumps(params))
+        (r,) = rcompare.run_r([d], script=HERE / "r" / "fit_glmnet.R", load=load)
+    if "error" in r:
+        raise RuntimeError(r["error"])
+    coef = np.array(r["beta"], dtype=np.float64).reshape(r["beta_dim"], order="F").T
+    intercept = np.atleast_1d(np.array(r["intercept"], dtype=np.float64))
+    # glmnet ends the path early once the deviance stops changing
+    pad = len(lambdas) - coef.shape[0]
+    coef = np.vstack([coef, np.full((pad, ncol), np.nan)])
+    intercept = np.concatenate([intercept, np.full(pad, np.nan)])
+    return coef, intercept, float(r["seconds"]), {"glmnet": r["glmnet_version"]}
+
+
 FITTERS = {
     "pybiglasso": fit_pybiglasso,
     "pybiglasso-rcompat": fit_pybiglasso_rcompat,
     "r-biglasso-ssr": fit_r_ssr,
     "r-biglasso-adaptive": fit_r_adaptive,
+    "r-glmnet": fit_r_glmnet,
     "pybiglasso-tight": fit_pybiglasso_tight,
     "glum": fit_glum,
     "skglm": fit_skglm,
@@ -292,11 +324,20 @@ def run_one(args):
     t0 = time.perf_counter()
     out = FITTERS[args.solver](X, Xs, y, lambdas, args.alpha, args.threads)
     seconds = time.perf_counter() - t0
-    if len(out) == 3:  # the solver timed its own fit (R)
+    versions = {}
+    if len(out) == 4:  # R's glmnet, which also reports its version
+        coef, intercept, seconds, versions = out
+    elif len(out) == 3:  # the solver timed its own fit (R)
         coef, intercept, seconds = out
     else:
         coef, intercept = out
-    np.savez(args.out, coef=coef, intercept=intercept, seconds=seconds)
+    np.savez(
+        args.out,
+        coef=coef,
+        intercept=intercept,
+        seconds=seconds,
+        versions=json.dumps(versions),
+    )
 
 
 # orchestration ----------------------------------------------------------
@@ -424,7 +465,7 @@ def main():
                     for t in threads:
                         if solver in SINGLE_THREADED and t != min(threads):
                             continue
-                        times, result = [], None
+                        times, result, versions = [], None, {}
                         for rep in range(args.repeats):
                             res = f"{tmp}/{solver}-{t}-{rep}.npz"
                             env = dict(os.environ)
@@ -455,9 +496,10 @@ def main():
                             r = np.load(res)
                             times.append(float(r["seconds"]))
                             result = (r["coef"], r["intercept"])
+                            versions = json.loads(str(r["versions"]))
                             if times[-1] > run_cap / 3:
                                 break  # slow; one measurement will do
-                        runs[(solver, t)] = (times, result)
+                        runs[(solver, t)] = (times, result, versions)
                         if solver == "pybiglasso" and t == 1 and np.isfinite(times[0]):
                             # a floor only lengthens the cap, so a timeout still
                             # means "over ratio_cap times slower"
@@ -473,7 +515,7 @@ def main():
 
             # accuracy: objective at each lambda vs the best any solver found
             objs = {}
-            for key, (_times, result) in runs.items():
+            for key, (_times, result, _versions) in runs.items():
                 if result is None:
                     continue
                 coef, intercept = result
@@ -488,9 +530,10 @@ def main():
             best = np.nanmin(np.vstack(list(objs.values())), axis=0)
 
             with open(out, "a") as fp:
-                for (solver, t), (times, _result) in runs.items():
-                    subopt = None
+                for (solver, t), (times, _result, versions) in runs.items():
+                    subopt = fitted = None
                     if (solver, t) in objs:
+                        fitted = int(np.isfinite(objs[(solver, t)]).sum())
                         rel = (objs[(solver, t)] - best) / np.abs(best)
                         subopt = float(np.nanmax(rel))
                     record = dict(
@@ -507,7 +550,9 @@ def main():
                         cap=run_cap if solver != "pybiglasso" else args.cap,
                         ratio_cap=args.ratio_cap,
                         max_rel_suboptimality=subopt,
+                        fitted_lambdas=fitted,
                         **env_info,
+                        **versions,
                     )
                     fp.write(json.dumps(record) + "\n")
 

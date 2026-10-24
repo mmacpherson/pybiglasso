@@ -24,10 +24,11 @@ path, with cross-validation to choose the penalty, without loading it into
 memory.
 
 It's also fast when the data does fit in memory. On a full 100-step lasso path
-over 5,000 samples by 50,000 features, it is 2.3x faster than R biglasso and
-4.7x faster than skglm, the fastest of the other Python solvers we tested.
-Across the four benchmark problems, with 1,000 to 50,000 features, it runs 2–5x
-faster than R biglasso and 4–7x faster than skglm.
+over 5,000 samples by 50,000 features, it is 2.2x faster than R's glmnet, 2.3x
+faster than R biglasso, and 4.7x faster than skglm, the fastest of the other
+Python solvers we tested. Across the four benchmark problems, with 1,000 to
+50,000 features, it runs 1.9–2.7x faster than glmnet, 2–5x faster than R
+biglasso, and 4–7x faster than skglm.
 
 It is an unofficial Python port of the R package
 [biglasso](https://github.com/pbreheny/biglasso), and reproduces its results to
@@ -198,10 +199,10 @@ thread count: 1, 6, or 12. The scripts and raw results are in
 
 ![Time relative to pybiglasso, by dataset and solver](https://raw.githubusercontent.com/mmacpherson/pybiglasso/v0.1.0/docs/benchmarks.png)
 
-**Which solvers.** R biglasso, the original, and every maintained Python
-package, installable with pip, that fits L1 or elastic-net logistic regression
-on a CPU: scikit-learn (its liblinear and saga solvers), glum, skglm, and
-statsmodels.
+**Which solvers.** R biglasso, the original; R's glmnet, whose coordinate
+descent biglasso builds on; and every maintained Python package, installable
+with pip, that fits L1 or elastic-net logistic regression on a CPU: scikit-learn
+(its liblinear and saga solvers), glum, skglm, and statsmodels.
 
 **Other Python solvers.** Each competitor was stopped once it took 10x as long
 as pybiglasso, which would otherwise have stretched the run to many hours. Only
@@ -216,6 +217,7 @@ large the gaps get, the smallest problem (5,000 x 1,000) also ran with no cap:
 |---|---|---|---|
 | pybiglasso | 0.71 s | 0.74 s | 1e-6 |
 | pybiglasso, `eps=1e-10` | 1.62 s | 1.54 s | 3e-10 |
+| glmnet 5.1 (R) | 1.4 s (1.9x) | 1.4 s (1.9x) | 2e-6 |
 | skglm | 4.1 s (6x) | 4.4 s (6x) | 2e-4 |
 | glum, 6 threads | 9.6 s (14x) | 10.9 s (15x) | 6e-9 |
 | sklearn liblinear | 20.5 s (29x) | — | 5e-6 |
@@ -242,6 +244,13 @@ time.
 
 R's adaptive screening rule is no faster than SSR on these problems.
 
+**glmnet 5.1.** glmnet fit the standardized matrix as given (`standardize =
+FALSE`), with an intercept, along the same lambda grid, at its default
+tolerance; it runs on one thread. Its objective is the benchmark's. It fit
+every path in full, at 1.9–2.7x pybiglasso's best time (1.8–2.6x pybiglasso's
+on one thread), and about as accurately: a worst relative suboptimality of 2e-8
+to 3e-6, against pybiglasso's 6e-8 to 3e-6.
+
 **Out of core.** This test fits a 12 GB float64 matrix (20,000 x 75,000) with
 memory capped at 3 GB. pybiglasso read a numpy memmap under a cgroup memory
 limit; R read a file-backed `big.matrix` in a container with the same limit,
@@ -260,8 +269,8 @@ Extra threads hurt here: they evict pages each other still need.
 
 **Not compared**, by the rule above:
 
-- Other languages: glmnet, whose Fortran solver both R's glmnet and Julia's
-  GLMNet.jl call, and Julia's Lasso.jl, written in Julia.
+- Other languages: Julia's GLMNet.jl, which calls glmnet's Fortran solver, and
+  Lasso.jl, written in Julia.
 - Other hardware: RAPIDS cuML fits on a GPU, and only data that fits in GPU
   memory.
 - Unmaintained: python-glmnet, archived, with its last release in 2020.
