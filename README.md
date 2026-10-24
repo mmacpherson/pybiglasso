@@ -259,11 +259,14 @@ Extra threads hurt here: they evict pages each other still need.
 
 **Not compared**, by the rule above:
 
-- Other languages: glmnet (in R, or through Julia's GLMNet.jl) and Julia's
-  Lasso.jl.
+- Other languages: glmnet, whose Fortran solver both R's glmnet and Julia's
+  GLMNet.jl call, and Julia's Lasso.jl, written in Julia.
 - Other hardware: RAPIDS cuML fits on a GPU, and only data that fits in GPU
   memory.
 - Unmaintained: python-glmnet, archived, with its last release in 2020.
+- A different problem: celer's logistic regression fits the lasso only, and no
+  intercept. skglm, from the same authors, fits an intercept and the elastic
+  net, and is compared above.
 - Not a solver: benchopt is a benchmarking framework; its logistic-regression
   benchmark fits without an intercept or standardization, which pybiglasso
   doesn't support yet.
