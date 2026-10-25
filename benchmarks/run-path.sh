@@ -9,7 +9,7 @@
 # large the gaps get. DATASETS="a b" and SOLVERS="a b" limit the capped run;
 # THREADS="1 6 12" sets the thread counts (default: 1 and half the hardware
 # threads).
-# R biglasso solvers need CONTAINER/R_IMAGE (see tests/rcompare.py); their
+# R biglasso solvers need CONTAINER/R_IMAGE (see tests/support/rcompare.py); their
 # scratch data goes to R_WORKDIR (default: benchmarks/results/tmp, on disk).
 set -euo pipefail
 cd "$(dirname "$0")/.."

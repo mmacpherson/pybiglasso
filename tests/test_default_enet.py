@@ -22,44 +22,10 @@ import zlib
 import numpy as np
 import pytest
 from scipy.special import expit
+from support.certificates import KKT_TOL, kkt_residual
+from support.certificates import path_objective as objective
 
 import pybiglasso as bl
-
-# on gradients of the mean log-likelihood. The solver stops when no update's
-# v * (change in b_j)^2 exceeds eps * null deviance / n, so its gradients are
-# accurate to about sqrt(eps); the tests run at eps=1e-14.
-KKT_TOL = 1e-6
-
-
-def kkt_residual(path, X, y, k):
-    """Largest KKT violation at lambda index k, recomputed from scratch."""
-    lam, alpha, pf = path.lambdas[k], path.alpha, path.penalty_factor
-    eta = path.intercept[k] + X @ path.coef[:, [k]].toarray().ravel()
-    resid = y - expit(eta)
-    # standardize independently of the solver: population mean and sd
-    center, scale = X.mean(axis=0), X.std(axis=0)
-    np.testing.assert_allclose(path.center, center, rtol=1e-10, atol=1e-12)
-    np.testing.assert_allclose(path.scale, scale, rtol=1e-10)
-    Xs = (X - center) / scale
-    g = Xs.T @ resid / len(y)
-    b = path.coef[:, [k]].toarray().ravel() * scale
-
-    active = b != 0
-    viol = np.zeros_like(g)
-    viol[active] = np.abs(
-        g[active]
-        - lam * pf[active] * (alpha * np.sign(b[active]) + (1 - alpha) * b[active])
-    )
-    viol[~active] = np.maximum(np.abs(g[~active]) - lam * pf[~active] * alpha, 0)
-    return max(viol.max(), abs(resid.mean()))
-
-
-def objective(path, X, y, k):
-    lam, alpha, pf = path.lambdas[k], path.alpha, path.penalty_factor
-    eta = path.intercept[k] + X @ path.coef[:, [k]].toarray().ravel()
-    nll = np.mean(np.logaddexp(0, eta) - y * eta)
-    b = path.coef[:, [k]].toarray().ravel() * path.scale
-    return nll + lam * np.sum(pf * (alpha * np.abs(b) + (1 - alpha) / 2 * b**2))
 
 
 def labels(X, rng, beta):

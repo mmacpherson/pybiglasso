@@ -8,7 +8,7 @@
 import warnings
 
 import pytest
-import rcompare
+from support import rcompare
 
 FAST = rcompare.fast_grid()
 SOAK = rcompare.soak_grid()

@@ -15,7 +15,7 @@ alpha=0 raises NotImplementedError; it is not an invalid-input ValueError.
 
 No fit generates a grid, a target coefficient, or an acceptance tolerance here.
 Metamorphic comparisons fit both sides of an identity specified in advance.
-The segment-curvature bound is shared with test_invariances, including its
+The segment-curvature bound lives in support.certificates, including its
 explicit allowance (not interval arithmetic) for floating-point eigensolving.
 """
 
@@ -29,13 +29,18 @@ from hypothesis import assume, example, given
 from hypothesis import strategies as st
 from scipy.linalg import hadamard
 from scipy.special import expit
-from test_default_enet import KKT_TOL
-from test_invariances import (
+from support.certificates import (
+    KKT_TOL,
     certified_distance,
+    gradient_lipschitz,
     standardize,
     standardized_theta,
+    subgradient_residual,
+    support_is_certified,
     with_ones,
 )
+from support.certificates import objective as independent_objective
+from support.paths import assert_bitwise
 
 import pybiglasso as bl
 
@@ -43,7 +48,7 @@ BACKENDS = ["numba", "rust"]
 FIT_EPS = 1e-14
 # The stopping measure is v*shift^2 < eps*null_deviance/n. Its natural gradient
 # scale is sqrt(eps), not eps; use the independently established KKT_TOL=1e-6
-# from test_default_enet, with the same eps=1e-14 and no relaxed acceptance.
+# with the same eps=1e-14 and no relaxed acceptance.
 FIT_OPTIONS = dict(eps=FIT_EPS, max_iter=10_000, n_threads=1)
 
 
@@ -102,11 +107,11 @@ class SmoothProblem:
         # Check metadata against inputs, so optimality cannot pass by silently
         # solving a problem with a different alpha, penalty or lambda grid.
         assert path.alpha == options["alpha"]
-        assert_bits(
+        assert_bitwise(
             path.penalty_factor, np.array(options["penalty_factor"], dtype=float)
         )
         assert len(path) == len(options["lambdas"])
-        assert_bits(path.lambdas, np.array(options["lambdas"], dtype=float))
+        assert_bitwise(path.lambdas, np.array(options["lambdas"], dtype=float))
         return path
 
 
@@ -159,21 +164,6 @@ STOPPING_TIE = SmoothProblem(
 )
 
 
-def assert_bits(a, b):
-    assert a.shape == b.shape
-    assert a.dtype == b.dtype
-    assert a.tobytes() == b.tobytes()
-
-
-def assert_path_bits(a, b, length=None, rows=None):
-    length = len(a) if length is None else length
-    assert len(a) == length
-    for field in ("lambdas", "intercept", "deviance", "iterations", "n_rejected"):
-        assert_bits(getattr(a, field), getattr(b, field)[:length])
-    coef = b.coef.toarray()[:, :length]
-    assert_bits(a.coef.toarray(), coef if rows is None else coef[rows])
-
-
 def theta_and_residuals(path, X, y):
     """Independently recompute subgradient residuals, including the intercept.
 
@@ -195,15 +185,14 @@ def theta_and_residuals(path, X, y):
     )
     eta = Z @ theta
     assert np.max(np.abs(eta)) < 10, "outside the unclipped KKT domain"
-    gradient = Z.T @ (expit(eta) - y[:, None]) / len(y)
-    beta = theta[1:]
-    l1 = path.lambdas * path.alpha * path.penalty_factor[:, None]
-    l2 = path.lambdas * (1 - path.alpha) * path.penalty_factor[:, None]
-    residual = gradient.copy()
-    residual[1:] += l2 * beta + np.where(
-        beta != 0,
-        l1 * np.sign(beta),
-        np.clip(-gradient[1:], -l1, l1),
+    residual = subgradient_residual(
+        Z,
+        y,
+        theta,
+        path.lambdas,
+        path.alpha,
+        path.penalty_factor,
+        eta=eta,
     )
     assert np.max(np.abs(residual)) < KKT_TOL, (
         "KKT residual exceeds the fixed accuracy cap"
@@ -219,7 +208,7 @@ def assert_certified_solutions(a, b, X, y):
     order in numba. Those are objective identities, not bitwise identities.
     """
     assert len(a) == len(b)
-    assert_bits(a.lambdas, b.lambdas)
+    assert_bitwise(a.lambdas, b.lambdas)
     Z, ta, ra = theta_and_residuals(a, X, y)
     _, tb, rb = theta_and_residuals(b, X, y)
     for k in range(len(a)):
@@ -229,15 +218,6 @@ def assert_certified_solutions(a, b, X, y):
         # for forming and comparing the two standardized parameter vectors.
         rounding = 64 * Z.size * np.finfo(float).eps * (1 + np.linalg.norm(ta[:, k]))
         assert np.linalg.norm(ta[:, k] - tb[:, k]) <= bound + rounding
-
-
-def independent_objective(X, y, intercept, beta, scale, pf, lam, alpha):
-    """No pybiglasso routine or fitted path supplies this value."""
-    eta = intercept + X @ beta
-    nll = np.logaddexp(0, np.where(y == 1, -eta, eta)).mean()
-    b = beta * scale
-    penalty = np.dot(pf, alpha * abs(b) + (1 - alpha) * b**2 / 2)
-    return nll + lam * penalty
 
 
 @given(problem=smooth_problems(), exponent=st.integers(-3, 3))
@@ -282,10 +262,10 @@ def test_penalty_rescaling_and_constant_insertion(problem, exponent, insert, bac
         lambdas=np.array(problem.grid) / factor,
     )
     # Compare all fields other than the known, inversely rescaled lambda grid.
-    assert_bits(scaled.lambdas * factor, fit.lambdas)
+    assert_bitwise(scaled.lambdas * factor, fit.lambdas)
     for field in ("intercept", "deviance", "iterations", "n_rejected"):
-        assert_bits(getattr(fit, field), getattr(scaled, field))
-    assert_bits(fit.coef.toarray(), scaled.coef.toarray())
+        assert_bitwise(getattr(fit, field), getattr(scaled, field))
+    assert_bitwise(fit.coef.toarray(), scaled.coef.toarray())
 
     X, y = problem.arrays()
     at = min(insert, X.shape[1])
@@ -325,7 +305,7 @@ def test_supplied_grid_prefix_is_exact(problem, prefix, backend):
     full = problem.fit(backend)
     size = min(prefix, len(problem.grid) - 1)
     short = problem.fit(backend, lambdas=problem.grid[:size])
-    assert_path_bits(short, full, length=size)
+    assert_bitwise(short, full, length=size)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -343,9 +323,9 @@ def test_threads_do_not_change_bits(problem, compatible, backend):
     threads = 2 if backend == "rust" else min(2, numba.config.NUMBA_NUM_THREADS)
     one = problem.fit(backend, r_compatible=compatible)
     many = problem.fit(backend, n_threads=threads, r_compatible=compatible)
-    assert_path_bits(one, many)
-    assert_bits(one.center, many.center)
-    assert_bits(one.scale, many.scale)
+    assert_bitwise(one, many)
+    assert_bitwise(one.center, many.center)
+    assert_bitwise(one.scale, many.scale)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -455,7 +435,7 @@ def first_rejections_are_certified(problem, X, y):
     )
 
 
-def support_is_certified(a, b, X, y):
+def path_support_is_certified(a, b, X, y):
     """Whether two fits near one optimum must have the same signs (PR 15's
     support certificate), taking a as the reference at each lambda.
 
@@ -468,7 +448,7 @@ def support_is_certified(a, b, X, y):
     Z, ta, ra = theta_and_residuals(a, X, y)
     _, tb, rb = theta_and_residuals(b, X, y)
     n = len(y)
-    L = np.linalg.norm(Z, 2) ** 2 / (4 * n)
+    L = gradient_lipschitz(Z)
     for k in range(len(a)):
         ea, eb = np.linalg.norm(ra[:, k]), np.linalg.norm(rb[:, k])
         rounding = 64 * Z.size * np.finfo(float).eps * (1 + np.linalg.norm(ta[:, k]))
@@ -477,10 +457,15 @@ def support_is_certified(a, b, X, y):
         beta = ta[1:, k]
         l1 = a.lambdas[k] * a.alpha * a.penalty_factor
         l2 = a.lambdas[k] * (1 - a.alpha) * a.penalty_factor
-        zero = beta == 0
-        if np.any(zero & ~(l1 - np.abs(g) > eb + (L + l2) * d + rounding)):
-            return False
-        if np.any(~zero & ~(np.abs(beta) > d)):
+        if not support_is_certified(
+            beta,
+            g,
+            l1,
+            distance=d,
+            residual_bound=eb,
+            lipschitz=L + l2,
+            rounding=rounding,
+        ):
             return False
     return True
 
@@ -502,7 +487,7 @@ def test_backends_agree_on_certified_discrete_decisions(problem):
     X, y = problem.arrays()
     a, b = (problem.fit(backend) for backend in BACKENDS)
     rejections_certified, rejected = first_rejections_are_certified(problem, X, y)
-    support_certified = support_is_certified(a, b, X, y)
+    support_certified = path_support_is_certified(a, b, X, y)
     assume(rejections_certified or support_certified)
     if rejections_certified:
         assert a.n_rejected[0] == b.n_rejected[0] == rejected

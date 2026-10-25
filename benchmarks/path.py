@@ -216,7 +216,7 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen):
     import numpy as np
 
     sys.path.insert(0, str(HERE.parent / "tests"))
-    import rcompare
+    from support import rcompare
 
     nrow, ncol = X.shape
     with tempfile.TemporaryDirectory(dir=os.environ.get("R_WORKDIR")) as d:
@@ -265,7 +265,7 @@ def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads):
     import numpy as np
 
     sys.path.insert(0, str(HERE.parent / "tests"))
-    import rcompare
+    from support import rcompare
 
     def load(path):
         return json.loads(pathlib.Path(path).read_text())

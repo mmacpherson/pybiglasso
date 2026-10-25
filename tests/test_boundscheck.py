@@ -17,7 +17,7 @@ import sys
 
 import numpy as np
 import pytest
-from rcompare import ATOL, RTOL
+from support.rcompare import ATOL, RTOL
 
 from pybiglasso.config import Settings
 

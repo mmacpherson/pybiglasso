@@ -41,7 +41,7 @@ to observed output.
   the comparison grid. Regenerate it only with `make fixtures`, which builds the
   pinned R image (`FIXTURES_R` in the Makefile) and refuses output from any other
   biglasso version (`FIXTURES_BIGLASSO` in `scripts/make_r_fixtures.py`). When
-  adding a case to `tests/rcompare.py`, check that the old code fails it if it is
+  adding a case to `tests/support/rcompare.py`, check that the old code fails it if it is
   meant to catch a regression.
 - **Independent checks**: KKT conditions computed from first principles
   (`tests/test_default_enet.py`), scikit-learn's saga solver, and invariances
@@ -93,7 +93,7 @@ to observed output.
 - `src/pybiglasso/path.py` — `BiglassoPath`, the fitted path: prediction, scoring,
   dataframe export
 - `src/pybiglasso/sklearn.py` — `BiglassoClassifier`, `BiglassoClassifierCV`
-- `tests/rcompare.py`, `tests/r/fit_biglasso.R` — the R comparison harness
+- `tests/support/rcompare.py`, `tests/r/fit_biglasso.R` — the R comparison harness
 - `benchmarks/` — in-memory and out-of-core benchmarks; results in
   `benchmarks/results/`
 

@@ -8,6 +8,7 @@ import warnings
 
 import numpy as np
 import pytest
+from support.paths import assert_bitwise
 
 pytest.importorskip("sklearn")
 
@@ -15,20 +16,11 @@ import pybiglasso as bl  # noqa: E402
 import pybiglasso.sklearn as bl_sklearn  # noqa: E402
 from pybiglasso.sklearn import BiglassoClassifierCV  # noqa: E402
 
-FIELDS = ("lambdas", "intercept", "iterations", "n_rejected", "deviance")
-
 
 @pytest.fixture(scope="module")
 def data():
     d = bl.common.generate_test_data(400, 40, seed=7)
     return d["X"], d["y"]
-
-
-def assert_prefix(short, full):
-    n = len(short)
-    for name in FIELDS:
-        np.testing.assert_array_equal(getattr(short, name), getattr(full, name)[:n])
-    np.testing.assert_array_equal(short.coef.toarray(), full.coef[:, :n].toarray())
 
 
 GRIDS = dict(automatic={}, supplied=dict(lambdas=np.geomspace(0.1, 0.002, 15)))
@@ -46,7 +38,7 @@ def test_stopped_path_is_a_prefix(data, grid, rows, at):
         warnings.simplefilter("error")  # stopping isn't a truncation to warn of
         short = bl.biglasso(X, y, _stop=lambda il, *_: il >= at, **kwargs)
     assert len(short) == at + 1
-    assert_prefix(short, full)
+    assert_bitwise(short, full, length=len(short))
 
 
 def test_stop_sees_each_fit(data):
@@ -96,7 +88,7 @@ def test_cv_with_patience_past_the_path_matches_none(data):
     # the fit on all the rows ends at the chosen alpha
     best = int(np.flatnonzero(plain.alphas_ == plain.alpha_)[0])
     assert len(early.path_) == best + 1
-    assert_prefix(early.path_, plain.path_)
+    assert_bitwise(early.path_, plain.path_, length=len(early.path_))
 
 
 def stopping_point(scores, n_lambdas, patience):
@@ -157,7 +149,7 @@ def test_cv_folds_stop_where_the_rule_says(data, monkeypatch, patience):
     mean[reached] = np.nanmean(plain.cv_scores_[:, reached], axis=0)
     assert early.alpha_ == plain.alphas_[np.argmin(mean)]
     assert len(early.path_) == np.argmin(mean) + 1
-    assert_prefix(early.path_, plain.path_)
+    assert_bitwise(early.path_, plain.path_, length=len(early.path_))
 
 
 def test_cv_stops_early_on_this_data(data):
@@ -190,7 +182,7 @@ def test_cv_stopping_with_a_truncated_full_fit(data, monkeypatch, rule):
     np.testing.assert_array_equal(early.cv_scores_[:, :reached], plain.cv_scores_)
     assert early.alpha_ == plain.alpha_
     np.testing.assert_array_equal(early.coef_, plain.coef_)
-    assert_prefix(early.path_, plain.path_)
+    assert_bitwise(early.path_, plain.path_, length=len(early.path_))
 
 
 @pytest.mark.parametrize("value", [0, -1, 1.5, True, "10"])

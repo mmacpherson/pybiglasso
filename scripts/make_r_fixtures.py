@@ -14,7 +14,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "tests"))
 
-import rcompare  # noqa: E402
+from support import rcompare  # noqa: E402
 
 FIXTURES_BIGLASSO = "1.7.2"
 

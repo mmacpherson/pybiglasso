@@ -16,13 +16,12 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 from scipy.linalg import hadamard
 from scipy.special import expit
+from support.paths import assert_bitwise
 from test_hypothesis import (
     BACKENDS,
     FIT_OPTIONS,
     SIGNAL,
-    assert_bits,
     assert_certified_solutions,
-    assert_path_bits,
     smooth_problems,
     theta_and_residuals,
 )
@@ -183,7 +182,7 @@ def test_scale_cutoff_and_neighbors(direction, backend):
     scale = cutoff if direction == 0 else np.nextafter(cutoff, direction * np.inf)
     X[:, 1] *= scale
     fit = bl.biglasso(X, y, lambdas=[0.125, 0.0625], backend=backend, **FIT_OPTIONS)
-    assert_bits(fit.scale[1:], np.array([scale]))
+    assert_bitwise(fit.scale[1:], np.array([scale]))
     if direction <= 0:
         assert fit.coef.nnz == 0
     else:
@@ -210,7 +209,7 @@ def test_default_lambda_min_switches_when_n_crosses_p(delta, backend):
         rtol=16 * n * np.finfo(float).eps,
         atol=0,
     )
-    assert_path_bits(auto, explicit)
+    assert_bitwise(auto, explicit)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -255,7 +254,7 @@ def test_storage_and_promotion_do_not_change_the_fit(dtype, layout, backend):
         assert view.tobytes() == before
         if backend == "rust":
             # Rust's explicit LANES order also agrees across storage types.
-            assert_path_bits(actual, promoted)
+            assert_bitwise(actual, promoted)
         else:
             # LLVM can vectorize int8, f32 and f64 reductions differently.
             np.testing.assert_array_equal(actual.iterations, promoted.iterations)
@@ -341,7 +340,7 @@ def test_dfmax_equality_vs_one_above(backend):
     np.testing.assert_array_equal(equal.n_nonzero, [1, 1])
     with pytest.warns(UserWarning, match="Exceeded dfmax"):
         above = bl.biglasso(X, y, dfmax=0, **options)
-    assert_path_bits(above, equal, length=1)
+    assert_bitwise(above, equal, length=1)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -395,9 +394,9 @@ def test_rust_row_chunk_parallelism_preserves_bits(delta):
     many = bl.biglasso(X, y, n_threads=2, **options)
     assert len(one) == 2
     assert np.all(one.n_nonzero == 2)
-    assert_path_bits(one, many)
-    assert_bits(one.center, many.center)
-    assert_bits(one.scale, many.scale)
+    assert_bitwise(one, many)
+    assert_bitwise(one.center, many.center)
+    assert_bitwise(one.scale, many.scale)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -457,7 +456,7 @@ def test_supplied_grids_keep_duplicates_and_singleton_zero(problem, grid, backen
     X, y = problem.arrays()
     path = problem.fit(backend, lambdas=grid)
     assert len(path) == len(grid)
-    assert_bits(path.lambdas, np.array(grid))
+    assert_bitwise(path.lambdas, np.array(grid))
     theta_and_residuals(path, X, y)
 
 

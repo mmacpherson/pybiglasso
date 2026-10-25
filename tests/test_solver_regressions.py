@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 import pytest
 from scipy.special import expit
+from support.certificates import standardize, subgradient_residual, with_ones
 
 from pybiglasso import biglasso
 
@@ -55,16 +56,20 @@ def test_translation_preserves_solution_and_kkt(data, r_compatible, subset):
     )
     A, yy = (shifted, y) if rows is None else (shifted[rows], y[rows])
     eta = fit.intercept + A @ fit.coef.toarray()
-    residual = expit(eta) - yy[:, None]
-    Z = (A - A.mean(axis=0)) / A.std(axis=0)
-    beta = fit.coef.toarray() * A.std(axis=0)[:, None]
-    gradient = Z.T @ residual / len(yy)
-    l1 = fit.lambdas[None, :]
-    violation = np.where(
-        beta != 0, abs(gradient + l1 * np.sign(beta)), np.maximum(0, abs(gradient) - l1)
+    Xs, center, scale = standardize(A)
+    coef = fit.coef.toarray()
+    theta = np.vstack([fit.intercept + center @ coef, coef * scale[:, None]])
+    residual = subgradient_residual(
+        with_ones(Xs),
+        yy,
+        theta,
+        fit.lambdas,
+        fit.alpha,
+        fit.penalty_factor,
+        eta=eta,
     )
-    assert violation.max() < 5e-7
-    assert abs(residual.mean(axis=0)).max() < 5e-7
+    assert abs(residual[1:]).max() < 5e-7
+    assert abs(residual[0]).max() < 5e-7
 
 
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
