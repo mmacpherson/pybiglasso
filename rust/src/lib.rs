@@ -21,13 +21,14 @@
 use ndarray::{ArrayView1, ArrayView2};
 use numpy::{
     Element, IntoPyArray, PyArrayDescrMethods, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray,
-    PyUntypedArrayMethods,
+    PyUntypedArrayMethods, ToPyArray,
 };
 use pulp::{Simd, WithSimd};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
+use std::sync::Mutex;
 
 const LANES: usize = 8;
 const SCALE_MIN: f64 = 1e-6;
@@ -592,7 +593,11 @@ struct Params<'a> {
     r_compatible: bool,
     ybar: f64,
     null_deviance: f64,
+    /// Called after each lambda is fit; true ends the path there
+    on_lambda: Option<&'a OnLambda<'a>>,
 }
+
+type OnLambda<'a> = dyn Fn(&Path, usize) -> Result<bool, String> + Sync + 'a;
 
 #[derive(PartialEq)]
 enum Status {
@@ -932,6 +937,17 @@ impl<D: Design> Fit<'_, D> {
         path.coef_rows[il] = Some(rows);
     }
 
+    /// Whether params.on_lambda ends the path after lambda il; if so, the
+    /// rest of the path is marked unfit.
+    fn stopped(&self, path: &mut Path, il: usize) -> Result<bool, String> {
+        let Some(on_lambda) = self.params.on_lambda else { return Ok(false) };
+        if !on_lambda(path, il)? {
+            return Ok(false);
+        }
+        path.iters[il + 1..].fill(-1);
+        Ok(true)
+    }
+
     fn run(&self, center: Vec<f64>, scale: Vec<f64>) -> Result<Path, String> {
         let p = self.params;
         let nrow = self.x.nrow();
@@ -1038,6 +1054,9 @@ impl<D: Design> Fit<'_, D> {
             }
             path.n_reject[0] = ncol_used as i64;
             lstart = 1;
+            if self.stopped(&mut path, 0)? {
+                return Ok(path);
+            }
         }
 
         for il in lstart..nl {
@@ -1071,6 +1090,9 @@ impl<D: Design> Fit<'_, D> {
             Self::record(&mut path, &st, il);
             if !p.r_compatible {
                 path.deviance[il] = self.final_loss(&st);
+            }
+            if self.stopped(&mut path, il)? {
+                return Ok(path);
             }
         }
         Ok(path)
@@ -1269,7 +1291,7 @@ use Stop::{Fail, Fallback};
 /// Fit a binomial path; arguments and result as the numba backend's
 /// fit_path, with ybar and null_deviance computed by the caller.
 #[pyfunction]
-#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads, boundscheck, row_path = "auto"))]
+#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads, boundscheck, row_path = "auto", on_lambda = None))]
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
@@ -1292,6 +1314,7 @@ fn fit_path<'py>(
     n_threads: usize,
     boundscheck: bool,
     row_path: &str,
+    on_lambda: Option<Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     if !["auto", "gather", "mask"].contains(&row_path) {
         return Err(PyValueError::new_err("row_path must be 'auto', 'gather' or 'mask'."));
@@ -1358,6 +1381,32 @@ fn fit_path<'py>(
         return Err(PyValueError::new_err("row_path='mask' needs row_indices without repeats."));
     }
     let lambdas_vec = lambdas.as_ref().map(|l| l.as_slice().map(|s| s.to_vec())).transpose()?;
+    // on_lambda(il, lambdas, cols, vals, intercept, center, scale), as the
+    // numba backend calls it; its exception is kept, and raised once the fit
+    // has stopped
+    let on_lambda = on_lambda.map(Bound::unbind);
+    let raised: Mutex<Option<PyErr>> = Mutex::new(None);
+    let call = |path: &Path, il: usize| -> Result<bool, String> {
+        let on_lambda = on_lambda.as_ref().expect("only set with a callable");
+        Python::attach(|py| {
+            let rows = path.coef_rows[il].as_deref().unwrap_or_default();
+            let cols: Vec<usize> = rows.iter().map(|&j| path.col_map[j]).collect();
+            let args = (
+                il,
+                path.lambda.to_pyarray(py),
+                cols.iter().map(|&c| c as i64).collect::<Vec<_>>().into_pyarray(py),
+                path.coef_vals[il].as_deref().unwrap_or_default().to_pyarray(py),
+                path.intercept[il],
+                cols.iter().map(|&c| path.center[c]).collect::<Vec<_>>().into_pyarray(py),
+                cols.iter().map(|&c| path.scale[c]).collect::<Vec<_>>().into_pyarray(py),
+            );
+            on_lambda.call1(py, args)?.extract::<bool>(py)
+        })
+        .map_err(|e| {
+            *raised.lock().unwrap() = Some(e);
+            "on_lambda raised".into()
+        })
+    };
     let params = Params {
         alpha,
         lambdas: lambdas_vec.as_deref(),
@@ -1372,6 +1421,7 @@ fn fit_path<'py>(
         r_compatible,
         ybar,
         null_deviance,
+        on_lambda: on_lambda.as_ref().map(|_| &call as &OnLambda),
     };
     let rows = match (&idx, &mask) {
         (Some(idx), Some(mask)) => Selection::Mask { idx, mask },
@@ -1382,7 +1432,11 @@ fn fit_path<'py>(
     macro_rules! dispatch {
         ($($t:ty),*) => {
             $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py)) {
-                let (path, ran) = run_typed::<$t>(py, x, y_all, rows, &params, n_threads, boundscheck)?;
+                let result = run_typed::<$t>(py, x, y_all, rows, &params, n_threads, boundscheck);
+                if let Some(e) = raised.lock().unwrap().take() {
+                    return Err(e);
+                }
+                let (path, ran) = result?;
                 let d = to_dict(py, path)?;
                 d.set_item("row_path", ran)?;
                 return Ok(d);

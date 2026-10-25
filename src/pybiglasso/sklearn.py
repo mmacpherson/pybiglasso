@@ -8,12 +8,14 @@ These follow scikit-learn's naming, which differs from R biglasso's:
     l1_ratio              alpha    (L1/L2 mix; 1 is the lasso)
 """
 
+import numbers
 import os
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import numba
 import numpy as np
+import scipy.sparse as sps
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import check_cv
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
@@ -21,7 +23,7 @@ from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .binomial import biglasso
 from .config import settings
-from .path import METRICS, _expit, linear_predictor
+from .path import METRICS, _expit, linear_predictor, score_logits
 
 __all__ = ["BiglassoClassifier", "BiglassoClassifierCV"]
 
@@ -152,6 +154,14 @@ class BiglassoClassifierCV(_BiglassoBase):
     on that fold's training rows (via `row_indices`, so X is never copied), and
     picks the penalty strength with the best held-out score.
 
+    With `early_stopping`, each fold's path instead stops once its held-out
+    score has gone that many alphas without improving on its best, as
+    bigstatsr's `big_spLogReg` does (there, `n.abort`); only alphas every fold
+    reached are candidates. The fit on all the data then stops at the chosen
+    alpha, so `path_` ends there. On wide data, where the end of the path costs
+    most, this saves much of the work; the cost is that a better score after
+    the stopping point is never seen.
+
     Parameters
     ----------
     l1_ratio : float in (0, 1]
@@ -175,13 +185,21 @@ class BiglassoClassifierCV(_BiglassoBase):
         depend on n_jobs. None or -1 uses all cores. Needs numba's tbb or omp
         threading layer; with workqueue, its fallback when neither is
         installed (as on macOS by default), folds run one at a time.
+    early_stopping : int, optional
+        Stop each fold's path after this many alphas in a row without a better
+        held-out score (by `scoring`); None, the default, fits every fold to
+        the end of the path. bigstatsr's default is 10.
 
     Attributes
     ----------
     alpha_ : chosen penalty strength
     alphas_ : the path's penalty strengths
-    cv_scores_ : (n_folds, n_alphas) held-out scores; deviance is per observation
-    path_ : `BiglassoPath` fit on all the data
+    cv_scores_ : (n_folds, n_alphas) held-out scores; deviance is per observation.
+        NaN past where a fold's path stopped.
+    path_ : `BiglassoPath` fit on all the data; with `early_stopping`, it ends
+        at `alpha_` (or where saturation or dfmax ended it, if that came
+        before the folds' choice; `alpha_` is then chosen from the alphas it
+        reached)
     coef_, intercept_ : coefficients at `alpha_`
     """
 
@@ -199,6 +217,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         max_iter=1000,
         n_jobs=None,
         backend=None,
+        early_stopping=None,
     ):
         self.l1_ratio = l1_ratio
         self.n_alphas = n_alphas
@@ -212,26 +231,47 @@ class BiglassoClassifierCV(_BiglassoBase):
         self.max_iter = max_iter
         self.n_jobs = n_jobs
         self.backend = backend
+        self.early_stopping = early_stopping
 
     def fit(self, X, y):
         if self.scoring not in METRICS:
             raise ValueError(f"scoring must be one of {METRICS}; got {self.scoring!r}")
         if self.rule not in ("min", "1se"):
             raise ValueError(f"rule must be 'min' or '1se'; got {self.rule!r}")
+        patience = self.early_stopping
+        if patience is not None and (
+            isinstance(patience, (bool, np.bool_))
+            or not isinstance(patience, numbers.Integral)
+            or patience < 1
+        ):
+            raise ValueError(
+                f"early_stopping must be None or a positive integer; got {patience!r}"
+            )
         X, y01 = self._validate_xy(X, y)
         kwargs = self._fit_kwargs()
         names = getattr(self, "feature_names_in_", None)
 
-        self.path_ = path = biglasso(
-            X,
-            y01,
-            nlambda=self.n_alphas,
-            lambda_min=self.alpha_min_ratio,
-            lambdas=self.alphas,
-            feature_names=names,
-            **kwargs,
-        )
-        grid = path.lambdas
+        def fit_all(_stop=None):
+            return biglasso(
+                X,
+                y01,
+                nlambda=self.n_alphas,
+                lambda_min=self.alpha_min_ratio,
+                lambdas=self.alphas,
+                feature_names=names,
+                _stop=_stop,
+                **kwargs,
+            )
+
+        if patience is None:
+            path = fit_all()
+            grid = path.lambdas
+        else:
+            # the grid alone: stop at the first lambda, and fit the rest once
+            # the folds have chosen one
+            grids = []
+            path = fit_all(lambda il, lambdas, *_: grids.append(lambdas.copy()) or True)
+            grid = grids[0] if grids else path.lambdas
 
         splitter = check_cv(self.cv, y01, classifier=True)
         folds = list(splitter.split(np.zeros((len(y01), 1)), y01))
@@ -247,8 +287,17 @@ class BiglassoClassifierCV(_BiglassoBase):
 
         def score_fold(fold):
             train, test = fold
+            stop = None
+            if patience is not None:
+                stop = _NoImprovement(X, y01, test, self.scoring, patience)
             fold_path = biglasso(
-                X, y01, row_indices=train, lambdas=grid, n_threads=1, **kwargs
+                X,
+                y01,
+                row_indices=train,
+                lambdas=grid,
+                n_threads=1,
+                _stop=stop,
+                **kwargs,
             )
             s = fold_path.score(X, y01, self.scoring, row_indices=test)
             return s / len(test) if self.scoring == "deviance" else s
@@ -276,20 +325,58 @@ class BiglassoClassifierCV(_BiglassoBase):
 
         # only consider alphas that every fold reached (paths can stop early)
         complete = ~np.isnan(scores).any(axis=0)
-        if not complete.any():
-            raise ValueError(
-                "No alpha was fit in every fold; try a larger alpha range."
-            )
-        sign = 1.0 if self.scoring == "deviance" else -1.0  # lower is better
-        mean = np.where(complete, sign * np.nanmean(scores, axis=0), np.inf)
-        best = int(np.argmin(mean))
-        if self.rule == "1se":
-            se = np.nanstd(scores[:, best], ddof=1) / np.sqrt(len(folds))
-            # alphas are decreasing, so the first qualifying index is largest
-            best = int(np.flatnonzero(mean <= mean[best] + se)[0])
+        best = self._choose(scores, complete)
+        if patience is not None:
+            path = fit_all(lambda il, *_: il >= best)
+            if len(path) <= best:
+                # the fit on all the data stopped first (saturation, dfmax);
+                # without early stopping, the grid would have ended there
+                complete[len(path) :] = False
+                best = self._choose(scores, complete)
+        self.path_ = path
 
         self.alpha_ = grid[best]
         self.n_iter_ = int(path.iterations[best])
         self.coef_ = path.coef[:, [best]].toarray().T
         self.intercept_ = path.intercept[[best]].copy()
         return self
+
+    def _choose(self, scores, complete):
+        """The index of the chosen alpha, among those `complete`."""
+        if not complete.any():
+            raise ValueError(
+                "No alpha was fit in every fold; try a larger alpha range."
+            )
+        sign = 1.0 if self.scoring == "deviance" else -1.0  # lower is better
+        mean = np.full(scores.shape[1], np.inf)
+        mean[complete] = sign * np.nanmean(scores[:, complete], axis=0)
+        best = int(np.argmin(mean))
+        if self.rule == "1se":
+            se = np.nanstd(scores[:, best], ddof=1) / np.sqrt(len(scores))
+            # alphas are decreasing, so the first qualifying index is largest
+            best = int(np.flatnonzero(mean <= mean[best] + se)[0])
+        return best
+
+
+class _NoImprovement:
+    """biglasso's _stop for one fold: true once the held-out score has gone
+    `patience` lambdas without improving on its best."""
+
+    def __init__(self, X, y, rows, metric, patience):
+        self.X, self.y, self.rows = X, y[rows], rows
+        self.metric, self.patience = metric, patience
+        self.sign = 1.0 if metric == "deviance" else -1.0  # lower is better
+        self.best, self.since = np.inf, 0
+
+    def __call__(self, il, lambdas, cols, beta, intercept):
+        coef = sps.csc_array(
+            (beta, (cols, np.zeros(len(cols), dtype=np.int64))),
+            shape=(self.X.shape[1], 1),
+        )
+        eta = linear_predictor(self.X, coef, np.array([intercept]), self.rows)
+        score = self.sign * score_logits(self.y, eta, self.metric)[0]
+        if score < self.best:
+            self.best, self.since = score, 0
+        else:
+            self.since += 1
+        return self.since >= self.patience
