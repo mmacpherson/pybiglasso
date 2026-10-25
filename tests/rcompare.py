@@ -45,6 +45,8 @@ class Case:
     lambda_min: float | None = None  # None: R's default rule, on nrow(X) vs ncol(X)
     lambda_log_scale: bool = True
     data: str = "normal"  # "normal" | "dosage"
+    response: str = "logistic"  # "logistic" | "rare" | "common" (3% / 97% ones)
+    columns: str = "distinct"  # "distinct" | "duplicate" | "affine"
     frac_mono: float = 0.0
     penalty: str = "none"  # "none" | "varied" | "heavy" | "zeros"
     rows: str = "all"  # "all" | "half"
@@ -62,6 +64,8 @@ class Case:
         parts.append(f"L{self.nlambda}")
         for field, default in [
             ("frac_mono", 0.0),
+            ("response", "logistic"),
+            ("columns", "distinct"),
             ("penalty", "none"),
             ("rows", "all"),
             ("dtype", "float64"),
@@ -129,6 +133,21 @@ def fast_grid():
     # strongly separable data, so the path saturates before the end
     cases.append(Case(30, 60, 11, 1.0, 50, lambda_min=1e-4, tag="saturating"))
 
+    # imbalanced responses, where the intercept sits far from zero
+    for nrow, ncol in ((300, 40), (1000, 20)):
+        for response in ("rare", "common"):
+            for alpha in (0.5, 1.0):
+                cases.append(Case(nrow, ncol, alpha=alpha, response=response))
+    for alpha in (0.5, 1.0):
+        cases.append(Case(200, 300, alpha=alpha, response="rare"))
+
+    # columns that are identical after standardization, among them the column
+    # that enters first, so the strong rules and CD see exact and near ties
+    for nrow, ncol in ((300, 40), (60, 200)):
+        for columns in ("duplicate", "affine"):
+            for alpha in (0.5, 1.0):
+                cases.append(Case(nrow, ncol, alpha=alpha, columns=columns))
+
     return cases
 
 
@@ -190,6 +209,14 @@ def make_case_data(case, workdir):
     else:
         raise ValueError(case.data)
 
+    if case.response != "logistic":
+        if case.data != "normal":
+            raise ValueError("imbalanced responses are for normal data")
+        y = imbalanced_response(Xbin, d["w"], case.response, case.seed)
+
+    if case.columns != "distinct":
+        duplicate_columns(Xbin, y, case.columns)
+
     if case.frac_mono > 0:
         nmono = round(case.ncol * case.frac_mono)
         Xbin[:, np.sort(rng.choice(case.ncol, nmono, replace=False))] = 1.0
@@ -231,6 +258,40 @@ def make_case_data(case, workdir):
         penalty_factor=penalty_factor,
         row_indices=row_indices,
     )
+
+
+def imbalanced_response(X, weights, response, seed):
+    """A response with 3% ones ("rare") or 3% zeros ("common").
+
+    The minority rows are drawn without replacement, with odds exp(X @ w), so
+    their count is fixed while they still depend on X.
+    """
+    nrow = X.shape[0]
+    eta = np.asarray(X) @ weights
+    odds = np.exp(eta - eta.max())
+    minority = np.random.default_rng(seed + 3).choice(
+        nrow, max(2, round(0.03 * nrow)), replace=False, p=odds / odds.sum()
+    )
+    y = np.zeros(nrow)
+    y[minority] = 1.0
+    return y if response == "rare" else 1.0 - y
+
+
+def duplicate_columns(X, y, columns):
+    """Overwrite the weakest columns with copies of the strongest, in place.
+
+    Strength is |x_j' (y - ybar)| on the standardized column, so the first
+    column to enter the path is among those copied. "duplicate" copies exactly;
+    "affine" copies 3 x + 1.5, which standardizes to the same column up to
+    rounding.
+    """
+    ncopy = max(1, X.shape[1] // 10)
+    Xs = (X - X.mean(axis=0)) / X.std(axis=0)
+    order = np.argsort(-np.abs(Xs.T @ (y - y.mean())), kind="stable")
+    sources, targets = order[:ncopy], order[-ncopy:]
+    for source, target in zip(sources, targets, strict=True):
+        column = np.array(X[:, source])
+        X[:, target] = column if columns == "duplicate" else 3.0 * column + 1.5
 
 
 def data_digest(data):
