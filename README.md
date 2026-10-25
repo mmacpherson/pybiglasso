@@ -27,7 +27,7 @@ It's also fast when the data does fit in memory. On a full 100-step lasso path
 over 5,000 samples by 50,000 features, it is 2.3x faster than R biglasso and
 4.7x faster than skglm, the fastest of the other Python solvers we tested.
 Across the four benchmark problems, with 1,000 to 50,000 features, it runs 2–5x
-faster than R biglasso and 4–6x faster than skglm.
+faster than R biglasso and 4–7x faster than skglm.
 
 It is an unofficial Python port of the R package
 [biglasso](https://github.com/pbreheny/biglasso), and reproduces its results to
@@ -205,7 +205,8 @@ statsmodels.
 
 **Other Python solvers.** Each competitor was stopped once it took 10x as long
 as pybiglasso, which would otherwise have stretched the run to many hours. Only
-skglm (lasso only) finishes within that on every dataset, at 4–6x. statsmodels
+skglm finishes within that on every dataset, at 4–6x for the lasso and 5–7x for
+the elastic net. statsmodels
 (lasso only) ran only on the tall datasets: its L1 fit uses a general-purpose
 optimizer with dense matrices over twice the columns, which would need about
 12 GB and 76 GB on the wide ones. To show how
@@ -215,7 +216,7 @@ large the gaps get, the smallest problem (5,000 x 1,000) also ran with no cap:
 |---|---|---|---|
 | pybiglasso | 0.71 s | 0.74 s | 1e-6 |
 | pybiglasso, `eps=1e-10` | 1.62 s | 1.54 s | 3e-10 |
-| skglm | 4.1 s (6x) | — | 2e-4 |
+| skglm | 4.1 s (6x) | 4.4 s (6x) | 2e-4 |
 | glum, 6 threads | 9.6 s (14x) | 10.9 s (15x) | 6e-9 |
 | sklearn liblinear | 20.5 s (29x) | — | 5e-6 |
 | sklearn saga | 90.7 s (128x) | 94.8 s (128x) | 1e-5 |
@@ -259,11 +260,15 @@ Extra threads hurt here: they evict pages each other still need.
 
 **Not compared**, by the rule above:
 
-- Other languages: glmnet (in R, or through Julia's GLMNet.jl) and Julia's
-  Lasso.jl.
+- Other languages: R's glmnet, in C++ since its 4.1 releases; Julia's
+  GLMNet.jl, a wrapper of glmnet's earlier Fortran solver; and Julia's
+  Lasso.jl, written in Julia.
 - Other hardware: RAPIDS cuML fits on a GPU, and only data that fits in GPU
   memory.
 - Unmaintained: python-glmnet, archived, with its last release in 2020.
+- A different problem: celer's logistic regression fits the lasso only, and no
+  intercept. skglm, from the same authors, fits an intercept and the elastic
+  net, and is compared above.
 - Not a solver: benchopt is a benchmarking framework; its logistic-regression
   benchmark fits without an intercept or standardization, which pybiglasso
   doesn't support yet.

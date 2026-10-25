@@ -48,7 +48,7 @@ SOLVERS = [
 ]
 TIMING_START = "--timing-start--"
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
-LASSO_ONLY = {"skglm", "sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
+LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
 # R's elastic-net update; identical to pybiglasso's for the lasso
 ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
@@ -144,7 +144,11 @@ def _warm_loop(model, Xs, y, lambdas, set_lambda):
 def fit_skglm(X, Xs, y, lambdas, alpha, threads):
     from skglm import SparseLogisticRegression
 
-    m = SparseLogisticRegression(alpha=lambdas[0], fit_intercept=True, warm_start=True)
+    # its penalty, alpha * (l1_ratio * |b|_1 + (1 - l1_ratio) / 2 * |b|_2^2),
+    # is R's with lambda and alpha renamed
+    m = SparseLogisticRegression(
+        alpha=lambdas[0], l1_ratio=alpha, fit_intercept=True, warm_start=True
+    )
     return _warm_loop(m, Xs, y, lambdas, lambda m, lam: m.set_params(alpha=lam))
 
 

@@ -57,8 +57,9 @@ profile:
 	uv run --python 3.15 --isolated --with-editable . python -m profiling.sampling \
 	  run --sort tottime -l 15 benchmarks/profile_fit.py
 
-# the README's benchmark plot, from the committed results
-RESULTS = $(addprefix benchmarks/results/path,.jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -statsmodels.jsonl -final.jsonl)
+# the README's benchmark plot, from the committed results; later files win,
+# and skglm-enet comes first so it only fills in skglm's elastic net
+RESULTS = $(addprefix benchmarks/results/path,-skglm-enet.jsonl .jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -statsmodels.jsonl -final.jsonl)
 
 docs/benchmarks.png: benchmarks/plot.py $(RESULTS)
 	uv run --group bench benchmarks/plot.py $(RESULTS) -o $@
