@@ -644,6 +644,10 @@ struct Fit<'a, D> {
     /// With row_indices fit as a 0/1 weight on every row of X: 1 for rows
     /// being fit. The kernels then read whole columns, and y is 0 elsewhere.
     mask: Option<&'a [f64]>,
+    /// With a mask, the rows being fit in row_indices' order, which center
+    /// and scale sum in, as gathering does: for a column far from zero, the
+    /// center's rounding moves every centered value
+    rows: Option<&'a [usize]>,
     /// The number of rows being fit
     n_fit: usize,
 }
@@ -660,23 +664,29 @@ impl<D: Design> Fit<'_, D> {
                 let n = c.n();
                 let nf = self.n_fit as f64;
                 let (mut acc, mut invalid) = (0.0, false);
-                let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
-                for i in 0..n {
-                    let v = c.at(i);
-                    if !self.fits(i) {
-                        out_finite &= v.is_finite();
-                        (out_lo, out_hi) = (out_lo.min(v), out_hi.max(v));
-                        continue;
-                    }
-                    invalid |= !v.is_finite();
-                    acc += v;
+                match self.rows {
+                    Some(rows) => rows.iter().for_each(|&i| {
+                        let v = c.at(i);
+                        invalid |= !v.is_finite();
+                        acc += v;
+                    }),
+                    None => (0..n).for_each(|i| {
+                        let v = c.at(i);
+                        invalid |= !v.is_finite();
+                        acc += v;
+                    }),
                 }
                 let mean = acc / nf;
                 let mut acc = 0.0;
-                for i in 0..n {
-                    if self.fits(i) {
-                        acc += (c.at(i) - mean).powi(2);
-                    }
+                match self.rows {
+                    Some(rows) => rows.iter().for_each(|&i| acc += (c.at(i) - mean).powi(2)),
+                    None => (0..n).for_each(|i| acc += (c.at(i) - mean).powi(2)),
+                }
+                let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
+                for i in (0..n).filter(|&i| !self.fits(i)) {
+                    let v = c.at(i);
+                    out_finite &= v.is_finite();
+                    (out_lo, out_hi) = (out_lo.min(v), out_hi.max(v));
                 }
                 let scale = (acc / nf).sqrt();
                 // columns too constant to use are never swept
@@ -1135,7 +1145,14 @@ enum Selection<'a> {
     Mask { idx: &'a [usize], mask: &'a [f64] },
 }
 
-impl Selection<'_> {
+impl<'a> Selection<'a> {
+    fn masked_rows(&self) -> Option<&'a [usize]> {
+        match *self {
+            Selection::Mask { idx, .. } => Some(idx),
+            _ => None,
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self {
             Selection::All => "all",
@@ -1162,13 +1179,15 @@ fn run_typed<T: Elem>(
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let fortran = view.column(0).to_slice().is_some();
     // y as the rows being fit, so kernels index it like the residuals; with a
-    // mask, every row of y, 0 where the mask is
+    // mask, every row of y, 0 where the mask is (not y * 0: y need only be
+    // finite in the rows being fit)
     let (y_gathered, y_masked): (Vec<f64>, Vec<f64>) = match rows {
         Selection::All => (vec![], vec![]),
         Selection::Gather(idx) => (idx.iter().map(|&i| y_all[i]).collect(), vec![]),
-        Selection::Mask { idx, mask } => {
-            (idx.iter().map(|&i| y_all[i]).collect(), y_all.iter().zip(mask).map(|(&y, &m)| y * m).collect())
-        }
+        Selection::Mask { idx, mask } => (
+            idx.iter().map(|&i| y_all[i]).collect(),
+            y_all.iter().zip(mask).map(|(&y, &m)| if m != 0.0 { y } else { 0.0 }).collect(),
+        ),
     };
 
     let result = py.detach(|| {
@@ -1176,7 +1195,7 @@ fn run_typed<T: Elem>(
             macro_rules! go {
                 ($design:expr, $y:expr, $mask:expr, $n_fit:expr, $rows:expr) => {{
                     let d = $design;
-                    let fit = Fit { x: &d, y: $y, params, mask: $mask, n_fit: $n_fit };
+                    let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: $rows.masked_rows(), n_fit: $n_fit };
                     let (center, scale, mask_safe) = fit.center_scale().map_err(Fail)?;
                     if !mask_safe {
                         // a row left out holds something the mask can't sweep
@@ -1322,6 +1341,10 @@ fn fit_path<'py>(
             "mask" => true,
             _ => false,
         };
+        if !wanted {
+            // a few rows of a tall X: no row-length buffer
+            return None;
+        }
         let mut m = vec![0.0; nrow_x];
         for &i in idx {
             if m[i] != 0.0 {
@@ -1329,7 +1352,7 @@ fn fit_path<'py>(
             }
             m[i] = 1.0;
         }
-        wanted.then_some(m)
+        Some(m)
     });
     if row_path == "mask" && idx.is_some() && mask.is_none() {
         return Err(PyValueError::new_err("row_path='mask' needs row_indices without repeats."));

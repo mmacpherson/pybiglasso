@@ -143,3 +143,30 @@ def test_left_out_rows_of_unused_columns_are_ignored(fit):
     X[rows, 7] = 1.0
     X[0, 7] = np.nan
     assert fit(X, y, "mask", row_indices=rows, nlambda=10)[1] == "mask"
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf], ids=str)
+def test_left_out_responses_may_be_anything(fit, value):
+    # y need only be finite in the rows being fit, and NaN * 0 is NaN
+    X, y = data(200, 30)
+    rows = np.arange(len(y))[np.arange(len(y)) % 5 != 0]
+    copy, _ = fit(np.asfortranarray(X[rows]), y[rows], nlambda=10)
+    y[0] = value
+    masked, ran = fit(X, y, "mask", row_indices=rows, nlambda=10)
+    assert ran == "mask"
+    assert_same_path(masked, copy)
+
+
+def test_mask_centers_shuffled_rows_as_gathering_does(fit):
+    # far from zero, the center's rounding moves every centered value, so it
+    # must sum the rows in row_indices' order, as the gather and a copy do
+    rng = np.random.default_rng(3)
+    X = np.asfortranarray(1e12 + 0.01 * rng.normal(size=(300, 3)))
+    y = rng.binomial(1, expit((X[:, 0] - 1e12) / 0.01)).astype(np.float64)
+    rows = rng.permutation(300)[:240]
+    masked, ran = fit(X, y, "mask", row_indices=rows, nlambda=20)
+    copy, _ = fit(np.asfortranarray(X[rows]), y[rows], nlambda=20)
+    assert ran == "mask"
+    np.testing.assert_array_equal(masked.center, copy.center)
+    np.testing.assert_array_equal(masked.scale, copy.scale)
+    assert_same_path(masked, copy)
