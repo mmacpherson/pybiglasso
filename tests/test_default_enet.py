@@ -119,7 +119,7 @@ def duplicates(rng):
     return X, labels(X, rng, beta), None
 
 
-# coordinate descent closes the twins' gap by about lambda (1-alpha) / v of it
+# coordinate descent closes the twins' gap by about 2 lambda (1-alpha) / v of it
 # per sweep, so at eps=1e-14 the duplicates need more than the default budget
 MAX_ITER = dict(duplicates=100_000)
 
