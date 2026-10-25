@@ -47,3 +47,17 @@ repos:
     exclude: ^(uv\.lock|rust/Cargo\.lock)$
   - id: pretty-format-yaml
     args: [--autofix, --indent, '2']
+- repo: local
+  hooks:
+  - id: cargo-fmt
+    name: cargo fmt
+    entry: cargo fmt --manifest-path rust/Cargo.toml --check
+    language: system
+    files: ^rust/
+    pass_filenames: false
+  - id: cargo-clippy
+    name: cargo clippy
+    entry: cargo clippy --manifest-path rust/Cargo.toml --release --all-targets -- -D warnings
+    language: system
+    files: ^rust/
+    pass_filenames: false
