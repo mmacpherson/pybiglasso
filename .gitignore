@@ -32,3 +32,6 @@ benchmarks/results/*.failed.*
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+# the Rust backend, built in place by make rust
+src/pybiglasso/_rust*.so
+rust/target/

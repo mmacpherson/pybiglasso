@@ -329,7 +329,13 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
             n_reject=np.zeros(1, dtype=np.int64),
         )
 
+    # the correction runs on either backend's results
     monkeypatch.setattr(bl.binomial, "fit_path", solver)
+    monkeypatch.setattr(
+        bl.binomial,
+        "fit_path_rust",
+        lambda X, y, rows, params, threads: solver(X, y, rows, params),
+    )
     X = np.zeros((4, ncol), order="F")
     fit = bl.biglasso(X, np.array([0, 1, 0, 1]), lambdas=[0.1])
     assert fit.intercept[0] == -exact

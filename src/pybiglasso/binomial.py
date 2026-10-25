@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import collections
+import functools
 import logging
 import math
 import numbers
@@ -10,9 +11,20 @@ import numba as nb
 import numpy as np
 import scipy.sparse as sps
 
+from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
 logger = logging.getLogger(__name__)
+
+# numba's on-disk cache doesn't key on boundscheck, so a kernel cached under one
+# setting would load under the other; only the default is cached. NUMBA_BOUNDSCHECK,
+# if set, overrides the decorator, so then nothing is.
+jit = functools.partial(
+    nb.njit,
+    nogil=True,
+    boundscheck=settings.boundscheck,
+    cache=settings.boundscheck and nb.config.BOUNDSCHECK is None,
+)
 
 
 def _integer(name, value, minimum=1):
@@ -52,6 +64,7 @@ def biglasso(
     stop_on_saturation=True,
     r_compatible=False,
     n_threads=None,
+    backend=None,
 ):
     """Fit a lasso or elastic-net penalized logistic regression path.
 
@@ -75,6 +88,9 @@ def biglasso(
     Column-wise work (standardization and the strong-rule and KKT scans) runs on
     `n_threads` threads, by default numba's (all cores); coordinate descent
     itself is sequential. Results do not depend on the thread count.
+
+    `backend` picks the solver's implementation, "numba" or "rust"; by default,
+    the `backend` setting (see `pybiglasso.config`).
 
     Returns a `BiglassoPath`.
 
@@ -121,6 +137,7 @@ def biglasso(
         _integer("dfmax", dfmax, minimum=0)
     if n_threads is not None:
         _integer("n_threads", n_threads)
+    backend = settings.backend if backend is None else check_backend(backend)
     if not np.isfortran(X):
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
@@ -246,13 +263,16 @@ def biglasso(
         ncol,
         nlambda,
     )
-    prior_threads = nb.get_num_threads()
-    try:
-        if n_threads is not None:
-            nb.set_num_threads(n_threads)
-        results = fit_path(X, y, row_indices, params)
-    finally:
-        nb.set_num_threads(prior_threads)
+    if backend == "rust":
+        results = fit_path_rust(X, y, row_indices, params, n_threads)
+    else:
+        prior_threads = nb.get_num_threads()
+        try:
+            if n_threads is not None:
+                nb.set_num_threads(n_threads)
+            results = fit_path(X, y, row_indices, params)
+        finally:
+            nb.set_num_threads(prior_threads)
 
     # keep the part of the path that was fit (it stops early on saturation
     # or dfmax), and untransform coefficients back to the scale of X
@@ -292,7 +312,7 @@ def biglasso(
     )
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def seqsum(a):  # pragma: no cover
     """Sequential sum, so parallel kernels don't turn it into a parallel reduction
     (whose rounding would depend on the thread count)."""
@@ -302,7 +322,7 @@ def seqsum(a):  # pragma: no cover
     return out
 
 
-@nb.njit(fastmath=True, cache=True, nogil=True)
+@jit(fastmath=True)
 def dot(a, b):  # pragma: no cover
     """Dot product accumulated in float64; works for mixed float32/float64 inputs."""
     out = 0.0
@@ -311,7 +331,7 @@ def dot(a, b):  # pragma: no cover
     return out
 
 
-@nb.njit(parallel=True, cache=True, nogil=True)
+@jit(parallel=True)
 def center_scale(X, row_indices):  # pragma: no cover
     """Compute the mean and std of matrix X.
 
@@ -357,7 +377,7 @@ def center_scale(X, row_indices):  # pragma: no cover
     return mean, std
 
 
-@nb.njit(parallel=True, cache=True, nogil=True)
+@jit(parallel=True)
 def build_sum_xy(X, y, row_indices, col_map):  # pragma: no cover
     """Compute columnwise dot product of X with y.
 
@@ -378,14 +398,14 @@ def build_sum_xy(X, y, row_indices, col_map):  # pragma: no cover
     return out
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def np_logspace(lo, hi, num):  # pragma: no cover
     """Alternate version of np.logspace that's closer to np.linspace."""
     # np.logspace(np.log(3), np.log(4), num=5, base=np.e)
     return np.exp(np.linspace(np.log(lo), np.log(hi), num))
 
 
-@nb.njit(fastmath=True, cache=True, nogil=True)
+@jit(fastmath=True)
 def column_moments(X, jj, row_indices, r, w):  # pragma: no cover
     """One pass over column jj: sum(x * r * w), sum(w * x^2), sum(w * x)."""
     sum_xwr, sum_wxx, sum_wx = 0.0, 0.0, 0.0
@@ -399,7 +419,7 @@ def column_moments(X, jj, row_indices, r, w):  # pragma: no cover
     return sum_xwr, sum_wxx, sum_wx
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def centered_moments(X, jj, row_indices, r, w, center, scale):
     """Stable weighted score and curvature; never subtract large raw moments.
 
@@ -415,7 +435,7 @@ def centered_moments(X, jj, row_indices, r, w, center, scale):
     return xwr, wxx / n
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def standardized_score(X, jj, row_indices, s, s_sum, center, scale):
     """Score with a centered fallback when raw-moment cancellation is unsafe.
 
@@ -437,7 +457,7 @@ def standardized_score(X, jj, row_indices, s, s_sum, center, scale):
     return (raw - center * s_sum) / (scale * n)
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def final_loss(y, row_indices, eta):
     """Stable negative log likelihood of the final linear predictor.
 
@@ -452,7 +472,7 @@ def final_loss(y, row_indices, eta):
     return loss
 
 
-@nb.njit(fastmath=True, cache=True, nogil=True)
+@jit(fastmath=True)
 def apply_shift(X, jj, row_indices, delta, c, r, eta, w):  # pragma: no cover
     """Move r and eta by delta * (x - c) for column jj; return the new sum(w * r)."""
     sum_wr = 0.0
@@ -466,7 +486,7 @@ def apply_shift(X, jj, row_indices, delta, c, r, eta, w):  # pragma: no cover
     return sum_wr
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def get_nrow(X, row_indices):  # pragma: no cover
     """Get number of rows."""
     if row_indices is None:
@@ -477,7 +497,7 @@ def get_nrow(X, row_indices):  # pragma: no cover
     return nrow
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def update_irls(
     y, row_indices, eta, p, w, s, r, eta_max=10, w_min=0.0001
 ):  # pragma: no cover
@@ -525,7 +545,7 @@ def update_irls(
     return deviance
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def update_intercept(w, r, intercept, eta):  # pragma: no cover
     """Move the unpenalized intercept to its weighted least-squares optimum.
 
@@ -544,7 +564,7 @@ def update_intercept(w, r, intercept, eta):  # pragma: no cover
     return intercept + shift, dot(w, r)
 
 
-@nb.njit(cache=True, nogil=True)
+@jit
 def coordinate_sweep(
     X,
     row_indices,
@@ -629,7 +649,7 @@ def coordinate_sweep(
     return sum_w_residuals, max_update
 
 
-@nb.njit(parallel=True, cache=True, nogil=True)
+@jit(parallel=True)
 def check_strong_set(
     X,
     row_indices,
@@ -664,7 +684,7 @@ def check_strong_set(
     return violations
 
 
-@nb.njit(parallel=True, cache=True, nogil=True)
+@jit(parallel=True)
 def check_rest_set(
     X,
     row_indices,
@@ -922,13 +942,60 @@ def fit_path(
     return path
 
 
+def fit_path_rust(X, y, row_indices, params, n_threads):
+    """fit_path, run by the Rust backend in one call."""
+    from . import _rust
+
+    if not X.flags.aligned:
+        # the kernels read X through typed pointers; numpy can build arrays
+        # whose elements aren't aligned for their type (offset buffers)
+        raise ValueError(
+            'The rust backend needs X aligned to its dtype; use backend="numba".'
+        )
+    y_used = y if row_indices is None else y[row_indices]
+    ybar = y_used.mean()
+    null_deviance = (
+        -1.0 * (y_used * np.log(ybar) + (1 - y_used) * np.log(1 - ybar)).sum()
+    )
+    path = _rust.fit_path(
+        X,
+        y,
+        None if row_indices is None else row_indices.astype(np.int64),
+        float(params.alpha),
+        params.lambdas,
+        params.nlambda,
+        float(params.eps),
+        float(params.lambda_min),
+        bool(params.lambda_log_scale),
+        params.penalty_factor,
+        params.dfmax,
+        params.max_iter,
+        bool(params.stop_on_saturation),
+        bool(params.r_compatible),
+        float(ybar),
+        float(null_deviance),
+        n_threads or 0,
+        settings.boundscheck,
+    )
+    for kind, il in path.pop("events"):
+        where = f"λ[{il + 1}/{params.nlambda}]"
+        message = {
+            "prefit_saturated": "Model saturated by the unpenalized columns alone; no path fit.",
+            "dfmax": f"Exceeded dfmax={params.dfmax} nonzero coefficients; path truncated at {where}.",
+            "saturated": f"Model saturated; path truncated at {where}.",
+            "max_iter": f"Failed to converge within max_iter={params.max_iter} iterations at {where}.",
+        }[kind]
+        warnings.warn(message, stacklevel=3)
+    return path
+
+
 def _record_coefs(path, state, il):
     nz = np.flatnonzero(state["beta"])
     path["coef_rows"][il] = nz
     path["coef_vals"][il] = state["beta"][nz].copy()
 
 
-@nb.njit(parallel=True, cache=True, nogil=True)
+@jit(parallel=True)
 def compute_z(X, row_indices, col_map, center, scale, s):  # pragma: no cover
     """Standardized score x_j'(y - p) / n for every used column."""
     s_sum = seqsum(s)

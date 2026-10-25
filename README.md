@@ -341,6 +341,16 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   dtype is faster: small integers (counts, categories, 0/1 indicators) as
   `int8` or `uint8` take 8x less memory and disk than float64, and fit about
   2.5x faster, with the same results to about 1e-13. `float32` halves both.
+- **Bounds checking is on by default.** Every index into an array is checked,
+  which guards against a bug in pybiglasso reading past the end of X (inputs,
+  `row_indices` among them, are validated before a fit either way).
+  It costs little on a whole Fortran-ordered X, and up to about 20% on a fit
+  over a subset of rows, as in cross-validation, where every read goes through
+  an index. `PYBIGLASSO_BOUNDSCHECK=0` turns it off; the path is the same
+  (lambdas, iterations, screening), with coefficients identical in the Rust
+  backend and equal to about 1e-11 in numba's, whose vectorized sums the
+  check reorders. numba reads the setting at import, and caches compiled
+  kernels only with it on.
 
 ## How the code is organized
 

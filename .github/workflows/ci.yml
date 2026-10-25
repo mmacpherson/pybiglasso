@@ -24,10 +24,12 @@ jobs:
         os: [ubuntu-latest]
         python: ['3.11', '3.12', '3.13', '3.14', '3.15']
         include:
+        - os: ubuntu-24.04-arm
+          python: '3.14'
         - os: macos-latest
-          python: '3.13'
+          python: '3.14'
         - os: windows-latest
-          python: '3.13'
+          python: '3.14'
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -36,10 +38,16 @@ jobs:
       with:
         python-version: ${{ matrix.python }}
     - name: Pre-commit hooks
-      if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+      if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
       run: make run-hooks-all-files
     - name: Tests (against stored R biglasso 1.7.2 output)
       run: make test
+    - name: Tests, Rust backend
+      run: make test
+      env:
+        PYBIGLASSO_BACKEND: rust
+    - name: Rust kernels, bit for bit at every SIMD width this CPU runs
+      run: make test-rust
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
@@ -55,8 +63,8 @@ jobs:
         python-version: '3.15'
     - run: make test-latest
 
-  dist:
-    name: Build the package; install the wheel with no extras
+  sdist:
+    name: Build the sdist and a wheel from it; fit from that wheel with no extras
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
@@ -69,6 +77,56 @@ jobs:
       run: make check-dist
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
       with:
-        name: dist-package
-        path: dist/
+        name: dist-sdist
+        path: dist/*.tar.gz
+        retention-days: 7
+
+  # one abi3 wheel per platform, for every supported Python; release.yml
+  # publishes these with the sdist
+  wheels:
+    name: Wheel (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - platform: linux-x86_64
+          os: ubuntu-latest
+          target: x86_64
+        - platform: linux-aarch64
+          os: ubuntu-24.04-arm
+          target: aarch64
+        - platform: macos-arm64
+          os: macos-latest
+          target: aarch64
+        - platform: macos-x86_64
+          os: macos-15-intel
+          target: x86_64
+          # numba's last release for Intel Macs, which stops at Python 3.13
+          python: '3.13'
+          with: --with numba==0.62.1
+        - platform: windows-x86_64
+          os: windows-latest
+          target: x64
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b    # v1.51.0
+      with:
+        command: build
+        target: ${{ matrix.target }}
+        manylinux: auto
+        args: --release --out dist
+    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884    # v10.3.0
+      with:
+        enable-cache: false
+        python-version: ${{ matrix.python }}
+    - name: Fit from the wheel with no extras
+      shell: bash
+      run: uv run --isolated --no-project --with dist/*.whl ${{ matrix.with }} python scripts/check_wheel.py
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
+      with:
+        name: dist-wheel-${{ matrix.platform }}
+        path: dist/*.whl
         retention-days: 7

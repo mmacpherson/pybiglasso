@@ -14,6 +14,11 @@ test-latest:
 lint:
 	uv run ruff check src tests
 
+# its kernels against plain scalar sums, at every SIMD width this CPU runs
+.PHONY: test-rust
+test-rust:
+	cargo test --release --manifest-path rust/Cargo.toml
+
 .PHONY: update-hooks run-hooks-all-files
 update-hooks:
 	uv run pre-commit autoupdate
@@ -70,8 +75,8 @@ build:
 	rm -rf dist
 	uv build
 
-# what release.yml publishes: build it, check the metadata PyPI will render,
-# and fit from the installed wheel with no extras
+# the sdist release.yml publishes, and a wheel built from it: build them,
+# check the metadata PyPI will render, and fit from the wheel with no extras
 .PHONY: check-dist
 check-dist: build
 	uvx twine check --strict dist/*

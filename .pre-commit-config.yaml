@@ -1,3 +1,6 @@
+# pre-commit.ci's runners have no Rust toolchain; CI's hooks step runs these
+ci:
+  skip: [cargo-fmt, cargo-clippy]
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
@@ -44,6 +47,20 @@ repos:
     # differently). The weekly update-pre-commit-hooks workflow bumps this pin.
     additional_dependencies: [toml-sort==0.25.0]
     # Lockfiles are machine-written; reformatting them only makes churn.
-    exclude: ^uv\.lock$
+    exclude: ^(uv\.lock|rust/Cargo\.lock)$
   - id: pretty-format-yaml
     args: [--autofix, --indent, '2']
+- repo: local
+  hooks:
+  - id: cargo-fmt
+    name: cargo fmt
+    entry: cargo fmt --manifest-path rust/Cargo.toml --check
+    language: system
+    files: ^rust/
+    pass_filenames: false
+  - id: cargo-clippy
+    name: cargo clippy
+    entry: cargo clippy --manifest-path rust/Cargo.toml --release --all-targets -- -D warnings
+    language: system
+    files: ^rust/
+    pass_filenames: false
