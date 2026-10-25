@@ -1077,8 +1077,25 @@ def _fit_lambda(
     Returns "converged", "saturated", or "max_iter".
     """
 
+    kkt_args = (
+        X,
+        row_indices,
+        lam,
+        alpha,
+        penalty_factor,
+        path["col_map"],
+        path["center"],
+        path["scale"],
+        state["active"],
+        state["strong"],
+        state["s"],
+        state["z"],
+        state["beta"],
+    )
+    unscanned = "both"  # the scans the last iteration didn't run
     while path["iters"][il] < max_iter:
         path["iters"][il] += 1
+        unscanned = "both"
 
         path["deviance"][il] = update_irls(
             y, row_indices, state["eta"], state["p"], state["w"], state["s"], state["r"]
@@ -1119,28 +1136,20 @@ def _fit_lambda(
         if not check_kkt:
             return "converged"
 
-        kkt_args = (
-            X,
-            row_indices,
-            lam,
-            alpha,
-            penalty_factor,
-            path["col_map"],
-            path["center"],
-            path["scale"],
-            state["active"],
-            state["strong"],
-            state["s"],
-            state["z"],
-            state["beta"],
-        )
-
         # check strong set; if violated, re-fit with the enlarged active set
         if check_strong_set(*kkt_args) > 0:
+            unscanned = "rest"
             continue
 
         # check rest of predictors
         if check_rest_set(*kkt_args) == 0:
             return "converged"
+        unscanned = "none"
 
+    # as R biglasso does, finish the scans when max_iter cuts a fit short: they
+    # set the z and the strong set the next lambda starts from
+    if check_kkt and unscanned == "both":
+        check_strong_set(*kkt_args)
+    if check_kkt and unscanned != "none":
+        check_rest_set(*kkt_args)
     return "max_iter"
