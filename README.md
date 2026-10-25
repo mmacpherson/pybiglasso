@@ -338,6 +338,13 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   cache); results don't depend on `n_jobs`. This needs numba's tbb or omp
   threading layer; where numba falls back to workqueue, as on macOS by default,
   folds run one at a time.
+- **Cross-validation can stop each fold early.** With
+  `BiglassoClassifierCV(early_stopping=10)`, a fold's path stops once its
+  held-out score has gone 10 alphas without improving, as bigstatsr's
+  `big_spLogReg` does, and the fit on all the rows stops at the chosen alpha.
+  On wide data, where the end of the path costs most, this saves much of the
+  work; the cost is that a better score past the stopping point goes unseen.
+  It is off by default.
 - **Store X compactly.** Since the work is mostly moving bytes, a narrower
   dtype is faster: small integers (counts, categories, 0/1 indicators) as
   `int8` or `uint8` take 8x less memory and disk than float64, and fit about

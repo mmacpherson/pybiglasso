@@ -315,7 +315,7 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
     assert left_to_right != exact  # the input tells an ordered sum apart
     ncol = len(terms)
 
-    def solver(X, y, row_indices, params):
+    def solver(X, y, row_indices, params, on_lambda=None):
         return dict(
             iters=np.array([1]),
             col_map=np.arange(ncol),
@@ -334,7 +334,7 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
     monkeypatch.setattr(
         bl.binomial,
         "fit_path_rust",
-        lambda X, y, rows, params, threads: solver(X, y, rows, params),
+        lambda X, y, rows, params, threads, on_lambda: solver(X, y, rows, params),
     )
     X = np.zeros((4, ncol), order="F")
     fit = bl.biglasso(X, np.array([0, 1, 0, 1]), lambdas=[0.1])

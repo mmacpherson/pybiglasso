@@ -107,12 +107,7 @@ class BiglassoPath:
         y = np.asarray(y, dtype=np.float64)
         if row_indices is not None:
             y = y[row_indices]
-        eta = self.decision_function(X, lambdas, row_indices)
-        if metric == "deviance":
-            return binomial_deviance(y, eta)
-        if metric == "auc":
-            return np.array([roc_auc(y, eta[:, k]) for k in range(eta.shape[1])])
-        return ((eta > 0) == (y[:, np.newaxis] == 1)).mean(axis=0)
+        return score_logits(y, self.decision_function(X, lambdas, row_indices), metric)
 
     def _frames(self):
         """Column data for the dataframe exports."""
@@ -168,6 +163,16 @@ class BiglassoPath:
                 "to_pandas() needs pandas: pip install 'pybiglasso[pandas]'"
             ) from e
         return pd.DataFrame(self._frames()[kind])
+
+
+def score_logits(y, eta, metric):
+    """`metric` of 0/1 labels `y` under (nrow, k) logits `eta`; one value per
+    column."""
+    if metric == "deviance":
+        return binomial_deviance(y, eta)
+    if metric == "auc":
+        return np.array([roc_auc(y, eta[:, k]) for k in range(eta.shape[1])])
+    return ((eta > 0) == (y[:, np.newaxis] == 1)).mean(axis=0)
 
 
 def linear_predictor(X, coef, intercept, row_indices=None):

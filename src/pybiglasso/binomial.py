@@ -65,6 +65,7 @@ def biglasso(
     r_compatible=False,
     n_threads=None,
     backend=None,
+    _stop=None,
 ):
     """Fit a lasso or elastic-net penalized logistic regression path.
 
@@ -101,6 +102,10 @@ def biglasso(
     `deviance` is evaluated at the final fitted model; compatibility mode
     retains R's historical pre-sweep loss instead.
     """
+    # _stop (private, for BiglassoClassifierCV's early stopping): called as
+    # _stop(il, lambdas, cols, beta, intercept) after each lambda is fit, with
+    # the whole grid and that fit's nonzero coefficients on X's scale; a true
+    # result ends the path there, as dfmax does, but without a warning
 
     if feature_names is None and hasattr(X, "columns"):
         feature_names = [str(c) for c in X.columns]
@@ -263,14 +268,21 @@ def biglasso(
         ncol,
         nlambda,
     )
+    on_lambda = None
+    if _stop is not None:
+
+        def on_lambda(il, lambdas, cols, vals, intercept, center, scale):
+            beta, intercept = _unstandardize(vals, intercept, center, scale)
+            return bool(_stop(il, lambdas, cols, beta, intercept))
+
     if backend == "rust":
-        results = fit_path_rust(X, y, row_indices, params, n_threads)
+        results = fit_path_rust(X, y, row_indices, params, n_threads, on_lambda)
     else:
         prior_threads = nb.get_num_threads()
         try:
             if n_threads is not None:
                 nb.set_num_threads(n_threads)
-            results = fit_path(X, y, row_indices, params)
+            results = fit_path(X, y, row_indices, params, on_lambda=on_lambda)
         finally:
             nb.set_num_threads(prior_threads)
 
@@ -281,9 +293,9 @@ def biglasso(
     rows, vals, intercept = [], [], results["intercept"][fitted].copy()
     for k, il in enumerate(fitted):
         cols = col_map[results["coef_rows"][il]]
-        beta = results["coef_vals"][il] / scale[cols]
-        # fsum, not @: BLAS picks its summation order by CPU and thread count
-        intercept[k] -= math.fsum(center[cols] * beta)
+        beta, intercept[k] = _unstandardize(
+            results["coef_vals"][il], intercept[k], center[cols], scale[cols]
+        )
         rows.append(cols)
         vals.append(beta)
     indptr = np.concatenate([[0], np.cumsum([len(r) for r in rows])])
@@ -310,6 +322,14 @@ def biglasso(
         feature_names=feature_names,
         alpha=alpha,
     )
+
+
+def _unstandardize(vals, intercept, center, scale):
+    """Coefficients and intercept on X's scale, from those fit on standardized
+    columns with this `center` and `scale`."""
+    beta = vals / scale
+    # fsum, not @: BLAS picks its summation order by CPU and thread count
+    return beta, intercept - math.fsum(center * beta)
 
 
 @jit
@@ -725,6 +745,7 @@ def fit_path(
     row_indices,
     params,
     scale_min_thresh=1e-6,
+    on_lambda=None,
 ):
 
     # PHASE 1: Initialization
@@ -883,6 +904,8 @@ def fit_path(
             path["deviance"][0] = final_loss(y, row_indices, state["eta"])
         path["n_reject"][0] = ncol_used
         lstart = 1
+        if _stopped(path, 0, on_lambda):
+            return path
 
     logger.info("λ[1/%d] = %0.2g", params.nlambda, path["lambda_"][0])
 
@@ -929,6 +952,8 @@ def fit_path(
         _record_coefs(path, state, il)
         if not params.r_compatible:
             path["deviance"][il] = final_loss(y, row_indices, state["eta"])
+        if _stopped(path, il, on_lambda):
+            return path
 
         t_end = time.process_time()
         logger.info(
@@ -942,7 +967,7 @@ def fit_path(
     return path
 
 
-def fit_path_rust(X, y, row_indices, params, n_threads):
+def fit_path_rust(X, y, row_indices, params, n_threads, on_lambda=None):
     """fit_path, run by the Rust backend in one call."""
     from . import _rust
 
@@ -976,6 +1001,7 @@ def fit_path_rust(X, y, row_indices, params, n_threads):
         float(null_deviance),
         n_threads or 0,
         settings.boundscheck,
+        on_lambda=on_lambda,
     )
     path.pop("row_path")  # gathered or masked rows; reported for tests
     for kind, il in path.pop("events"):
@@ -988,6 +1014,26 @@ def fit_path_rust(X, y, row_indices, params, n_threads):
         }[kind]
         warnings.warn(message, stacklevel=3)
     return path
+
+
+def _stopped(path, il, on_lambda):
+    """Whether on_lambda ends the path after lambda il; if so, the rest of
+    the path is marked unfit."""
+    if on_lambda is None:
+        return False
+    cols = path["col_map"][path["coef_rows"][il]]
+    if not on_lambda(
+        il,
+        path["lambda_"],
+        cols,
+        path["coef_vals"][il],
+        path["intercept"][il],
+        path["center"][cols],
+        path["scale"][cols],
+    ):
+        return False
+    path["iters"][il + 1 :] = -1
+    return True
 
 
 def _record_coefs(path, state, il):
