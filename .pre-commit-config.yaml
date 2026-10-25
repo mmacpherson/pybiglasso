@@ -1,3 +1,6 @@
+# pre-commit.ci's runners have no Rust toolchain; CI's hooks step runs these
+ci:
+  skip: [cargo-fmt, cargo-clippy]
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
