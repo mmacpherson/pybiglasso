@@ -4,19 +4,23 @@ another solver; none needs R. The ideas come from other solvers' test suites
 
 Two kinds of agreement appear here, and the tolerance follows from which:
 
-- Same trajectory. When a change to the data leaves every quantity the solver
-  computes unchanged in exact arithmetic (duplicating rows, flipping the
-  labels, rescaling a column), the two fits run the same iterations and differ
-  only by rounding. Iteration counts must then match, and results agree to
-  rtol 1e-9, which leaves a factor of about 1e6 over double rounding for its
-  accumulation through hundreds of sweeps. Scaling by a power of two commutes
-  with every floating-point operation, so there the fits agree bit for bit.
+- Same trajectory. Duplicating rows, flipping the labels and rescaling a column
+  leave every quantity the solver computes unchanged in exact arithmetic, so
+  the two fits differ only by rounding. In general rounding can still push a
+  strong-rule, KKT or stopping test across its boundary, so the exact
+  iteration and rejection counts asserted here are properties of these
+  fixtures, not a theorem; the fixtures also keep n > p after duplication (the
+  lambda_min default switches there) and keep every rescaled column's scale
+  far above the 1e-6 cutoff. Values are compared at rtol 1e-9, a stated
+  policy: rounding with room to spare, not a proven error budget. Scaling by a
+  power of two is exact away from overflow and subnormals, which these values
+  are, so there the fits agree bit for bit.
 - Same optimum, different route (permuted columns, another solver). Each
-  answer is certified by its own KKT residual, and the distance between two
-  certified answers is bounded by strong convexity: for minimizers of a
-  mu-strongly convex objective, |theta1 - theta2| <= (|e1| + |e2|) / mu, with
-  e_i the residuals. mu is measured from the Hessian at the solution, and
-  halved to cover the segment between the two points.
+  answer must first pass a fixed accuracy test, its KKT or gradient residual
+  below KKT_TOL. Then the distance between the two is bounded by convexity:
+  if the mean NLL has curvature at least mu along the segment between them,
+  |theta1 - theta2| <= (|e1| + |e2|) / mu, with e_i their residuals (the
+  penalty is convex, so it only helps). `segment_curvature` gives such a mu.
 """
 
 import warnings
@@ -55,11 +59,64 @@ def mean_nll_gradient(Z, y, theta):
     return Z.T @ (expit(Z @ theta) - y) / len(y)
 
 
-def strong_convexity(Z, y, theta):
-    """Half the smallest Hessian eigenvalue of the mean NLL at theta."""
-    p = expit(Z @ theta)
-    hessian = Z.T @ (Z * (p * (1 - p))[:, None]) / len(y)
-    return np.linalg.eigvalsh(hessian).min() / 2
+def segment_curvature(Z, y, theta1, theta2):
+    """A lower bound on the mean NLL's curvature along the segment theta1-theta2.
+
+    Row i's logistic weight p(1 - p) falls as |eta_i| grows, and eta_i is linear
+    along the segment, so its smallest weight there is at an endpoint. The
+    Hessian on the segment is at least Z' diag(those weights) Z / n; its
+    smallest eigenvalue, less a margin for eigvalsh's rounding, bounds the
+    curvature from below.
+    """
+    p1, p2 = expit(Z @ theta1), expit(Z @ theta2)
+    weight = np.minimum(p1 * (1 - p1), p2 * (1 - p2))
+    floor = Z.T @ (Z * weight[:, None]) / len(y)
+    eigenvalues = np.linalg.eigvalsh(floor)
+    mu = eigenvalues.min() - 1e-12 * np.abs(eigenvalues).max()
+    assert np.isfinite(mu) and mu > 0, "no curvature to certify a distance"
+    return mu
+
+
+def gradient_lipschitz(Z):
+    """The mean NLL's gradient is Lipschitz with constant |Z|_2^2 / (4n)."""
+    return np.linalg.norm(Z, 2) ** 2 / (4 * len(Z))
+
+
+def standardized_kkt(Z, y, theta, lam, alpha):
+    """Largest KKT violation of theta, on [1, standardized X], with pf = 1."""
+    g = Z.T @ (y - expit(Z @ theta)) / len(y)
+    b, gb = theta[1:], g[1:]
+    viol = np.where(
+        b != 0,
+        np.abs(gb - lam * (alpha * np.sign(b) + (1 - alpha) * b)),
+        np.maximum(np.abs(gb) - lam * alpha, 0),
+    )
+    return max(viol.max(), abs(g[0]))
+
+
+def certified_distance(Z, y, theta1, theta2, e1, e2):
+    """Bound on |theta1 - theta2| for two near-minimizers of one convex problem,
+    given the 2-norms e1, e2 of their (sub)gradient residuals."""
+    return (e1 + e2) / segment_curvature(Z, y, theta1, theta2)
+
+
+def test_certified_distance_accounts_for_flattening_curvature():
+    """A check on the helper: logistic curvature at one point says little about
+    it far away. One row of each class with only an intercept: theta = 0 is the
+    minimum (gradient 0, curvature 1/4) and theta = 10 has gradient about 1/2,
+    so curvature at 0 alone would claim a distance under 4; it is 10."""
+    Z, y = np.ones((2, 1)), np.array([0.0, 1.0])
+    t1, t2 = np.array([0.0]), np.array([10.0])
+    e1, e2 = (abs(mean_nll_gradient(Z, y, t)[0]) for t in (t1, t2))
+    assert certified_distance(Z, y, t1, t2, e1, e2) >= 10
+    # and on random pairs the bound holds, as it must
+    rng = np.random.default_rng(0)
+    Zr = with_ones(rng.normal(size=(50, 3)))
+    yr = rng.binomial(1, 0.4, size=50).astype(float)
+    for _ in range(20):
+        a, b = rng.normal(scale=3, size=(2, 4))
+        ea, eb = (np.linalg.norm(mean_nll_gradient(Zr, yr, t)) for t in (a, b))
+        assert np.linalg.norm(a - b) <= certified_distance(Zr, yr, a, b, ea, eb)
 
 
 def assert_same_trajectory(a, b, coef_b=None, intercept_b=None, deviance_b=None):
@@ -146,7 +203,9 @@ def test_permuting_columns_permutes_the_solution(data):
         theta_p = np.empty_like(theta)
         theta_p[0] = permuted.intercept[k] + center[perm] @ dense(permuted)[:, k]
         theta_p[1 + perm] = dense(permuted)[:, k] * scale[perm]
-        bound = np.sqrt(len(theta)) * (r_fit + r_perm) / strong_convexity(Z, y, theta)
+        # KKT residuals are max-norms; the bound wants 2-norms
+        root = np.sqrt(len(theta))
+        bound = certified_distance(Z, y, theta, theta_p, root * r_fit, root * r_perm)
         assert np.linalg.norm(theta - theta_p) <= bound
         np.testing.assert_allclose(
             objective(fit, X, y, k), objective(permuted, Xp, y, k), rtol=1e-10
@@ -195,9 +254,9 @@ def test_rescaling_a_column_divides_its_coefficient(dtype, c):
 # the ends of the path -------------------------------------------------------
 
 
-def test_lambdas_at_or_above_lambda_max_give_the_null_model(data):
+def test_lambdas_above_lambda_max_give_the_null_model(data):
     """lambda_max = max_j |x_j'(y - ybar)| / (n * alpha * pf_j) on standardized
-    columns: at or above it the null model satisfies KKT, and just below it the
+    columns: above it the null model satisfies KKT, and just below it the
     column attaining the max enters (alone, as the next one is far off)."""
     X, y = data
     n, alpha = len(y), 0.6
@@ -237,9 +296,10 @@ def _unpenalized_logistic(sklm):
 
 def test_tiny_lambda_approaches_the_unpenalized_mle():
     """With n >> p and lambda near zero the fit is the maximum-likelihood fit;
-    compare with scikit-learn's unpenalized Newton solver. Each point's
-    gradient of the unpenalized problem (lambda's pull included) bounds its
-    distance to the MLE."""
+    compare with scikit-learn's unpenalized Newton solver. Both must first
+    nearly zero the unpenalized gradient: within KKT_TOL, plus lambda's pull
+    of at most lambda per coordinate for biglasso. Their residuals then bound
+    their distance."""
     sklm = pytest.importorskip("sklearn.linear_model")
     d = bl.common.generate_test_data(3000, 4, seed=21)
     X, y = d["X"], d["y"]
@@ -251,38 +311,60 @@ def test_tiny_lambda_approaches_the_unpenalized_mle():
     ours = standardized_theta(fit.intercept[0], dense(fit)[:, 0], center, scale)
     theirs = standardized_theta(sk.intercept_[0], sk.coef_.ravel(), center, scale)
     assert np.all(ours[1:] != 0)
-    residuals = sum(np.linalg.norm(mean_nll_gradient(Z, y, t)) for t in (ours, theirs))
-    assert np.linalg.norm(ours - theirs) <= residuals / strong_convexity(Z, y, ours)
+    lam = fit.lambdas[0]
+    g_ours, g_theirs = (mean_nll_gradient(Z, y, t) for t in (ours, theirs))
+    assert kkt_residual(fit, X, y, 0) < KKT_TOL
+    assert np.abs(g_ours).max() < KKT_TOL + lam
+    assert np.abs(g_theirs).max() < KKT_TOL
+    distance = certified_distance(
+        Z, y, ours, theirs, np.linalg.norm(g_ours), np.linalg.norm(g_theirs)
+    )
+    assert np.linalg.norm(ours - theirs) <= distance
     # and on X's own scale
-    bound = residuals / strong_convexity(Z, y, ours) / scale
-    assert np.all(np.abs(dense(fit)[:, 0] - sk.coef_.ravel()) <= bound)
+    assert np.all(np.abs(dense(fit)[:, 0] - sk.coef_.ravel()) <= distance / scale)
 
 
 @pytest.mark.parametrize("alpha", [1.0, 0.5])
 def test_support_matches_saga(alpha):
-    """saga's proximal step sets a coefficient exactly to zero once its
-    gradient is inside the penalty's kink, so at convergence its zeros are
-    exact. Compare supports where both solvers resolve them: every zero has
-    KKT slack, and every nonzero a magnitude, of at least 1e-5, ten times the
-    1e-6 the coefficients are already known to agree to."""
+    """saga's proximal step gives exact zeros, so supports can be compared.
+
+    Both fits must pass KKT within KKT_TOL, which bounds their distance d. A
+    saga coefficient within KKT_TOL of KKT can only be nonzero if its gradient
+    is within KKT_TOL of the kink, and gradients differ by at most L * d
+    between the fits. So where biglasso's zero has slack above
+    KKT_TOL + L * d, saga's is exactly zero too, and where biglasso's nonzero
+    exceeds d, saga's is nonzero with the same sign. The test asserts that
+    every coordinate is resolved this way, then compares.
+    """
     sklm = pytest.importorskip("sklearn.linear_model")
     d = bl.common.generate_test_data(300, 12, seed=3)
     X, y = d["X"], d["y"]
     n = len(y)
     Xs, center, scale = standardize(X)
+    Z = with_ones(Xs)
+    root = np.sqrt(Z.shape[1])
     fit = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-12)
-    margin = 1e-5
     compared = 0
     for k in (2, 4, 7):
         lam = fit.lambdas[k]
-        b = dense(fit)[:, k] * scale
-        eta = fit.intercept[k] + X @ dense(fit)[:, k]
-        g = Xs.T @ (y - expit(eta)) / n
+        ours = standardized_theta(fit.intercept[k], dense(fit)[:, k], center, scale)
+        sk = saga(sklm, C=1 / (n * lam), l1_ratio=alpha).fit(Xs, y)
+        theirs = np.concatenate([sk.intercept_, sk.coef_.ravel()])
+        r_ours, r_theirs = (
+            standardized_kkt(Z, y, t, lam, alpha) for t in (ours, theirs)
+        )
+        assert max(r_ours, r_theirs) < KKT_TOL
+        distance = certified_distance(
+            Z, y, ours, theirs, root * r_ours, root * r_theirs
+        )
+        b = ours[1:]
+        g = Xs.T @ (y - expit(Z @ ours)) / n
         zero = b == 0
         slack = lam * alpha - np.abs(g[zero])
-        assert np.all(slack > margin) and np.all(np.abs(b[~zero]) > margin)
-        sk = saga(sklm, C=1 / (n * lam), l1_ratio=alpha).fit(Xs, y)
-        np.testing.assert_array_equal(sk.coef_.ravel() != 0, ~zero)
+        assert np.all(slack > KKT_TOL + gradient_lipschitz(Z) * distance)
+        assert np.all(np.abs(b[~zero]) > distance)
+        np.testing.assert_array_equal(theirs[1:] != 0, ~zero)
+        np.testing.assert_array_equal(np.sign(theirs[1:]), np.sign(b))
         compared += zero.sum()
     assert compared > 0, "no zeros to compare"
 
@@ -403,6 +485,7 @@ def test_unpenalized_column_beside_a_penalized_one():
     X, y = d["X"], d["y"]
     fit = bl.biglasso(X, y, penalty_factor=[0, 1], nlambda=20, eps=1e-14)
     assert dense(fit)[1, 0] == 0 and dense(fit)[0, 0] != 0 and fit.n_nonzero[-1] == 2
+    # this caps the prefit's gradient too: column 0 and the intercept
     assert max(kkt_residual(fit, X, y, k) for k in range(len(fit))) < KKT_TOL
 
     sk = _unpenalized_logistic(sklm).fit(X[:, :1], y)
@@ -414,12 +497,15 @@ def test_unpenalized_column_beside_a_penalized_one():
     theirs = standardized_theta(
         sk.intercept_[0], sk.coef_.ravel(), center[:1], scale[:1]
     )
-    mu = strong_convexity(Z, y, ours)
-    distance = (
-        sum(np.linalg.norm(mean_nll_gradient(Z, y, t)) for t in (ours, theirs)) / mu
+    g_ours, g_theirs = (mean_nll_gradient(Z, y, t) for t in (ours, theirs))
+    assert np.abs(g_theirs).max() < KKT_TOL
+    distance = certified_distance(
+        Z, y, ours, theirs, np.linalg.norm(g_ours), np.linalg.norm(g_theirs)
     )
     assert np.linalg.norm(ours - theirs) <= distance
-    # the score is Lipschitz in theta, with constant at most |[1, x_2]|^2 / (4n)
+    # lambda_max is the penalized column's score at the prefit, which moves at
+    # most L * distance between the two fits (L of the gradient on [Z, x_2]);
+    # 1e-12 covers rounding in the two computations of the score
     score = Xs[:, 1] @ (y - expit(Z @ theirs)) / len(y)
-    lipschitz = np.linalg.norm(np.column_stack([Z, Xs[:, 1]]), 2) ** 2 / (4 * len(y))
-    assert abs(fit.lambdas[0] - abs(score)) <= lipschitz * distance
+    lipschitz = gradient_lipschitz(np.column_stack([Z, Xs[:, 1]]))
+    assert abs(fit.lambdas[0] - abs(score)) <= lipschitz * distance + 1e-12
