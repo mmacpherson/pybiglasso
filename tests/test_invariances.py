@@ -29,83 +29,29 @@ import warnings
 import numpy as np
 import pytest
 from scipy.special import expit, logit
+from support.certificates import (
+    KKT_TOL,
+    certified_distance,
+    gradient_lipschitz,
+    kkt_residual,
+    logistic_weight,
+    mean_nll_gradient,
+    segment_curvature,
+    standardize,
+    standardized_kkt,
+    standardized_theta,
+    support_is_certified,
+    with_ones,
+)
+from support.certificates import path_objective as objective
+from support.paths import assert_bitwise, assert_same_trajectory
 from test_biglasso import saga
-from test_default_enet import KKT_TOL, kkt_residual, objective
 
 import pybiglasso as bl
-
-SAME_TRAJECTORY = dict(rtol=1e-9, atol=1e-12)
 
 
 def dense(path):
     return path.coef.toarray()
-
-
-def standardize(X):
-    X = X.astype(np.float64)
-    center, scale = X.mean(axis=0), X.std(axis=0)
-    return (X - center) / scale, center, scale
-
-
-def standardized_theta(intercept, coef, center, scale):
-    """(intercept, coefficients) on standardized columns."""
-    return np.concatenate([[intercept + center @ coef], coef * scale])
-
-
-def with_ones(Xs):
-    return np.column_stack([np.ones(len(Xs)), Xs])
-
-
-def mean_nll_gradient(Z, y, theta):
-    return Z.T @ (expit(Z @ theta) - y) / len(y)
-
-
-def logistic_weight(eta):
-    """p(1 - p) at eta, computed as u / (1 + u)^2 with u = exp(-|eta|), which
-    keeps its relative accuracy where p(1 - p) would cancel (p rounds to 1)."""
-    u = np.exp(-np.abs(eta))
-    return u / (1 + u) ** 2
-
-
-def segment_curvature(Z, y, theta1, theta2):
-    """A lower bound on the mean NLL's curvature along the segment theta1-theta2.
-
-    Row i's logistic weight p(1 - p) falls as |eta_i| grows, and eta_i is linear
-    along the segment, so its smallest weight there is at an endpoint. The
-    Hessian on the segment is at least Z' diag(those weights) Z / n; its
-    smallest eigenvalue bounds the curvature from below. The margin taken off
-    it is a practical allowance for floating-point rounding in these small
-    matrices, not an interval-arithmetic certificate.
-    """
-    weight = np.minimum(logistic_weight(Z @ theta1), logistic_weight(Z @ theta2))
-    floor = Z.T @ (Z * weight[:, None]) / len(y)
-    eigenvalues = np.linalg.eigvalsh(floor)
-    mu = eigenvalues.min() - 1e-12 * np.abs(eigenvalues).max()
-    assert np.isfinite(mu) and mu > 0, "no curvature to certify a distance"
-    return mu
-
-
-def gradient_lipschitz(Z):
-    """The mean NLL's gradient is Lipschitz with constant |Z|_2^2 / (4n)."""
-    return np.linalg.norm(Z, 2) ** 2 / (4 * len(Z))
-
-
-def standardized_kkt(Z, y, theta, lam, alpha):
-    """Largest KKT violation of theta, on [1, standardized X], with pf = 1."""
-    g = Z.T @ (y - expit(Z @ theta)) / len(y)
-    b, gb = theta[1:], g[1:]
-    viol = np.where(
-        b != 0,
-        np.abs(gb - lam * (alpha * np.sign(b) + (1 - alpha) * b)),
-        np.maximum(np.abs(gb) - lam * alpha, 0),
-    )
-    return max(viol.max(), abs(g[0]))
-
-
-def certified_distance(Z, y, theta1, theta2, e1, e2):
-    """Bound on |theta1 - theta2| for two near-minimizers of one convex problem,
-    given the 2-norms e1, e2 of their (sub)gradient residuals."""
-    return (e1 + e2) / segment_curvature(Z, y, theta1, theta2)
 
 
 @pytest.mark.parametrize("eta", [20.0, 30.0, -30.0])
@@ -142,25 +88,6 @@ def test_certified_distance_accounts_for_flattening_curvature():
         a, b = rng.normal(scale=3, size=(2, 4))
         ea, eb = (np.linalg.norm(mean_nll_gradient(Zr, yr, t)) for t in (a, b))
         assert np.linalg.norm(a - b) <= certified_distance(Zr, yr, a, b, ea, eb)
-
-
-def assert_same_trajectory(a, b, coef_b=None, intercept_b=None, deviance_b=None):
-    np.testing.assert_array_equal(a.iterations, b.iterations)
-    np.testing.assert_array_equal(a.n_rejected, b.n_rejected)
-    np.testing.assert_allclose(a.lambdas, b.lambdas, rtol=1e-12)
-    np.testing.assert_allclose(
-        dense(a), dense(b) if coef_b is None else coef_b, **SAME_TRAJECTORY
-    )
-    np.testing.assert_allclose(
-        a.intercept,
-        b.intercept if intercept_b is None else intercept_b,
-        **SAME_TRAJECTORY,
-    )
-    np.testing.assert_allclose(
-        a.deviance,
-        b.deviance if deviance_b is None else deviance_b,
-        **SAME_TRAJECTORY,
-    )
 
 
 @pytest.fixture(scope="module")
@@ -267,11 +194,7 @@ def test_rescaling_a_column_divides_its_coefficient(dtype, c):
     expected[scaled_cols] /= c
     if c & (c - 1) == 0:
         # a power of two scales every operation exactly
-        np.testing.assert_array_equal(rescaled.lambdas, fit.lambdas)
-        np.testing.assert_array_equal(rescaled.iterations, fit.iterations)
-        np.testing.assert_array_equal(dense(rescaled), expected)
-        np.testing.assert_array_equal(rescaled.intercept, fit.intercept)
-        np.testing.assert_array_equal(rescaled.deviance, fit.deviance)
+        assert_bitwise(rescaled, fit, coef_b=expected)
     else:
         assert_same_trajectory(rescaled, fit, coef_b=expected)
 
@@ -386,9 +309,14 @@ def test_support_matches_saga(alpha):
         b = ours[1:]
         g = Xs.T @ (y - expit(Z @ ours)) / n
         zero = b == 0
-        slack = lam * alpha - np.abs(g[zero])
-        assert np.all(slack > KKT_TOL + gradient_lipschitz(Z) * distance)
-        assert np.all(np.abs(b[~zero]) > distance)
+        assert support_is_certified(
+            b,
+            g,
+            lam * alpha,
+            distance=distance,
+            residual_bound=KKT_TOL,
+            lipschitz=gradient_lipschitz(Z),
+        )
         np.testing.assert_array_equal(theirs[1:] != 0, ~zero)
         np.testing.assert_array_equal(np.sign(theirs[1:]), np.sign(b))
         compared += zero.sum()

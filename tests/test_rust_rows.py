@@ -4,6 +4,7 @@ mask over every row. Each is checked against a fit on a copy of the rows."""
 import numpy as np
 import pytest
 from scipy.special import expit
+from support.paths import assert_bitwise, assert_same_trajectory
 
 import pybiglasso as bl
 
@@ -40,23 +41,6 @@ def data(n, p, seed=0, order="F", dtype=np.float64):
     return np.asarray(X, dtype=dtype, order=order), y
 
 
-def assert_same_path(a, b):
-    # the same arithmetic in another grouping: rounding, far below eps
-    np.testing.assert_array_equal(a.iterations, b.iterations)
-    np.testing.assert_array_equal(a.n_rejected, b.n_rejected)
-    np.testing.assert_allclose(a.lambdas, b.lambdas, rtol=1e-12)
-    np.testing.assert_allclose(a.intercept, b.intercept, rtol=1e-9, atol=1e-12)
-    np.testing.assert_allclose(
-        a.coef.toarray(), b.coef.toarray(), rtol=1e-9, atol=1e-12
-    )
-
-
-def assert_identical(a, b):
-    for name in ("lambdas", "intercept", "iterations", "n_rejected", "deviance"):
-        np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
-    np.testing.assert_array_equal(a.coef.toarray(), b.coef.toarray())
-
-
 SHAPES = dict(wide=(300, 500), tall=(20_000, 8))
 
 
@@ -74,7 +58,7 @@ def test_rows_match_a_copy(fit, shape, order, share, sort, row_path):
     subset, ran = fit(X, y, row_path, row_indices=rows, nlambda=20)
     copy, _ = fit(np.asarray(X[rows], order=order), y[rows], nlambda=20)
     assert ran == row_path
-    assert_same_path(subset, copy)
+    assert_same_trajectory(subset, copy)
 
 
 def test_mask_matches_a_copy_in_float32(fit):
@@ -83,7 +67,7 @@ def test_mask_matches_a_copy_in_float32(fit):
     subset, ran = fit(X, y, "mask", row_indices=rows, nlambda=20)
     copy, _ = fit(np.asfortranarray(X[rows]), y[rows], nlambda=20)
     assert ran == "mask"
-    assert_same_path(subset, copy)
+    assert_same_trajectory(subset, copy)
 
 
 @pytest.mark.parametrize(
@@ -109,7 +93,7 @@ def test_mask_is_bit_identical_across_threads(fit, n_threads):
     one, _ = fit(X, y, "mask", row_indices=rows, nlambda=10, n_threads=1)
     many, ran = fit(X, y, "mask", row_indices=rows, nlambda=10, n_threads=n_threads)
     assert ran == "mask"
-    assert_identical(one, many)
+    assert_bitwise(one, many)
 
 
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf, 1e300, -1e300], ids=str)
@@ -121,7 +105,7 @@ def test_unsafe_left_out_rows_gather_instead(fit, value):
     masked, ran = fit(X, y, "mask", row_indices=rows, nlambda=10)
     gathered, _ = fit(X, y, "gather", row_indices=rows, nlambda=10)
     assert ran == "gather"
-    assert_identical(masked, gathered)
+    assert_bitwise(masked, gathered)
 
 
 @pytest.mark.parametrize("value", [10.0, -1e100], ids=str)
@@ -133,7 +117,7 @@ def test_large_finite_left_out_rows_keep_the_mask(fit, value):
     X[0, 7] = value
     masked, ran = fit(X, y, "mask", row_indices=rows, nlambda=10)
     assert ran == "mask"
-    assert_same_path(masked, copy)
+    assert_same_trajectory(masked, copy)
 
 
 def test_left_out_rows_of_unused_columns_are_ignored(fit):
@@ -154,7 +138,7 @@ def test_left_out_responses_may_be_anything(fit, value):
     y[0] = value
     masked, ran = fit(X, y, "mask", row_indices=rows, nlambda=10)
     assert ran == "mask"
-    assert_same_path(masked, copy)
+    assert_same_trajectory(masked, copy)
 
 
 def test_mask_centers_shuffled_rows_as_gathering_does(fit):
@@ -169,4 +153,4 @@ def test_mask_centers_shuffled_rows_as_gathering_does(fit):
     assert ran == "mask"
     np.testing.assert_array_equal(masked.center, copy.center)
     np.testing.assert_array_equal(masked.scale, copy.scale)
-    assert_same_path(masked, copy)
+    assert_same_trajectory(masked, copy)

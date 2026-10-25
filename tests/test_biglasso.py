@@ -7,6 +7,7 @@ import numba
 import numpy as np
 import pytest
 import scipy.sparse as sps
+from support.paths import assert_bitwise
 
 import pybiglasso as bl
 
@@ -287,9 +288,7 @@ def test_thread_count_does_not_change_results(penalty):
         pf[:3] = 0
     one = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=1)
     many = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=threads)
-    np.testing.assert_array_equal(one.coef.toarray(), many.coef.toarray())
-    np.testing.assert_array_equal(one.iterations, many.iterations)
-    np.testing.assert_array_equal(one.n_rejected, many.n_rejected)
+    assert_bitwise(one, many)
 
 
 def test_quickstart_example_runs():

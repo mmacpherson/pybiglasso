@@ -1,4 +1,4 @@
-# R + biglasso for the comparison tests in tests/rcompare.py, and glmnet for
+# R + biglasso for the comparison tests in tests/support/rcompare.py, and glmnet for
 # the benchmarks (benchmarks/path.py).
 #
 # rocker/r-ver images install packages from a Posit Package Manager snapshot
