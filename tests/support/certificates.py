@@ -173,3 +173,25 @@ def support_is_certified(
         np.abs(beta) > distance,
     )
     return bool(np.all(resolved))
+
+
+def path_theta(path, k, center, scale):
+    """A path's fit at index k, on standardized columns."""
+    coef = path.coef[:, [k]].toarray().ravel()
+    return standardized_theta(path.intercept[k], coef, center, scale)
+
+
+def same_optimum_bound(Z, y, theta_a, theta_b, lam, alpha, penalty_factor=1.0):
+    """(distance, bound) for two approximate solutions of one problem.
+
+    The bound is certified_distance from the two subgradient residuals'
+    2-norms. It holds for any two points, so on its own it has no teeth: a
+    fit at the wrong lambda passes it, with a residual (and bound) to match.
+    Callers cap both residuals first, at KKT_TOL, and fit at eps=1e-14.
+    """
+    norms = [
+        np.linalg.norm(subgradient_residual(Z, y, t, lam, alpha, penalty_factor))
+        for t in (theta_a, theta_b)
+    ]
+    distance = np.linalg.norm(np.asarray(theta_a) - np.asarray(theta_b))
+    return distance, certified_distance(Z, y, theta_a, theta_b, *norms)

@@ -7,6 +7,15 @@ import numba
 import numpy as np
 import pytest
 import scipy.sparse as sps
+from support.certificates import (
+    KKT_TOL,
+    kkt_residual,
+    path_theta,
+    same_optimum_bound,
+    standardize,
+    standardized_kkt,
+    with_ones,
+)
 from support.paths import assert_bitwise
 
 import pybiglasso as bl
@@ -63,18 +72,26 @@ def test_feature_names_from_dataframe(data):
     assert p.feature_names[0] == "snp0"
 
 
+def assert_matches_saga(sklm, path, k, X, y):
+    """Both fits pass KKT, and convexity bounds their distance."""
+    Xs, center, scale = standardize(X)
+    Z, lam = with_ones(Xs), path.lambdas[k]
+    sk = saga(sklm, C=1 / (len(y) * lam), l1_ratio=path.alpha).fit(Xs, y)
+    theirs = np.concatenate([sk.intercept_, sk.coef_.ravel()])
+    assert kkt_residual(path, X, y, k) < KKT_TOL
+    assert standardized_kkt(Z, y, theirs, lam, path.alpha) < KKT_TOL
+    ours = path_theta(path, k, center, scale)
+    distance, bound = same_optimum_bound(Z, y, ours, theirs, lam, path.alpha)
+    assert distance <= bound
+
+
 def test_lasso_matches_independent_solver(data):
     """At alpha=1 the objective is unambiguous; compare against sklearn's saga."""
     sklm = pytest.importorskip("sklearn.linear_model")
     X, y = data
-    n, sd = len(y), X.std(axis=0)
-    p = bl.biglasso(X, y, alpha=1.0, nlambda=8, lambda_min=0.02, eps=1e-12)
+    p = bl.biglasso(X, y, alpha=1.0, nlambda=8, lambda_min=0.02, eps=1e-14)
     for k in (2, 4, 7):
-        lam = p.lambdas[k]
-        sk = saga(sklm, C=1 / (n * lam), l1_ratio=1.0).fit((X - X.mean(axis=0)) / sd, y)
-        np.testing.assert_allclose(
-            p.coef[:, [k]].toarray().ravel() * sd, sk.coef_.ravel(), atol=1e-6
-        )
+        assert_matches_saga(sklm, p, k, X, y)
 
 
 @pytest.mark.parametrize("alpha", [0.5, 0.2])
@@ -82,17 +99,13 @@ def test_elastic_net_matches_independent_solver(data, alpha):
     """The default elastic net minimizes the documented (glmnet) objective."""
     sklm = pytest.importorskip("sklearn.linear_model")
     X, y = data
-    n, sd = len(y), X.std(axis=0)
-    Xs = (X - X.mean(axis=0)) / sd
-    p = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-12)
-    r = bl.biglasso(X, y, alpha=alpha, lambdas=p.lambdas, eps=1e-12, r_compatible=True)
+    p = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-14)
+    r = bl.biglasso(X, y, alpha=alpha, lambdas=p.lambdas, eps=1e-14, r_compatible=True)
     for k in (2, 4, 7):
-        sk = saga(sklm, C=1 / (n * p.lambdas[k]), l1_ratio=alpha).fit(Xs, y)
-        ours = p.coef[:, [k]].toarray().ravel() * sd
-        np.testing.assert_allclose(ours, sk.coef_.ravel(), atol=1e-6)
-        # R's update solves a different problem, measurably so
-        r_coef = r.coef[:, [k]].toarray().ravel() * sd
-        assert np.abs(r_coef - sk.coef_.ravel()).max() > 1e-3
+        assert_matches_saga(sklm, p, k, X, y)
+        # R's update solves a different problem: its fit, as converged, fails
+        # the documented objective's KKT conditions
+        assert kkt_residual(r, X, y, k) > KKT_TOL
 
 
 # prediction and scoring -----------------------------------------------
@@ -229,10 +242,22 @@ def test_default_grid_matches_same_grid_as_user_lambdas(data, penalty):
         pf[:2] = 0
     else:
         pf = np.random.default_rng(0).uniform(0.5, 2, X.shape[1])
-    a = bl.biglasso(X, y, penalty_factor=pf, nlambda=10)
-    b = bl.biglasso(X, y, penalty_factor=pf, lambdas=a.lambdas)
-    np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray(), atol=1e-5)
-    np.testing.assert_allclose(a.intercept, b.intercept, atol=1e-5)
+    a = bl.biglasso(X, y, penalty_factor=pf, nlambda=10, eps=1e-14)
+    b = bl.biglasso(X, y, penalty_factor=pf, lambdas=a.lambdas, eps=1e-14)
+    # two routes to each optimum: both pass KKT, and convexity bounds the gap
+    Xs, center, scale = standardize(X)
+    for k in range(len(a)):
+        assert max(kkt_residual(a, X, y, k), kkt_residual(b, X, y, k)) < KKT_TOL
+        distance, bound = same_optimum_bound(
+            with_ones(Xs),
+            y,
+            path_theta(a, k, center, scale),
+            path_theta(b, k, center, scale),
+            a.lambdas[k],
+            a.alpha,
+            pf,
+        )
+        assert distance <= bound
 
 
 def test_unpenalized_columns_enter_at_lambda_max(data):

@@ -9,6 +9,7 @@ from scipy import sparse
 from support.certificates import (
     gradient_lipschitz,
     objective,
+    same_optimum_bound,
     standardized_kkt,
     subgradient_residual,
     support_is_certified,
@@ -92,6 +93,21 @@ def test_support_certificate_requires_both_strict_margins():
         residual_bound=0.0625,
         lipschitz=0.25,
     )
+
+
+def test_same_optimum_bound_holds_for_any_two_points():
+    """Monotonicity of the subdifferential gives mu |d|^2 <= (e_a + e_b) |d|
+    for any two points, not only near-optima, so random pairs, some with
+    zeros, check the bound with no fitted expectation."""
+    rng = np.random.default_rng(3)
+    Z = np.column_stack([np.ones(40), rng.normal(size=(40, 3))])
+    y = rng.binomial(1, 0.4, size=40).astype(float)
+    pf = np.array([0.5, 1.0, 2.0])
+    for _ in range(50):
+        a, b = rng.normal(size=(2, 4)) * rng.binomial(1, 0.7, size=(2, 4))
+        distance, bound = same_optimum_bound(Z, y, a, b, 0.05, 0.5, pf)
+        assert distance <= bound
+    assert same_optimum_bound(Z, y, a, a, 0.05, 0.5, pf)[0] == 0
 
 
 @dataclass
