@@ -14,12 +14,6 @@ test-latest:
 lint:
 	uv run ruff check src tests
 
-# the Rust backend, built in place for the tests and benchmarks (Linux)
-.PHONY: rust
-rust:
-	cargo build --release --manifest-path rust/Cargo.toml
-	cp rust/target/release/lib_rust.so src/pybiglasso/_rust.abi3.so
-
 # its kernels against plain scalar sums, at every SIMD width this CPU runs
 .PHONY: test-rust
 test-rust:
@@ -81,8 +75,8 @@ build:
 	rm -rf dist
 	uv build
 
-# what release.yml publishes: build it, check the metadata PyPI will render,
-# and fit from the installed wheel with no extras
+# the sdist release.yml publishes, and a wheel built from it: build them,
+# check the metadata PyPI will render, and fit from the wheel with no extras
 .PHONY: check-dist
 check-dist: build
 	uvx twine check --strict dist/*

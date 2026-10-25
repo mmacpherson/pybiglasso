@@ -1,6 +1,6 @@
 [build-system]
-build-backend = "hatchling.build"
-requires = ["hatchling"]
+build-backend = "maturin"
+requires = ["maturin>=1.9,<2"]
 
 [dependency-groups]
 bench = ["glum", "skglm", "scikit-learn", "statsmodels", "benchopt", "seaborn"]
@@ -59,8 +59,19 @@ viz = ["seaborn>=0.13"]
 Homepage = "https://github.com/mmacpherson/pybiglasso"
 "R biglasso" = "https://github.com/pbreheny/biglasso"
 
-[tool.hatch.build.targets.sdist]
-only-include = ["/src", "/tests", "/examples", "/LICENSE", "/README.md"]
+# The Python package in src, with the Rust extension from rust/ built into it
+# as pybiglasso._rust: one wheel per platform, for every Python (abi3). The
+# sdist adds what builds and tests the package.
+[tool.maturin]
+exclude = [{ path = "**/__pycache__/**", format = "sdist" }]
+include = [
+  { path = "tests/**/*", format = "sdist" },
+  { path = "examples/**/*", format = "sdist" }
+]
+manifest-path = "rust/Cargo.toml"
+module-name = "pybiglasso._rust"
+python-source = "src"
+strip = true
 
 [tool.pytest.ini_options]
 addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak'"
@@ -76,3 +87,13 @@ line-length = 88
 [tool.ruff.lint]
 ignore = ["E501"]
 select = ["E", "F", "W", "I", "B", "UP"]
+
+# rebuild the Rust extension in the development environment when its source
+# changes
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "rust/Cargo.toml" },
+  { file = "rust/Cargo.lock" },
+  { file = "rust/src/**/*.rs" }
+]
