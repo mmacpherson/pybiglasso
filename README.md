@@ -357,12 +357,12 @@ and `seqsum` helpers rather than `@` and `.sum()`.
 | pybiglasso (`src/pybiglasso/binomial.py`) | R biglasso (`src/`) |
 |---|---|
 | `center_scale`, `compute_z` | `standardize_and_get_residual` (utilities.cpp) |
-| `update_probs` | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
+| `update_irls` | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
 | `update_intercept` | intercept update in `cdfit_binomial_lambda_core` |
-| `update_weights` (`column_moments`, `apply_shift`) | coordinate loop in `cdfit_binomial_lambda_core`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
-| `check_strong_set`, `check_rest` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
+| `coordinate_sweep` (`column_moments`, `apply_shift`) | coordinate loop in `cdfit_binomial_lambda_core`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
+| `check_strong_set`, `check_rest_set` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
 | `_fit_lambda` | `cdfit_binomial_lambda_core` |
-| `binomial_hsr` | `cdfit_binomial_ssr` |
+| `fit_path` | `cdfit_binomial_ssr` |
 
 ## Scope
 

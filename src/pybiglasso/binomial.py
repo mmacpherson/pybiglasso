@@ -28,7 +28,7 @@ def _finite_scalar(name, value):
 
 BigLassoParams = collections.namedtuple(
     "BigLassoParams",
-    "alpha lambdas nlambda eps lambda_min lambda_log_scale multiplier dfmax max_iter "
+    "alpha lambdas nlambda eps lambda_min lambda_log_scale penalty_factor dfmax max_iter "
     "stop_on_saturation r_compatible",
 )
 
@@ -185,17 +185,17 @@ def biglasso(
     lambda_min = max(lambda_min, 1e-6)  # as R does
 
     if penalty_factor is None:
-        multiplier = np.ones(ncol)
+        penalty_factor = np.ones(ncol)
     else:
         if np.iscomplexobj(penalty_factor):
             raise ValueError("penalty_factor must contain real values.")
-        multiplier = np.array(penalty_factor, dtype=np.float64)
-        if multiplier.shape != (ncol,):
+        penalty_factor = np.array(penalty_factor, dtype=np.float64)
+        if penalty_factor.shape != (ncol,):
             raise ValueError("penalty_factor must have one entry per column of X.")
         if (
-            not np.isfinite(multiplier).all()
-            or np.any(multiplier < 0)
-            or not np.any(multiplier > 0)
+            not np.isfinite(penalty_factor).all()
+            or np.any(penalty_factor < 0)
+            or not np.any(penalty_factor > 0)
         ):
             raise ValueError(
                 "penalty_factor must be finite and non-negative, with at least one positive entry."
@@ -233,7 +233,7 @@ def biglasso(
         eps=eps,
         lambda_min=lambda_min,
         lambda_log_scale=lambda_log_scale,
-        multiplier=multiplier,
+        penalty_factor=penalty_factor,
         dfmax=dfmax,
         max_iter=max_iter,
         stop_on_saturation=stop_on_saturation,
@@ -249,7 +249,7 @@ def biglasso(
     try:
         if n_threads is not None:
             nb.set_num_threads(n_threads)
-        results = binomial_hsr(X, y, row_indices, params)
+        results = fit_path(X, y, row_indices, params)
     finally:
         nb.set_num_threads(prior_threads)
 
@@ -284,7 +284,7 @@ def biglasso(
         n_rejected=results["n_reject"][fitted],
         center=center,
         scale=scale,
-        penalty_factor=multiplier,
+        penalty_factor=penalty_factor,
         feature_names=feature_names,
         alpha=alpha,
     )
@@ -476,26 +476,27 @@ def get_nrow(X, row_indices):  # pragma: no cover
 
 
 @nb.njit(cache=True, nogil=True)
-def update_probs(
+def update_irls(
     y, row_indices, eta, p, w, s, r, eta_max=10, w_min=0.0001
 ):  # pragma: no cover
-    """Perform one round of probability updates.
+    """Refresh the IRLS quadratic approximation at the current eta: fitted
+    probabilities p, weights w, score residuals s = y - p and working residuals
+    r = s / w. Returns the negative log likelihood.
 
     Mutates: p, w, s, r
-
     """
 
     for ix in range(len(eta)):
-        _eta = eta[ix]
+        eta_i = eta[ix]
 
-        if _eta > eta_max:
+        if eta_i > eta_max:
             p[ix] = 1
             w[ix] = w_min
-        elif _eta < -eta_max:
+        elif eta_i < -eta_max:
             p[ix] = 0
             w[ix] = w_min
         else:
-            p[ix] = np.exp(_eta) / (1 + np.exp(_eta))
+            p[ix] = np.exp(eta_i) / (1 + np.exp(eta_i))
             w[ix] = p[ix] * (1 - p[ix])
 
         if row_indices is None:
@@ -523,54 +524,49 @@ def update_probs(
 
 
 @nb.njit(cache=True, nogil=True)
-def update_intercept(w, r, a0, eta):  # pragma: no cover
-    """Update intercept based on current state.
+def update_intercept(w, r, intercept, eta):  # pragma: no cover
+    """Move the unpenalized intercept to its weighted least-squares optimum.
 
-    Mutates: w, r, eta
+    Returns the new intercept and sum(w * r).
+
+    Mutates: r, eta
     """
 
     xwr = dot(w, r)
-    _si = xwr / w.sum()
-    intercept = _si + a0
-
-    if _si != 0:
-        a0_out = intercept
-        r -= _si
-        eta += _si
-        sum_w_residuals = dot(w, r)
-    else:
-        # don't recompute if r hasn't changed
-        a0_out = a0
-        sum_w_residuals = xwr
-
-    return intercept, a0_out, sum_w_residuals
+    shift = xwr / w.sum()
+    if shift == 0:
+        # r hasn't changed, so neither has its sum
+        return intercept, xwr
+    r -= shift
+    eta += shift
+    return intercept + shift, dot(w, r)
 
 
 @nb.njit(cache=True, nogil=True)
-def update_weights(
+def coordinate_sweep(
     X,
-    # y,
     row_indices,
     lam,
-    # params,
     alpha,
-    multiplier,
-    # bl,
+    penalty_factor,
     col_map,
     center,
     scale,
-    # bl_i
-    e1,
+    active,
     w,
     r,
     sum_w_residuals,
     eta,
-    a,
+    beta,
     r_compatible,
 ):  # pragma: no cover
-    """Perform one round of weight updates.
+    """One cyclic coordinate-descent sweep over the active set: update each
+    active coefficient in turn, and the residuals with it.
 
-    Mutates: r, eta, a
+    Returns sum(w * r) and the convergence measure: the largest curvature-
+    weighted squared change in a coefficient, v * shift^2.
+
+    Mutates: r, eta, beta
     """
 
     nrow = get_nrow(X, row_indices)
@@ -580,7 +576,7 @@ def update_weights(
 
     for j in range(len(col_map)):
         jj = col_map[j]
-        if not e1[j]:
+        if not active[j]:
             continue
 
         # Differs from R biglasso, which always uses the raw moments; see
@@ -603,30 +599,30 @@ def update_weights(
                 "Non-positive or non-finite coordinate curvature; cannot fit safely."
             )
 
-        u = xwr / nrow + v * a[j]
+        u = xwr / nrow + v * beta[j]
 
-        l1 = lam * multiplier[jj] * alpha
-        l2 = lam * multiplier[jj] * (1 - alpha)
+        l1 = lam * penalty_factor[jj] * alpha
+        l2 = lam * penalty_factor[jj] * (1 - alpha)
 
         if abs(u) < l1:
-            new_weight = 0.0
+            new_beta = 0.0
         else:
             sign = 1 if (u > 0) else -1
             # Differs from R biglasso: R divides by v * (1 + l2), where the
             # documented elastic-net objective calls for v + l2. The two
             # agree for the lasso (l2 = 0).
             if r_compatible:
-                new_weight = sign * (abs(u) - l1) / v / (1 + l2)
+                new_beta = sign * (abs(u) - l1) / v / (1 + l2)
             else:
-                new_weight = sign * (abs(u) - l1) / (v + l2)
+                new_beta = sign * (abs(u) - l1) / (v + l2)
 
-        shift = new_weight - a[j]
+        shift = new_beta - beta[j]
         if shift != 0:
             update = v * (shift**2)
             max_update = max(update, max_update)
             sum_w_residuals = apply_shift(X, jj, row_indices, shift / sc, c, r, eta, w)
 
-        a[j] = new_weight
+        beta[j] = new_beta
 
     return sum_w_residuals, max_update
 
@@ -636,81 +632,76 @@ def check_strong_set(
     X,
     row_indices,
     lam,
-    # params
     alpha,
-    multiplier,
-    # bl,
+    penalty_factor,
     col_map,
     center,
     scale,
-    # bl_i
-    e1,
-    e2,
+    active,
+    strong,
     s,
     z,
-    a,
+    beta,
 ):  # pragma: no cover
-    """Scan for violations in strong set."""
+    """KKT check of the strong set's inactive columns; violators join the
+    active set. Returns the number of violations."""
 
     s_sum = seqsum(s)
     violations = 0
     for j in nb.prange(len(col_map)):
         jj = col_map[j]
-        if (e1[j] != 0) or (e2[j] != 1):
+        if (active[j] != 0) or (strong[j] != 1):
             continue
         z[j] = standardized_score(X, jj, row_indices, s, s_sum, center[jj], scale[jj])
-        l1 = lam * multiplier[jj] * alpha
-        l2 = lam * multiplier[jj] * (1 - alpha)
-        if abs(z[j] - a[j] * l2) > l1:
-            e1[j] = 1
+        l1 = lam * penalty_factor[jj] * alpha
+        l2 = lam * penalty_factor[jj] * (1 - alpha)
+        if abs(z[j] - beta[j] * l2) > l1:
+            active[j] = 1
             violations += 1
 
     return violations
 
 
 @nb.njit(parallel=True, cache=True, nogil=True)
-def check_rest(
+def check_rest_set(
     X,
     row_indices,
     lam,
-    # params
     alpha,
-    multiplier,
-    # bl,
+    penalty_factor,
     col_map,
     center,
     scale,
-    # bl_i
-    e1,
-    e2,
+    active,
+    strong,
     s,
     z,
-    a,
+    beta,
 ):  # pragma: no cover
-    """Scan for violations in rest of predictor columns."""
+    """KKT check of the columns the strong rule rejected; violators join the
+    strong and active sets. Returns the number of violations."""
 
     s_sum = seqsum(s)
     violations = 0
     for j in nb.prange(len(col_map)):
         jj = col_map[j]
-        if e2[j] != 0:
+        if strong[j] != 0:
             continue
         z[j] = standardized_score(X, jj, row_indices, s, s_sum, center[jj], scale[jj])
-        l1 = lam * multiplier[jj] * alpha
-        l2 = lam * multiplier[jj] * (1 - alpha)
-        if abs(z[j] - a[j] * l2) > l1:
-            e1[j] = e2[j] = 1
+        l1 = lam * penalty_factor[jj] * alpha
+        l2 = lam * penalty_factor[jj] * (1 - alpha)
+        if abs(z[j] - beta[j] * l2) > l1:
+            active[j] = strong[j] = 1
             violations += 1
 
     return violations
 
 
-def binomial_hsr(
+def fit_path(
     X,
     y,
     row_indices,
     params,
-    # constants basically
     scale_min_thresh=1e-6,
 ):
 
@@ -719,33 +710,34 @@ def binomial_hsr(
     y_used = y if row_indices is None else y[row_indices]
 
     # compute means and stds online, ie one column at a time
-    _center, _scale = center_scale(X, row_indices)
+    center, scale = center_scale(X, row_indices)
 
     # find reduced set of variable-enough columns/predictors to use during fit
-    _col_map = np.where(_scale > scale_min_thresh)[0]
-    ncol_used = len(_col_map)
-    multiplier = params.multiplier[_col_map]
+    col_map = np.where(scale > scale_min_thresh)[0]
+    ncol_used = len(col_map)
+    used_penalty = params.penalty_factor[col_map]
     if ncol_used == 0:
         raise ValueError("X has no varying features after standardization.")
-    if params.lambdas is None and not np.any(multiplier > 0):
+    if params.lambdas is None and not np.any(used_penalty > 0):
         raise ValueError(
             "An automatic lambda grid requires at least one varying penalized feature; supply lambdas explicitly."
         )
 
     # a few preliminary calculations, to initialize the data structures
-    z = compute_z(X, row_indices, _col_map, _center, _scale, y_used)
+    z = compute_z(X, row_indices, col_map, center, scale, y_used)
     ybar = y_used.mean()
     null_deviance = (
         -1.0 * (y_used * np.log(ybar) + (1 - y_used) * np.log(1 - ybar)).sum()
     )
-    a0 = np.log(ybar / (1 - ybar))
+    null_intercept = np.log(ybar / (1 - ybar))
     thresh = params.eps * null_deviance / nrow
 
     # R biglasso's lambda_max, from the null model; used as the strong-rule
     # reference for the first user-supplied lambda, as in R
-    penalized = multiplier > 0
+    penalized = used_penalty > 0
     lambda_max_r = (
-        np.max(np.abs(z[penalized]) / multiplier[penalized], initial=0.0) / params.alpha
+        np.max(np.abs(z[penalized]) / used_penalty[penalized], initial=0.0)
+        / params.alpha
     )
 
     # here we initialize two largish collections of state, mainly to slim
@@ -757,10 +749,10 @@ def binomial_hsr(
     # returned
 
     # init to-be-returned state
-    bl = dict(
-        center=_center,
-        scale=_scale,
-        col_map=_col_map,
+    path = dict(
+        center=center,
+        scale=scale,
+        col_map=col_map,
         lambda_=np.zeros(params.nlambda),
         intercept=np.zeros(params.nlambda),
         # nonzero coefficients at each lambda, as (used-column index, value)
@@ -772,79 +764,87 @@ def binomial_hsr(
     )
 
     # init internal-only state
-    bl_i = dict(
-        eta=np.repeat(a0, nrow),
+    state = dict(
+        eta=np.repeat(null_intercept, nrow),
         z=z,
         p=np.zeros(nrow),
         w=np.zeros(nrow),
         s=np.zeros(nrow),
         r=np.zeros(nrow),
-        a=np.zeros(ncol_used),
-        e1=np.zeros(ncol_used, dtype=np.int64),
-        e2=np.zeros(ncol_used, dtype=np.int64),
-        a0=a0,
+        beta=np.zeros(ncol_used),
+        active=np.zeros(ncol_used, dtype=np.int64),
+        strong=np.zeros(ncol_used, dtype=np.int64),
+        intercept=null_intercept,
         sum_w_residuals=0.0,
     )
 
-    # kernels index penalty factors by raw column; `multiplier` is by used column
+    # kernels index penalty factors by raw column; `used_penalty` is by used column
     fit_args = (
         X,
         y,
         row_indices,
         params.alpha,
-        params.multiplier,
+        params.penalty_factor,
         params.max_iter,
         params.stop_on_saturation,
         params.r_compatible,
-        bl,
-        bl_i,
+        path,
+        state,
     )
 
     # PHASE 2: Lambda grid and starting point
     if params.lambdas is not None:
         # user-supplied grid: fit every value, starting from the null model
-        bl["lambda_"][:] = params.lambdas
+        path["lambda_"][:] = params.lambdas
         lambda_max = lambda_max_r
         lstart = 0
     else:
-        unpenalized = multiplier == 0
+        unpenalized = used_penalty == 0
         if unpenalized.any():
             # fit the unpenalized columns alone; that model is the solution at
             # lambda_max, and its residuals determine lambda_max
             #
             # Differs from R biglasso, whose default grid is then lambda = 0
             # at every step (an unregularized fit)
-            bl_i["e1"][unpenalized] = 1
-            bl_i["e2"][unpenalized] = 1
+            state["active"][unpenalized] = 1
+            state["strong"][unpenalized] = 1
             status = _fit_lambda(*fit_args, 0, 0.0, null_deviance, thresh, False)
             if status == "saturated":
                 warnings.warn(
                     "Model saturated by the unpenalized columns alone; no path fit.",
                     stacklevel=3,
                 )
-                bl["iters"][:] = -1
-                return bl
+                path["iters"][:] = -1
+                return path
             if status == "max_iter":
                 raise ValueError(
                     "Unpenalized prefit failed to converge within max_iter; increase max_iter or supply lambdas explicitly."
                 )
-            update_probs(
-                y, row_indices, bl_i["eta"], bl_i["p"], bl_i["w"], bl_i["s"], bl_i["r"]
+            update_irls(
+                y,
+                row_indices,
+                state["eta"],
+                state["p"],
+                state["w"],
+                state["s"],
+                state["r"],
             )
-            bl_i["z"] = z = compute_z(
-                X, row_indices, _col_map, _center, _scale, bl_i["s"]
+            state["z"] = z = compute_z(
+                X, row_indices, col_map, center, scale, state["s"]
             )
         else:
-            bl["deviance"][0] = null_deviance
-            bl["intercept"][0] = a0
+            path["deviance"][0] = null_deviance
+            path["intercept"][0] = null_intercept
 
-        penalized = multiplier > 0
-        lambda_max = (np.abs(z[penalized]) / multiplier[penalized]).max() / params.alpha
+        penalized = used_penalty > 0
+        lambda_max = (
+            np.abs(z[penalized]) / used_penalty[penalized]
+        ).max() / params.alpha
 
         if lambda_max == 0:
-            bl["lambda_"][:] = lambda_max
+            path["lambda_"][:] = lambda_max
         elif params.lambda_log_scale:
-            bl["lambda_"][:] = np.flip(
+            path["lambda_"][:] = np.flip(
                 np_logspace(
                     params.lambda_min * lambda_max,
                     lambda_max,
@@ -852,40 +852,42 @@ def binomial_hsr(
                 )
             )
         else:
-            bl["lambda_"][:] = np.linspace(
+            path["lambda_"][:] = np.linspace(
                 lambda_max, params.lambda_min * lambda_max, params.nlambda
             )
 
-        _record_coefs(bl, bl_i, 0)
+        _record_coefs(path, state, 0)
         if not params.r_compatible:
-            bl["deviance"][0] = final_loss(y, row_indices, bl_i["eta"])
-        bl["n_reject"][0] = ncol_used
+            path["deviance"][0] = final_loss(y, row_indices, state["eta"])
+        path["n_reject"][0] = ncol_used
         lstart = 1
 
-    logger.info("λ[1/%d] = %0.2g", params.nlambda, bl["lambda_"][0])
+    logger.info("λ[1/%d] = %0.2g", params.nlambda, path["lambda_"][0])
 
     # PHASE 3: Fitting
     for il in range(lstart, params.nlambda):
-        lam = bl["lambda_"][il]
+        lam = path["lambda_"][il]
         logger.info("λ[%d/%d] = %0.2g", il + 1, params.nlambda, lam)
         t_begin = time.process_time()
 
         if il > 0:
-            if (bl_i["a"] != 0).sum() > params.dfmax:
+            if (state["beta"] != 0).sum() > params.dfmax:
                 warnings.warn(
                     f"Exceeded dfmax={params.dfmax} nonzero coefficients; "
                     f"path truncated at λ[{il + 1}/{params.nlambda}].",
                     stacklevel=3,
                 )
-                bl["iters"][il:] = -1
-                return bl
+                path["iters"][il:] = -1
+                return path
 
-            cutoff = 2 * lam - bl["lambda_"][il - 1]
+            cutoff = 2 * lam - path["lambda_"][il - 1]
         else:
             cutoff = 2 * lam - lambda_max
 
-        bl_i["e2"] = (np.abs(z) > cutoff * params.alpha * multiplier).astype(np.int64)
-        bl["n_reject"][il] = ncol_used - bl_i["e2"].sum()
+        state["strong"] = (np.abs(z) > cutoff * params.alpha * used_penalty).astype(
+            np.int64
+        )
+        path["n_reject"][il] = ncol_used - state["strong"].sum()
 
         status = _fit_lambda(*fit_args, il, lam, null_deviance, thresh, True)
 
@@ -894,17 +896,17 @@ def binomial_hsr(
                 f"Model saturated; path truncated at λ[{il + 1}/{params.nlambda}].",
                 stacklevel=3,
             )
-            bl["iters"][il:] = -1
-            return bl
+            path["iters"][il:] = -1
+            return path
         elif status == "max_iter":
             warnings.warn(
                 f"Failed to converge within max_iter={params.max_iter} iterations "
                 f"at λ[{il + 1}/{params.nlambda}].",
                 stacklevel=3,
             )
-        _record_coefs(bl, bl_i, il)
+        _record_coefs(path, state, il)
         if not params.r_compatible:
-            bl["deviance"][il] = final_loss(y, row_indices, bl_i["eta"])
+            path["deviance"][il] = final_loss(y, row_indices, state["eta"])
 
         t_end = time.process_time()
         logger.info(
@@ -912,16 +914,16 @@ def binomial_hsr(
             il + 1,
             params.nlambda,
             round(1000 * (t_end - t_begin)),
-            (bl_i["a"] != 0).sum(),
+            (state["beta"] != 0).sum(),
         )
 
-    return bl
+    return path
 
 
-def _record_coefs(bl, bl_i, il):
-    nz = np.flatnonzero(bl_i["a"])
-    bl["coef_rows"][il] = nz
-    bl["coef_vals"][il] = bl_i["a"][nz].copy()
+def _record_coefs(path, state, il):
+    nz = np.flatnonzero(state["beta"])
+    path["coef_rows"][il] = nz
+    path["coef_vals"][il] = state["beta"][nz].copy()
 
 
 @nb.njit(parallel=True, cache=True, nogil=True)
@@ -940,12 +942,12 @@ def _fit_lambda(
     y,
     row_indices,
     alpha,
-    multiplier,
+    penalty_factor,
     max_iter,
     stop_on_saturation,
     r_compatible,
-    bl,
-    bl_i,
+    path,
+    state,
     il,
     lam,
     null_deviance,
@@ -959,39 +961,40 @@ def _fit_lambda(
     Returns "converged", "saturated", or "max_iter".
     """
 
-    while bl["iters"][il] < max_iter:
-        bl["iters"][il] += 1
+    while path["iters"][il] < max_iter:
+        path["iters"][il] += 1
 
-        bl["deviance"][il] = update_probs(
-            y, row_indices, bl_i["eta"], bl_i["p"], bl_i["w"], bl_i["s"], bl_i["r"]
+        path["deviance"][il] = update_irls(
+            y, row_indices, state["eta"], state["p"], state["w"], state["s"], state["r"]
         )
 
         # break early if model is saturated
         #
         # Differs from R biglasso, which always stops here; the option to
         # go on (stop_on_saturation=False) is not in R
-        if stop_on_saturation and bl["deviance"][il] / null_deviance < 0.01:
+        if stop_on_saturation and path["deviance"][il] / null_deviance < 0.01:
             return "saturated"
 
-        # perform one round of weight updates
-        bl["intercept"][il], bl_i["a0"], bl_i["sum_w_residuals"] = update_intercept(
-            bl_i["w"], bl_i["r"], bl_i["a0"], bl_i["eta"]
+        # one coordinate-descent sweep, intercept first
+        state["intercept"], state["sum_w_residuals"] = update_intercept(
+            state["w"], state["r"], state["intercept"], state["eta"]
         )
-        bl_i["sum_w_residuals"], max_update = update_weights(
+        path["intercept"][il] = state["intercept"]
+        state["sum_w_residuals"], max_update = coordinate_sweep(
             X,
             row_indices,
             lam,
             alpha,
-            multiplier,
-            bl["col_map"],
-            bl["center"],
-            bl["scale"],
-            bl_i["e1"],
-            bl_i["w"],
-            bl_i["r"],
-            bl_i["sum_w_residuals"],
-            bl_i["eta"],
-            bl_i["a"],
+            penalty_factor,
+            path["col_map"],
+            path["center"],
+            path["scale"],
+            state["active"],
+            state["w"],
+            state["r"],
+            state["sum_w_residuals"],
+            state["eta"],
+            state["beta"],
             r_compatible,
         )
 
@@ -1005,15 +1008,15 @@ def _fit_lambda(
             row_indices,
             lam,
             alpha,
-            multiplier,
-            bl["col_map"],
-            bl["center"],
-            bl["scale"],
-            bl_i["e1"],
-            bl_i["e2"],
-            bl_i["s"],
-            bl_i["z"],
-            bl_i["a"],
+            penalty_factor,
+            path["col_map"],
+            path["center"],
+            path["scale"],
+            state["active"],
+            state["strong"],
+            state["s"],
+            state["z"],
+            state["beta"],
         )
 
         # check strong set; if violated, re-fit with the enlarged active set
@@ -1021,7 +1024,7 @@ def _fit_lambda(
             continue
 
         # check rest of predictors
-        if check_rest(*kkt_args) == 0:
+        if check_rest_set(*kkt_args) == 0:
             return "converged"
 
     return "max_iter"
