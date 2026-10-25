@@ -22,6 +22,7 @@ import pathlib
 import shutil
 import subprocess
 import time
+import warnings
 
 import numpy as np
 
@@ -54,6 +55,7 @@ class Case:
     memmap: bool = False
     user_lambdas: bool = False
     dfmax: int | None = None
+    max_iter: int = MAX_ITER
     filebacked: bool = False  # R side: file-backed big.matrix
     tag: str = ""
 
@@ -70,6 +72,7 @@ class Case:
             ("rows", "all"),
             ("dtype", "float64"),
             ("dfmax", None),
+            ("max_iter", MAX_ITER),
         ]:
             value = getattr(self, field)
             if value != default:
@@ -134,6 +137,11 @@ def fast_grid():
 
     # strongly separable data, so the path saturates before the end
     cases.append(Case(30, 60, 11, 1.0, 50, lambda_min=1e-4, tag="saturating"))
+
+    # too few iterations to converge: R and pybiglasso both go on to the next
+    # lambda, from where the last stopped, and warn
+    for nrow, ncol in ((300, 40), (60, 200)):
+        cases.append(Case(nrow, ncol, alpha=0.5, max_iter=4))
 
     # imbalanced responses, where the intercept sits far from zero
     for nrow, ncol in ((300, 40), (1000, 20)):
@@ -320,21 +328,23 @@ def data_digest(data):
 def fit_py(case, data, lambdas=None):
     """Fit pybiglasso and return results in R biglasso's layout."""
     t0 = time.perf_counter()
-    fit = bl.biglasso(
-        data["X"],
-        data["y"],
-        alpha=case.alpha,
-        nlambda=case.nlambda,
-        lambdas=lambdas,
-        eps=EPS,
-        lambda_min=case.resolved_lambda_min,
-        lambda_log_scale=case.lambda_log_scale,
-        penalty_factor=data["penalty_factor"],
-        row_indices=data["row_indices"],
-        dfmax=case.dfmax,
-        max_iter=MAX_ITER,
-        r_compatible=True,
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fit = bl.biglasso(
+            data["X"],
+            data["y"],
+            alpha=case.alpha,
+            nlambda=case.nlambda,
+            lambdas=lambdas,
+            eps=EPS,
+            lambda_min=case.resolved_lambda_min,
+            lambda_log_scale=case.lambda_log_scale,
+            penalty_factor=data["penalty_factor"],
+            row_indices=data["row_indices"],
+            dfmax=case.dfmax,
+            max_iter=case.max_iter,
+            r_compatible=True,
+        )
     seconds = time.perf_counter() - t0
     return dict(
         center=fit.center,
@@ -346,6 +356,27 @@ def fit_py(case, data, lambdas=None):
         rejections=fit.n_rejected,
         beta=np.vstack([fit.intercept, fit.coef.toarray()]),
         seconds=seconds,
+        warnings=warning_kinds(str(w.message) for w in caught),
+    )
+
+
+# the warnings both sides give, by the start of their message; dfmax is left
+# out, since R stops there silently
+WARNING_KINDS = {
+    "saturated": ("Model saturated;", "Model saturated by the unpenalized"),
+    "max_iter": ("Failed to converge within max_iter", "Algorithm failed to converge"),
+}
+
+
+def warning_kinds(messages):
+    """The sorted kinds (WARNING_KINDS) among warning messages."""
+    return sorted(
+        {
+            kind
+            for message in messages
+            for kind, starts in WARNING_KINDS.items()
+            if message.startswith(starts)
+        }
     )
 
 
@@ -391,7 +422,7 @@ def prepare_case(case, workdir, lambdas=None):
         lambda_min=case.resolved_lambda_min,
         lambda_log_scale=case.lambda_log_scale,
         eps=EPS,
-        max_iter=MAX_ITER,
+        max_iter=case.max_iter,
         lambdas=None if lambdas is None else lambdas.tolist(),
         penalty_factor=(
             None if data["penalty_factor"] is None else data["penalty_factor"].tolist()
@@ -481,6 +512,10 @@ def compare(py, r):
         a, b = np.asarray(py[key]), np.asarray(r[key])
         if a.shape != b.shape or not np.array_equal(a, b):
             problems.append(f"{key}: py {a.tolist()} vs R {b.tolist()}")
+
+    r_warnings = warning_kinds(r.get("warnings") or [])
+    if py["warnings"] != r_warnings:
+        problems.append(f"warnings: py {py['warnings']} vs R {r_warnings}")
 
     return problems
 

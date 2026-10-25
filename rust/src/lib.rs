@@ -897,8 +897,11 @@ impl<D: Design> Fit<'_, D> {
         check_kkt: bool,
     ) -> Result<Status, String> {
         let p = self.params;
+        // the scans the last iteration didn't run: (strong set, rest)
+        let mut unscanned = (true, true);
         while path.iters[il] < p.max_iter {
             path.iters[il] += 1;
+            unscanned = (true, true);
             path.deviance[il] = self.update_irls(st);
             // Differs from R biglasso, which always stops here
             if p.stop_on_saturation && path.deviance[il] / p.null_deviance < 0.01 {
@@ -913,11 +916,21 @@ impl<D: Design> Fit<'_, D> {
                 return Ok(Status::Converged);
             }
             if self.check(path, st, lam, true) > 0 {
+                unscanned = (false, true);
                 continue;
             }
             if self.check(path, st, lam, false) == 0 {
                 return Ok(Status::Converged);
             }
+            unscanned = (false, false);
+        }
+        // as R biglasso does, finish the scans when max_iter cuts a fit short:
+        // they set the z and the strong set the next lambda starts from
+        if check_kkt && unscanned.0 {
+            self.check(path, st, lam, true);
+        }
+        if check_kkt && unscanned.1 {
+            self.check(path, st, lam, false);
         }
         Ok(Status::MaxIter)
     }
