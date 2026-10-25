@@ -92,7 +92,7 @@ def test_coordinate_sweep_against_explicit_standardized_reference(
         expected_eta += shift * Z[:, j]
         expected_a[j] = b
         expected_max = max(expected_max, v * shift**2)
-    total, maximum = solver.update_weights(
+    total, maximum = solver.coordinate_sweep(
         X,
         None,
         0.05,
@@ -120,7 +120,7 @@ def test_coordinate_sweep_against_explicit_standardized_reference(
 def test_invalid_curvature_cannot_be_reported_as_convergence(arrays):
     X, r, w = arrays
     with pytest.raises(ValueError, match="curvature"):
-        solver.update_weights(
+        solver.coordinate_sweep(
             X,
             None,
             0.1,
@@ -152,7 +152,7 @@ def test_curvature_fallback_handles_positive_or_zero_cancelled_moment(tiny_weigh
     v = np.dot(w, z**2) / len(r)
     expected = (z @ (w * r) / len(r)) / v
     a = np.zeros(1)
-    solver.update_weights(
+    solver.coordinate_sweep(
         X,
         None,
         0.0,
@@ -183,19 +183,22 @@ def test_kkt_scans_match_explicit_standardized_scores(arrays, subset):
     a, pf = np.array([0.2, 0, 0, 0]), np.array([1.0, 0.1, 10.0, 0.1])
     l1, l2 = 0.1 * pf * 0.3, 0.1 * pf * 0.7
     violates = abs(scores - a * l2) > l1
-    for scan, strong in [(solver.check_strong_set, True), (solver.check_rest, False)]:
-        e1 = np.array([1, 0, 0, 0])
-        e2 = np.array([1, 1, 1, 0])
-        selected = (e1 == 0) & (e2 == 1) if strong else e2 == 0
+    for scan, strong_only in [
+        (solver.check_strong_set, True),
+        (solver.check_rest_set, False),
+    ]:
+        active = np.array([1, 0, 0, 0])
+        strong = np.array([1, 1, 1, 0])
+        selected = (active == 0) & (strong == 1) if strong_only else strong == 0
         z = np.full(4, 123.0)
         count = scan(
-            X, rows, 0.1, 0.3, pf, np.arange(4), center, scale, e1, e2, s, z, a
+            X, rows, 0.1, 0.3, pf, np.arange(4), center, scale, active, strong, s, z, a
         )
         np.testing.assert_allclose(z[selected], scores[selected])
         np.testing.assert_array_equal(z[~selected], 123.0)
         assert count == np.count_nonzero(selected & violates)
         np.testing.assert_array_equal(
-            e1, np.array([1, 0, 0, 0]) | (selected & violates)
+            active, np.array([1, 0, 0, 0]) | (selected & violates)
         )
 
 
@@ -204,15 +207,15 @@ def test_intercept_update_and_probability_working_state(arrays):
     before = r.copy()
     eta = np.zeros(len(r))
     delta = w @ r / w.sum()
-    intercept, a0, total = solver.update_intercept(w, r, 0.4, eta)
-    np.testing.assert_allclose([intercept, a0], 0.4 + delta)
+    intercept, total = solver.update_intercept(w, r, 0.4, eta)
+    np.testing.assert_allclose(intercept, 0.4 + delta)
     np.testing.assert_allclose(eta, delta)
     np.testing.assert_allclose(r, before - delta)
     assert abs(total) < 1e-14
     y = np.arange(len(r)) % 2
     eta = np.linspace(-5, 5, len(r))
     p, w, s, r = (np.zeros_like(eta) for _ in range(4))
-    loss = solver.update_probs(y, None, eta, p, w, s, r)
+    loss = solver.update_irls(y, None, eta, p, w, s, r)
     np.testing.assert_allclose(p, expit(eta))
     np.testing.assert_allclose(w, p * (1 - p))
     np.testing.assert_allclose(s, y - p)
