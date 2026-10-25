@@ -282,7 +282,8 @@ def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads):
         raise RuntimeError(r["error"])
     coef = np.array(r["beta"], dtype=np.float64).reshape(r["beta_dim"], order="F").T
     intercept = np.atleast_1d(np.array(r["intercept"], dtype=np.float64))
-    # glmnet ends the path early once the deviance stops changing
+    # glmnet fits every lambda of a supplied grid, but pad a short path (a
+    # fit that stopped partway) so its objectives line up by lambda
     pad = len(lambdas) - coef.shape[0]
     coef = np.vstack([coef, np.full((pad, ncol), np.nan)])
     intercept = np.concatenate([intercept, np.full(pad, np.nan)])

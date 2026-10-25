@@ -247,7 +247,7 @@ R's adaptive screening rule is no faster than SSR on these problems.
 **glmnet 5.1.** glmnet fit the standardized matrix as given (`standardize =
 FALSE`), with an intercept, along the same lambda grid, at its default
 tolerance; it runs on one thread. Its objective is the benchmark's. It fit
-every path in full, at 1.9–2.7x pybiglasso's best time (1.8–2.6x pybiglasso's
+every path in full, at 1.9–2.7x pybiglasso's best time (1.7–2.4x pybiglasso's
 on one thread), and about as accurately: a worst relative suboptimality of 2e-8
 to 3e-6, against pybiglasso's 6e-8 to 3e-6.
 
