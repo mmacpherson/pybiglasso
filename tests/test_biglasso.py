@@ -1,4 +1,6 @@
 import fractions
+import functools
+import operator
 import warnings
 
 import numba
@@ -303,13 +305,14 @@ def test_quickstart_example_runs():
     runpy.run_path(str(example), run_name="__main__")
 
 
-def test_intercept_correction_is_exactly_rounded(monkeypatch):
-    # The intercept on X's scale subtracts sum(center * beta). Exactly
-    # rounded, it can't depend on summation order, which BLAS (@) picks by
-    # CPU and thread count. These terms cancel, so order changes the sum.
+def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
+    # The intercept on X's scale subtracts sum(center * beta). BLAS (@) picks
+    # that sum's order by CPU and thread count; summed accurately, the order
+    # can't matter. These terms cancel, so any plain order loses some of them.
     terms = np.concatenate([[1e16], np.ones(1000), [-1e16]])
     exact = float(sum(fractions.Fraction(t) for t in terms))
-    assert terms @ np.ones(len(terms)) != exact  # the input tells them apart
+    left_to_right = functools.reduce(operator.add, terms.tolist())
+    assert left_to_right != exact  # the input tells an ordered sum apart
     ncol = len(terms)
 
     def solver(X, y, row_indices, params):
