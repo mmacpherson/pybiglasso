@@ -1,5 +1,5 @@
-"""Bounded, reproducible property tests; opt into a longer local search with
-HYPOTHESIS_PROFILE=long make test (or run just tests/test_hypothesis.py).
+"""Property tests: a fixed, bounded set of examples in `make test` and CI;
+`make soak-hypothesis` (part of `make soak`) searches far more widely.
 """
 
 import os
@@ -15,5 +15,7 @@ settings.register_profile(
     deadline=None,
     print_blob=True,
 )
-settings.register_profile("long", parent=settings.get_profile("ci"), max_examples=200)
+# a fresh random search each run; failures are kept in .hypothesis/ and
+# replayed first next time
+settings.register_profile("soak", max_examples=5000, deadline=None, print_blob=True)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))

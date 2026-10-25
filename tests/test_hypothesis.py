@@ -4,8 +4,9 @@ Theorems: the objective identities, fixed-grid prefixes, and each backend's
 thread-count independence. Across backends compare optimality and the certified
 accuracy of the coefficients, including at exact ties. Different reduction orders
 can move a strict screening or stopping comparison across its boundary, so
-cross-backend iteration, rejection and exact-support equality is tested only on a
-separate grid away from those ties.
+signs and rejection counts are compared across backends only where a certified
+margin forces them, and iteration counts not at all (they are compared against
+R on the R grid).
 
 KKT is tested only in default mode, on overlapping-label, well-conditioned
 designs, with no saturation, exhausted iteration budget, or |eta| > 10 clamp.
@@ -24,9 +25,8 @@ import warnings
 import numba
 import numpy as np
 import pytest
-from hypothesis import example, given
+from hypothesis import assume, example, given
 from hypothesis import strategies as st
-from rcompare import ATOL, RTOL
 from scipy.linalg import hadamard
 from scipy.special import expit
 from test_default_enet import KKT_TOL
@@ -231,16 +231,6 @@ def assert_certified_solutions(a, b, X, y):
         assert np.linalg.norm(ta[:, k] - tb[:, k]) <= bound + rounding
 
 
-def assert_backend_rounding_contract(a, b, X, y):
-    assert_certified_solutions(a, b, X, y)
-    # The cross-backend contract uses the project's existing R-agreement policy,
-    # not tolerances inferred from these fits. The independent KKT cap and
-    # segment bound above additionally check that both solve the stated problem.
-    np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray(), rtol=RTOL, atol=ATOL)
-    np.testing.assert_allclose(a.intercept, b.intercept, rtol=RTOL, atol=ATOL)
-    np.testing.assert_allclose(a.deviance, b.deviance, rtol=RTOL, atol=ATOL)
-
-
 def independent_objective(X, y, intercept, beta, scale, pf, lam, alpha):
     """No pybiglasso routine or fitted path supplies this value."""
     eta = intercept + X @ beta
@@ -433,20 +423,90 @@ def test_backend_ties_satisfy_optimality_and_agree_within_certified_bound(proble
     assert_certified_solutions(a, b, X, y)
 
 
+# A grid that avoids the known null-score ties of this family (2 * .14 - .23
+# = .05 = 2/40 was one). Unlike the certificates below, this proves nothing:
+# away from the null fit, scores aren't simple fractions.
+AWAY_FROM_TIES = (0.3613, 0.2303, 0.1393)
+
+
+def first_rejections_are_certified(problem, X, y):
+    """Whether the strong rule's rejections at the first lambda are forced.
+
+    That decision uses the null model's scores z0 and R's lambda_max: column j
+    is kept when |z0_j| > (2 lambda_0 - lambda_max) alpha pf_j. Recompute both
+    here, and require each |z0_j| to clear its cutoff by more than the
+    backends' possible summation error in z0 and, through lambda_max, in the
+    cutoff. Later lambdas screen with cached scores that may be several sweeps
+    old, which no returned fit determines, so only this one is certified.
+    """
+    Xs, _, _ = standardize(X)
+    n = len(y)
+    s = y - y.mean()
+    z0 = Xs.T @ s / n
+    pf = np.array(problem.penalties)
+    lambda_max = np.max(np.abs(z0) / pf) / problem.alpha
+    cutoff = (2 * problem.grid[0] - lambda_max) * problem.alpha * pf
+    # gamma_(8n): generous for standardizing then summing n products
+    error = 8 * n * np.finfo(float).eps * (np.abs(Xs).T @ np.abs(s) / n + np.abs(z0))
+    cutoff_error = problem.alpha * pf * np.max(error / (pf * problem.alpha))
+    margin = np.abs(np.abs(z0) - cutoff)
+    return bool(np.all(margin > error + cutoff_error)), int(
+        np.sum(np.abs(z0) <= cutoff)
+    )
+
+
+def support_is_certified(a, b, X, y):
+    """Whether two fits near one optimum must have the same signs (PR 15's
+    support certificate), taking a as the reference at each lambda.
+
+    With d the certified distance between them (with the intercept) and L the
+    gradient's Lipschitz constant ||Z||_2^2 / (4n): where a's coefficient is
+    zero, b's must be too if l1 - |g_a| > e_b + (L + l2) d, since a nonzero
+    coefficient of b would need |g_b| >= l1 - l2 |beta_b| - e_b. Where a's is
+    nonzero, b's has its sign if |beta_a| > d.
+    """
+    Z, ta, ra = theta_and_residuals(a, X, y)
+    _, tb, rb = theta_and_residuals(b, X, y)
+    n = len(y)
+    L = np.linalg.norm(Z, 2) ** 2 / (4 * n)
+    for k in range(len(a)):
+        ea, eb = np.linalg.norm(ra[:, k]), np.linalg.norm(rb[:, k])
+        rounding = 64 * Z.size * np.finfo(float).eps * (1 + np.linalg.norm(ta[:, k]))
+        d = certified_distance(Z, y, ta[:, k], tb[:, k], ea, eb) + rounding
+        g = (Z.T @ (expit(Z @ ta[:, k]) - y) / n)[1:]
+        beta = ta[1:, k]
+        l1 = a.lambdas[k] * a.alpha * a.penalty_factor
+        l2 = a.lambdas[k] * (1 - a.alpha) * a.penalty_factor
+        zero = beta == 0
+        if np.any(zero & ~(l1 - np.abs(g) > eb + (L + l2) * d + rounding)):
+            return False
+        if np.any(~zero & ~(np.abs(beta) > d)):
+            return False
+    return True
+
+
 @given(problem=smooth_problems())
 @example(problem=SIGNAL)
-def test_backend_contract_with_positive_strong_cutoffs(problem):
-    """Discrete equality only on a construction away from the exact ties.
+def test_backends_agree_on_certified_discrete_decisions(problem):
+    """Cross-backend equality only where the decision is certified.
 
-    Positive sequential cutoffs .09 and .05 avoid a zero-score screening tie;
-    the grid also avoids the dyadic lambda_max ties of this family. Equality
-    of counts and support is a property of this construction, not a universal
-    floating-point theorem or a requirement at the explicit ties above.
+    The two backends sum in different orders, so a decision within rounding
+    of its threshold may go either way (the explicit ties above). Support and
+    signs are compared where PR 15's certificate forces them, and the first
+    lambda's rejection count where its margin does. Iteration counts depend on
+    the stopping rule's margin, which no independent calculation gives; they
+    are compared against R on the R grid, and within each backend across
+    thread counts.
     """
-    problem = dataclasses.replace(problem, grid=(0.37, 0.23, 0.14))
+    problem = dataclasses.replace(problem, grid=AWAY_FROM_TIES)
     X, y = problem.arrays()
     a, b = (problem.fit(backend) for backend in BACKENDS)
-    np.testing.assert_array_equal(a.iterations, b.iterations)
-    np.testing.assert_array_equal(a.n_rejected, b.n_rejected)
-    np.testing.assert_array_equal(a.coef.toarray() != 0, b.coef.toarray() != 0)
-    assert_backend_rounding_contract(a, b, X, y)
+    rejections_certified, rejected = first_rejections_are_certified(problem, X, y)
+    support_certified = support_is_certified(a, b, X, y)
+    assume(rejections_certified or support_certified)
+    if rejections_certified:
+        assert a.n_rejected[0] == b.n_rejected[0] == rejected
+    if support_certified:
+        np.testing.assert_array_equal(
+            np.sign(a.coef.toarray()), np.sign(b.coef.toarray())
+        )

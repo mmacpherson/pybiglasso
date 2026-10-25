@@ -183,6 +183,7 @@ uv run pytest               # against stored R output; no R needed
 make test-r                 # live, in a container (CONTAINER=podman works too)
 make test-r R_VERSION=latest
 make soak                   # larger memory-mapped problems; for a big machine
+make soak-hypothesis        # property tests, wide random search (part of soak)
 ```
 
 ## Performance

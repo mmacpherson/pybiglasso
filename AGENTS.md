@@ -62,7 +62,9 @@ to observed output.
 - `make test` — fast suite, against stored R output (no R needed)
 - `make test-r` — the same grid live against R, in a container
   (`CONTAINER=podman` works too; `R_VERSION=latest` for current CRAN)
-- `make soak` — larger memory-mapped problems against live R; for a big machine
+- `make soak` — larger memory-mapped problems against live R; for a big machine.
+  Runs `make soak-hypothesis` first: the property tests on thousands of random
+  examples each, where `make test` and CI run a fixed 20
 - `make fixtures` — regenerate the stored R output (see above)
 - `make run-hooks-all-files` — every pre-commit hook on every file
 - `make profile` — where a fit spends its time (Python 3.15's sampling profiler)
