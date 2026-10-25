@@ -513,9 +513,11 @@ def compare(py, r):
         if a.shape != b.shape or not np.array_equal(a, b):
             problems.append(f"{key}: py {a.tolist()} vs R {b.tolist()}")
 
-    r_warnings = warning_kinds(r.get("warnings") or [])
-    if py["warnings"] != r_warnings:
-        problems.append(f"warnings: py {py['warnings']} vs R {r_warnings}")
+    # only fit_py records warnings; the reference and solver checks don't
+    if "warnings" in py:
+        r_warnings = warning_kinds(r.get("warnings") or [])
+        if py["warnings"] != r_warnings:
+            problems.append(f"warnings: py {py['warnings']} vs R {r_warnings}")
 
     return problems
 

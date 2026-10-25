@@ -35,7 +35,7 @@ def fit_options(case, data, lambdas=None, **extra):
         penalty_factor=data["penalty_factor"],
         row_indices=data["row_indices"],
         dfmax=case.dfmax,
-        max_iter=rcompare.MAX_ITER,
+        max_iter=case.max_iter,
         **extra,
     )
 
