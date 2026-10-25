@@ -106,8 +106,29 @@ def genotypes(rng):
     return X, labels(X - X.mean(axis=0), rng, beta), None
 
 
+def duplicates(rng):
+    """Twin columns, among them the strongest: identical gradients, and only the
+    L2 term to split their coefficients, so the problem is ill-conditioned along
+    their difference (a KKT residual r allows a gap of 2r / (lambda (1-alpha)))."""
+    n, p = 300, 40
+    X = rng.normal(size=(n, p))
+    X[:, 30:34] = X[:, :4]  # exact copies
+    X[:, 34] = 3.0 * X[:, 4] + 1.5  # standardizes to column 4
+    beta = np.zeros(p)
+    beta[:5] = [1.2, -1.0, 0.8, 0.6, -0.6]
+    return X, labels(X, rng, beta), None
+
+
+# coordinate descent closes the twins' gap by about lambda (1-alpha) / v of it
+# per sweep, so at eps=1e-14 the duplicates need more than the default budget
+MAX_ITER = dict(duplicates=100_000)
+
 DESIGNS = dict(
-    wide=wide, correlated=correlated, unpenalized=unpenalized, genotypes=genotypes
+    wide=wide,
+    correlated=correlated,
+    unpenalized=unpenalized,
+    genotypes=genotypes,
+    duplicates=duplicates,
 )
 
 
@@ -117,9 +138,10 @@ def test_kkt_conditions_hold_along_the_path(design, alpha):
     rng = np.random.default_rng(zlib.crc32(f"{design}-{alpha}".encode()))
     X, y, pf = DESIGNS[design](rng)
     with warnings.catch_warnings():
-        warnings.simplefilter(
-            "ignore"
-        )  # saturation truncating a wide path is fine here
+        # saturation truncating a wide path is fine here; failing to converge
+        # within max_iter is not, so it raises
+        warnings.simplefilter("error")
+        warnings.filterwarnings("ignore", message="Model saturated")
         path = bl.biglasso(
             np.asfortranarray(X),
             y,
@@ -127,6 +149,7 @@ def test_kkt_conditions_hold_along_the_path(design, alpha):
             penalty_factor=pf,
             nlambda=30,
             eps=1e-14,
+            max_iter=MAX_ITER.get(design, 1000),
         )
     assert len(path) >= 10
     assert path.n_nonzero[-1] > 0
@@ -146,7 +169,7 @@ def test_kkt_check_detects_r_compatible_update():
     assert worst > 100 * KKT_TOL
 
 
-@pytest.mark.parametrize("design", ["wide", "correlated", "unpenalized"])
+@pytest.mark.parametrize("design", ["wide", "correlated", "unpenalized", "duplicates"])
 def test_no_nearby_point_does_better(design):
     """The objective is at a minimum: small moves in any coefficient increase it."""
     rng = np.random.default_rng(11)
