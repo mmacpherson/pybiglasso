@@ -269,8 +269,8 @@ Extra threads hurt here: they evict pages each other still need.
 
 **Not compared**, by the rule above:
 
-- Other languages: Julia's GLMNet.jl, which calls glmnet's Fortran solver, and
-  Lasso.jl, written in Julia.
+- Other languages: Julia's GLMNet.jl, a wrapper of glmnet's earlier Fortran
+  solver, and Lasso.jl, written in Julia.
 - Other hardware: RAPIDS cuML fits on a GPU, and only data that fits in GPU
   memory.
 - Unmaintained: python-glmnet, archived, with its last release in 2020.
