@@ -369,14 +369,18 @@ class _NoImprovement:
         self.best, self.since = np.inf, 0
 
     def __call__(self, il, lambdas, cols, beta, intercept):
-        coef = sps.csc_array(
-            (beta, (cols, np.zeros(len(cols), dtype=np.int64))),
-            shape=(self.X.shape[1], 1),
-        )
-        eta = linear_predictor(self.X, coef, np.array([intercept]), self.rows)
-        score = self.sign * score_logits(self.y, eta, self.metric)[0]
+        score = self.score(cols, beta, intercept)
         if score < self.best:
             self.best, self.since = score, 0
         else:
             self.since += 1
         return self.since >= self.patience
+
+    def score(self, cols, beta, intercept):
+        """The held-out score of one fit; lower is better."""
+        coef = sps.csc_array(
+            (beta, (cols, np.zeros(len(cols), dtype=np.int64))),
+            shape=(self.X.shape[1], 1),
+        )
+        eta = linear_predictor(self.X, coef, np.array([intercept]), self.rows)
+        return self.sign * score_logits(self.y, eta, self.metric)[0]

@@ -99,39 +99,62 @@ def test_cv_with_patience_past_the_path_matches_none(data):
     assert_prefix(early.path_, plain.path_)
 
 
-def stopping_point(curve, patience):
-    """The last index a fold reaches under the rule, from its full curve
-    (lower is better)."""
+def stopping_point(scores, n_lambdas, patience):
+    """The last index a fold reaches under the rule (lower is better)."""
     best, since = np.inf, 0
-    for k, score in enumerate(curve):
+    for k, score in enumerate(scores):
         if score < best:
             best, since = score, 0
         else:
             since += 1
         if since >= patience:
             return k
-    return len(curve) - 1
+    return n_lambdas - 1
 
 
 @pytest.mark.parametrize("patience", [1, 3, 8])
-def test_cv_folds_stop_where_the_rule_says(data, patience):
+def test_cv_folds_stop_where_the_rule_says(data, monkeypatch, patience):
+    # the rule is replayed on the scores each fold's stopping check computed
+    # (a one-column prediction per lambda), not on cv_scores_ (all lambdas at
+    # once), which agree only up to rounding: a near tie with a running best
+    # could then decide differently
     X, y = data
+    checks = []
+
+    class Recording(bl_sklearn._NoImprovement):
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.scores = []
+            checks.append(self)
+
+        def score(self, *args):
+            self.scores.append(super().score(*args))
+            return self.scores[-1]
+
+    monkeypatch.setattr(bl_sklearn, "_NoImprovement", Recording)
     plain = BiglassoClassifierCV(n_alphas=40, cv=5).fit(X, y)
-    early = BiglassoClassifierCV(n_alphas=40, cv=5, early_stopping=patience).fit(X, y)
-    curves = plain.cv_scores_
-    # the fold scores a lambda through a one-column prediction, the full
-    # curve through all of them at once; equal up to rounding, so the rule's
-    # comparisons are only replayed here where they aren't that close
-    steps = np.abs(np.diff(curves, axis=1))
-    assert (steps > 1e-9 * np.abs(curves[:, 1:])).all()
-    for fold, curve in enumerate(curves):
-        last = stopping_point(curve, patience)
+    early = BiglassoClassifierCV(
+        n_alphas=40, cv=5, early_stopping=patience, n_jobs=1
+    ).fit(X, y)
+    assert len(checks) == 5  # one per fold, in fold order (n_jobs=1)
+    for fold, check in enumerate(checks):
+        last = len(check.scores) - 1
+        assert last == stopping_point(check.scores, len(plain.alphas_), patience)
+        # the rule saw the fold's held-out deviance: the same sums as
+        # cv_scores_, grouped differently, so equal to rounding (deviance of
+        # order n, summed over n rows)
+        np.testing.assert_allclose(
+            np.array(check.scores) / len(check.rows),
+            plain.cv_scores_[fold, : last + 1],
+            rtol=1e-12,
+        )
         np.testing.assert_array_equal(
-            early.cv_scores_[fold, : last + 1], curve[: last + 1]
+            early.cv_scores_[fold, : last + 1], plain.cv_scores_[fold, : last + 1]
         )
         assert np.isnan(early.cv_scores_[fold, last + 1 :]).all()
     reached = ~np.isnan(early.cv_scores_).any(axis=0)
-    mean = np.where(reached, curves.mean(axis=0), np.inf)
+    mean = np.full(len(plain.alphas_), np.inf)
+    mean[reached] = np.nanmean(plain.cv_scores_[:, reached], axis=0)
     assert early.alpha_ == plain.alphas_[np.argmin(mean)]
     assert len(early.path_) == np.argmin(mean) + 1
     assert_prefix(early.path_, plain.path_)
