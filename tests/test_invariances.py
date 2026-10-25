@@ -23,6 +23,7 @@ Two kinds of agreement appear here, and the tolerance follows from which:
   penalty is convex, so it only helps). `segment_curvature` gives such a mu.
 """
 
+import decimal
 import warnings
 
 import numpy as np
@@ -59,17 +60,24 @@ def mean_nll_gradient(Z, y, theta):
     return Z.T @ (expit(Z @ theta) - y) / len(y)
 
 
+def logistic_weight(eta):
+    """p(1 - p) at eta, computed as u / (1 + u)^2 with u = exp(-|eta|), which
+    keeps its relative accuracy where p(1 - p) would cancel (p rounds to 1)."""
+    u = np.exp(-np.abs(eta))
+    return u / (1 + u) ** 2
+
+
 def segment_curvature(Z, y, theta1, theta2):
     """A lower bound on the mean NLL's curvature along the segment theta1-theta2.
 
     Row i's logistic weight p(1 - p) falls as |eta_i| grows, and eta_i is linear
     along the segment, so its smallest weight there is at an endpoint. The
     Hessian on the segment is at least Z' diag(those weights) Z / n; its
-    smallest eigenvalue, less a margin for eigvalsh's rounding, bounds the
-    curvature from below.
+    smallest eigenvalue bounds the curvature from below. The margin taken off
+    it is a practical allowance for floating-point rounding in these small
+    matrices, not an interval-arithmetic certificate.
     """
-    p1, p2 = expit(Z @ theta1), expit(Z @ theta2)
-    weight = np.minimum(p1 * (1 - p1), p2 * (1 - p2))
+    weight = np.minimum(logistic_weight(Z @ theta1), logistic_weight(Z @ theta2))
     floor = Z.T @ (Z * weight[:, None]) / len(y)
     eigenvalues = np.linalg.eigvalsh(floor)
     mu = eigenvalues.min() - 1e-12 * np.abs(eigenvalues).max()
@@ -98,6 +106,23 @@ def certified_distance(Z, y, theta1, theta2, e1, e2):
     """Bound on |theta1 - theta2| for two near-minimizers of one convex problem,
     given the 2-norms e1, e2 of their (sub)gradient residuals."""
     return (e1 + e2) / segment_curvature(Z, y, theta1, theta2)
+
+
+@pytest.mark.parametrize("eta", [20.0, 30.0, -30.0])
+def test_segment_curvature_stays_below_the_true_weight(eta):
+    """Where p rounds to nearly 1, p(1 - p) cancels; the weight must stay
+    accurate, and the curvature bound must not exceed the true curvature,
+    here e^-|eta| / (1 + e^-|eta|)^2 to 50 digits."""
+    with decimal.localcontext() as ctx:
+        ctx.prec = 50
+        u = (-abs(decimal.Decimal(eta))).exp()
+        true_weight = u / (1 + u) ** 2
+        weight = logistic_weight(np.array([eta]))[0]
+        assert abs(decimal.Decimal(weight) / true_weight - 1) < 1e-14
+        # two rows, one of each class, at the same eta: the Hessian is the weight
+        Z, y = np.ones((2, 1)), np.array([0.0, 1.0])
+        theta = np.array([eta])
+        assert decimal.Decimal(segment_curvature(Z, y, theta, theta)) <= true_weight
 
 
 def test_certified_distance_accounts_for_flattening_curvature():
@@ -330,7 +355,8 @@ def test_support_matches_saga(alpha):
 
     Both fits must pass KKT within KKT_TOL, which bounds their distance d. A
     saga coefficient within KKT_TOL of KKT can only be nonzero if its gradient
-    is within KKT_TOL of the kink, and gradients differ by at most L * d
+    has magnitude at least lambda * alpha - KKT_TOL (the elastic net's L2 term
+    only pushes it further out), and gradients differ by at most L * d
     between the fits. So where biglasso's zero has slack above
     KKT_TOL + L * d, saga's is exactly zero too, and where biglasso's nonzero
     exceeds d, saga's is nonzero with the same sign. The test asserts that
