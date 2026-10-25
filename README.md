@@ -197,7 +197,7 @@ time is the best of 3 runs. Every multithreaded solver is shown at its fastest
 thread count: 1, 6, or 12. The scripts and raw results are in
 [`benchmarks/`](benchmarks/).
 
-![Time relative to pybiglasso, by dataset and solver](https://raw.githubusercontent.com/mmacpherson/pybiglasso/v0.1.0/docs/benchmarks.png)
+![Time relative to pybiglasso, by dataset and solver](https://raw.githubusercontent.com/mmacpherson/pybiglasso/v0.1.1/docs/benchmarks.png)
 
 **Which solvers.** R biglasso, the original; R's glmnet, whose coordinate
 descent biglasso builds on; and every maintained Python package, installable
