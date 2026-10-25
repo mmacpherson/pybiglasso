@@ -13,6 +13,8 @@
   a small residual is not promised under clipping, saturation, non-convergence
   or R-compatible elastic-net updates. The eigensolver margin is a practical
   floating-point allowance, not interval arithmetic.
+  The separate [logistic gap certificate](duality-gap.md) uses exact dual
+  feasibility and directed objective bounds; it also works on wide problems.
 - `paths.py`: `assert_bitwise` checks shape, dtype and bytes (including signed
   zero); prefixes are explicit through `length`. `assert_same_trajectory`
   checks exact iteration/rejection counts and the existing numerical policy
