@@ -19,7 +19,7 @@ repos:
   - id: name-tests-test
     args: [--pytest-test-first]
     # Helpers the tests import, not tests themselves
-    exclude: ^tests/(rcompare\.py|r/)
+    exclude: ^tests/(rcompare\.py|reference\.py|r/)
   - id: trailing-whitespace
 - repo: https://github.com/astral-sh/ruff-pre-commit
   rev: v0.17.1

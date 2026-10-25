@@ -1,5 +1,5 @@
 //! Rust backend for pybiglasso's binomial solver: the path loop of
-//! `binomial_hsr` and every kernel it calls, in one call from Python.
+//! `fit_path` and every kernel it calls, in one call from Python.
 //!
 //! It follows the numba backend step for step, so that it matches R biglasso
 //! the same way: same coordinate order, same screening, same stopping rules.
@@ -560,7 +560,7 @@ struct Params<'a> {
     eps: f64,
     lambda_min: f64,
     lambda_log_scale: bool,
-    multiplier: &'a [f64],
+    penalty_factor: &'a [f64],
     dfmax: usize,
     max_iter: i64,
     stop_on_saturation: bool,
@@ -604,11 +604,11 @@ struct State {
     w: Rows,
     s: Rows,
     r: Rows,
-    a: Vec<f64>,
-    e1: Vec<u8>,
-    e2: Vec<u8>,
+    beta: Vec<f64>,
+    active: Vec<u8>,
+    strong: Vec<u8>,
     z: Vec<f64>,
-    a0: f64,
+    intercept: f64,
     sum_w_residuals: f64,
 }
 
@@ -663,7 +663,7 @@ impl<D: Design> Fit<'_, D> {
 
     /// p, w, s, r from eta; returns -log-likelihood with probabilities clipped
     /// as R does.
-    fn update_probs(&self, st: &mut State) -> f64 {
+    fn update_irls(&self, st: &mut State) -> f64 {
         for i in 0..st.eta.len() {
             let e = st.eta[i];
             if e > ETA_MAX {
@@ -688,15 +688,15 @@ impl<D: Design> Fit<'_, D> {
 
     fn update_intercept(st: &mut State) -> f64 {
         let xwr = dot(&st.w, &st.r);
-        let si = xwr / seqsum(&st.w);
-        let intercept = si + st.a0;
-        if si != 0.0 {
-            st.a0 = intercept;
+        let shift = xwr / seqsum(&st.w);
+        let intercept = shift + st.intercept;
+        if shift != 0.0 {
+            st.intercept = intercept;
             for v in st.r.iter_mut() {
-                *v -= si;
+                *v -= shift;
             }
             for v in st.eta.iter_mut() {
-                *v += si;
+                *v += shift;
             }
             st.sum_w_residuals = dot(&st.w, &st.r);
         } else {
@@ -705,7 +705,7 @@ impl<D: Design> Fit<'_, D> {
         intercept
     }
 
-    fn update_weights(&self, path: &Path, st: &mut State, lam: f64) -> Result<f64, String> {
+    fn coordinate_sweep(&self, path: &Path, st: &mut State, lam: f64) -> Result<f64, String> {
         let p = self.params;
         let n = self.x.nrow();
         let nrow = n as f64;
@@ -716,7 +716,7 @@ impl<D: Design> Fit<'_, D> {
         // share a pass over the rows.
         let mut pending: Option<(usize, f64, f64)> = None;
         for j in 0..path.col_map.len() {
-            if st.e1[j] == 0 {
+            if st.active[j] == 0 {
                 continue;
             }
             let jj = path.col_map[j];
@@ -758,22 +758,22 @@ impl<D: Design> Fit<'_, D> {
                 return Err("Non-positive or non-finite coordinate curvature; cannot fit safely.".into());
             }
 
-            let u = xwr / nrow + v * st.a[j];
-            let l1 = lam * p.multiplier[jj] * p.alpha;
-            let l2 = lam * p.multiplier[jj] * (1.0 - p.alpha);
-            let new_weight = if u.abs() < l1 {
+            let u = xwr / nrow + v * st.beta[j];
+            let l1 = lam * p.penalty_factor[jj] * p.alpha;
+            let l2 = lam * p.penalty_factor[jj] * (1.0 - p.alpha);
+            let new_beta = if u.abs() < l1 {
                 0.0
             } else {
                 let sign = if u > 0.0 { 1.0 } else { -1.0 };
-                // Differs from R biglasso: see the numba backend's update_weights
+                // Differs from R biglasso: see the numba backend's coordinate_sweep
                 if p.r_compatible { sign * (u.abs() - l1) / v / (1.0 + l2) } else { sign * (u.abs() - l1) / (v + l2) }
             };
-            let shift = new_weight - st.a[j];
+            let shift = new_beta - st.beta[j];
             if shift != 0.0 {
                 max_update = max_update.max(v * (shift * shift));
                 pending = Some((jj, shift / sc, c));
             }
-            st.a[j] = new_weight;
+            st.beta[j] = new_beta;
         }
         if let Some((pj, delta, pc)) = pending {
             swr = Pass::shift(&self.x.col(pj), delta, pc).sweep(n, &mut st.r, &mut st.eta, &st.w).wr;
@@ -782,29 +782,29 @@ impl<D: Design> Fit<'_, D> {
         Ok(max_update)
     }
 
-    /// Score the columns that `eligible` picks; flag violators in e1 (and e2,
+    /// Score the columns that `eligible` picks; flag violators active (and strong,
     /// for the rest of the predictors). Returns the number of violations.
-    fn check(&self, path: &Path, st: &mut State, lam: f64, strong: bool) -> usize {
+    fn check(&self, path: &Path, st: &mut State, lam: f64, strong_only: bool) -> usize {
         let p = self.params;
         let s_sum = seqsum(&st.s);
-        let (s, a) = (&st.s, &st.a);
+        let (s, beta) = (&st.s, &st.beta);
         st.z.par_iter_mut()
-            .zip(st.e1.par_iter_mut())
-            .zip(st.e2.par_iter_mut())
+            .zip(st.active.par_iter_mut())
+            .zip(st.strong.par_iter_mut())
             .enumerate()
             .with_min_len(16)
-            .map(|(j, ((z, e1), e2))| {
-                let eligible = if strong { *e1 == 0 && *e2 == 1 } else { *e2 == 0 };
+            .map(|(j, ((z, active), strong))| {
+                let eligible = if strong_only { *active == 0 && *strong == 1 } else { *strong == 0 };
                 if !eligible {
                     return 0;
                 }
                 let jj = path.col_map[j];
                 *z = standardized_score(&self.x.col(jj), s, s_sum, path.center[jj], path.scale[jj]);
-                let l1 = lam * p.multiplier[jj] * p.alpha;
-                let l2 = lam * p.multiplier[jj] * (1.0 - p.alpha);
-                if (*z - a[j] * l2).abs() > l1 {
-                    *e1 = 1;
-                    *e2 = 1;
+                let l1 = lam * p.penalty_factor[jj] * p.alpha;
+                let l2 = lam * p.penalty_factor[jj] * (1.0 - p.alpha);
+                if (*z - beta[j] * l2).abs() > l1 {
+                    *active = 1;
+                    *strong = 1;
                     1
                 } else {
                     0
@@ -825,13 +825,13 @@ impl<D: Design> Fit<'_, D> {
         let p = self.params;
         while path.iters[il] < p.max_iter {
             path.iters[il] += 1;
-            path.deviance[il] = self.update_probs(st);
+            path.deviance[il] = self.update_irls(st);
             // Differs from R biglasso, which always stops here
             if p.stop_on_saturation && path.deviance[il] / p.null_deviance < 0.01 {
                 return Ok(Status::Saturated);
             }
             path.intercept[il] = Self::update_intercept(st);
-            let max_update = self.update_weights(path, st, lam)?;
+            let max_update = self.coordinate_sweep(path, st, lam)?;
             if max_update >= thresh {
                 continue;
             }
@@ -858,8 +858,8 @@ impl<D: Design> Fit<'_, D> {
     }
 
     fn record(path: &mut Path, st: &State, il: usize) {
-        let rows: Vec<usize> = (0..st.a.len()).filter(|&j| st.a[j] != 0.0).collect();
-        path.coef_vals[il] = Some(rows.iter().map(|&j| st.a[j]).collect());
+        let rows: Vec<usize> = (0..st.beta.len()).filter(|&j| st.beta[j] != 0.0).collect();
+        path.coef_vals[il] = Some(rows.iter().map(|&j| st.beta[j]).collect());
         path.coef_rows[il] = Some(rows);
     }
 
@@ -872,7 +872,7 @@ impl<D: Design> Fit<'_, D> {
         if ncol_used == 0 {
             return Err("X has no varying features after standardization.".into());
         }
-        let mult: Vec<f64> = col_map.iter().map(|&jj| p.multiplier[jj]).collect();
+        let mult: Vec<f64> = col_map.iter().map(|&jj| p.penalty_factor[jj]).collect();
         if p.lambdas.is_none() && !mult.iter().any(|&m| m > 0.0) {
             return Err(
                 "An automatic lambda grid requires at least one varying penalized feature; supply lambdas explicitly."
@@ -895,7 +895,7 @@ impl<D: Design> Fit<'_, D> {
             events: vec![],
         };
         let z = self.compute_z(&path, self.y);
-        let a0 = (p.ybar / (1.0 - p.ybar)).ln();
+        let null_intercept = (p.ybar / (1.0 - p.ybar)).ln();
         let thresh = p.eps * p.null_deviance / nrow as f64;
         let lambda_max_of = |z: &[f64]| {
             let mut m: f64 = 0.0;
@@ -909,16 +909,16 @@ impl<D: Design> Fit<'_, D> {
         let lambda_max_r = lambda_max_of(&z);
 
         let mut st = State {
-            eta: Rows::new(nrow, a0),
+            eta: Rows::new(nrow, null_intercept),
             p: Rows::new(nrow, 0.0),
             w: Rows::new(nrow, 0.0),
             s: Rows::new(nrow, 0.0),
             r: Rows::new(nrow, 0.0),
-            a: vec![0.0; ncol_used],
-            e1: vec![0; ncol_used],
-            e2: vec![0; ncol_used],
+            beta: vec![0.0; ncol_used],
+            active: vec![0; ncol_used],
+            strong: vec![0; ncol_used],
             z,
-            a0,
+            intercept: null_intercept,
             sum_w_residuals: 0.0,
         };
 
@@ -932,8 +932,8 @@ impl<D: Design> Fit<'_, D> {
                 // fit the unpenalized columns alone; see the numba backend
                 for j in 0..ncol_used {
                     if mult[j] == 0.0 {
-                        st.e1[j] = 1;
-                        st.e2[j] = 1;
+                        st.active[j] = 1;
+                        st.strong[j] = 1;
                     }
                 }
                 match self.fit_lambda(&mut path, &mut st, 0, 0.0, thresh, false)? {
@@ -947,11 +947,11 @@ impl<D: Design> Fit<'_, D> {
                     }
                     Status::Converged => {}
                 }
-                self.update_probs(&mut st);
+                self.update_irls(&mut st);
                 st.z = self.compute_z(&path, &st.s);
             } else {
                 path.deviance[0] = p.null_deviance;
-                path.intercept[0] = a0;
+                path.intercept[0] = null_intercept;
             }
             lambda_max = lambda_max_of(&st.z);
             if lambda_max == 0.0 {
@@ -975,7 +975,7 @@ impl<D: Design> Fit<'_, D> {
         for il in lstart..nl {
             let lam = path.lambda[il];
             let cutoff = if il > 0 {
-                if st.a.iter().filter(|&&v| v != 0.0).count() > p.dfmax {
+                if st.beta.iter().filter(|&&v| v != 0.0).count() > p.dfmax {
                     path.events.push(Event::Dfmax(il));
                     path.iters[il..].fill(-1);
                     return Ok(path);
@@ -986,8 +986,8 @@ impl<D: Design> Fit<'_, D> {
             };
             let mut kept = 0;
             for j in 0..ncol_used {
-                st.e2[j] = (st.z[j].abs() > cutoff * p.alpha * mult[j]) as u8;
-                kept += st.e2[j] as i64;
+                st.strong[j] = (st.z[j].abs() > cutoff * p.alpha * mult[j]) as u8;
+                kept += st.strong[j] as i64;
             }
             path.n_reject[il] = ncol_used as i64 - kept;
 
@@ -1103,7 +1103,7 @@ fn run_typed<T: Elem>(
 }
 
 /// Fit a binomial path; arguments and result as the numba backend's
-/// binomial_hsr, with ybar and null_deviance computed by the caller.
+/// fit_path, with ybar and null_deviance computed by the caller.
 #[pyfunction]
 #[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, multiplier, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads))]
 #[allow(clippy::too_many_arguments)]
@@ -1164,7 +1164,7 @@ fn fit_path<'py>(
         eps,
         lambda_min,
         lambda_log_scale,
-        multiplier: multiplier.as_slice()?,
+        penalty_factor: multiplier.as_slice()?,
         dfmax,
         max_iter,
         stop_on_saturation,

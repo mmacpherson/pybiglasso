@@ -343,8 +343,12 @@ def r_available():
     return shutil.which(os.environ.get("RSCRIPT", "Rscript")) is not None
 
 
-def run_r(case_dirs):
-    """Fit every case directory in a single R session; return parsed outputs."""
+def run_r(case_dirs, script=R_SCRIPT, load=None):
+    """Fit every case directory in a single R session; return parsed outputs.
+
+    `script` runs another fit in the same image (the benchmarks' glmnet), with
+    `load` reading its out.json.
+    """
     case_dirs = [pathlib.Path(d).absolute() for d in case_dirs]
     container = os.environ.get("CONTAINER")
     if container:
@@ -352,13 +356,13 @@ def run_r(case_dirs):
         cmd = [container, "run", "--rm"]
         if pathlib.Path(container).name == "docker":
             cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
-        for mount in sorted({R_SCRIPT.parent, *{d.parent for d in case_dirs}}):
+        for mount in sorted({script.parent, *{d.parent for d in case_dirs}}):
             cmd += ["-v", f"{mount}:{mount}"]
         cmd += [image, "Rscript"]
     else:
         cmd = [os.environ.get("RSCRIPT", "Rscript")]
-    subprocess.run([*cmd, str(R_SCRIPT), *map(str, case_dirs)], check=True)
-    return [load_r_output(d / "out.json") for d in case_dirs]
+    subprocess.run([*cmd, str(script), *map(str, case_dirs)], check=True)
+    return [(load or load_r_output)(d / "out.json") for d in case_dirs]
 
 
 def load_r_output(path):

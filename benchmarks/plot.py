@@ -17,6 +17,7 @@ import seaborn.objects as so
 
 LABELS = {
     "r-biglasso-ssr": "R biglasso 1.7.2",
+    "r-glmnet": "glmnet 5.1 (R)",
     "skglm": "skglm",
     "glum": "glum",
     "sklearn-liblinear": "sklearn liblinear",

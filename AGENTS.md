@@ -86,7 +86,7 @@ to observed output.
 ## Architecture
 
 - `src/pybiglasso/binomial.py` — the solver: `biglasso()`, the driver
-  (`binomial_hsr`, `_fit_lambda`), and one numba kernel per step. The README's
+  (`fit_path`, `_fit_lambda`), and one numba kernel per step. The README's
   "How the code is organized" maps each kernel to R biglasso's C++.
 - `src/pybiglasso/path.py` — `BiglassoPath`, the fitted path: prediction, scoring,
   dataframe export
