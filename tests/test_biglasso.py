@@ -1,3 +1,4 @@
+import fractions
 import warnings
 
 import numba
@@ -300,3 +301,32 @@ def test_quickstart_example_runs():
     matplotlib.use("Agg")
     example = pathlib.Path(__file__).parents[1] / "examples" / "quickstart.py"
     runpy.run_path(str(example), run_name="__main__")
+
+
+def test_intercept_correction_is_exactly_rounded(monkeypatch):
+    # The intercept on X's scale subtracts sum(center * beta). Exactly
+    # rounded, it can't depend on summation order, which BLAS (@) picks by
+    # CPU and thread count. These terms cancel, so order changes the sum.
+    terms = np.concatenate([[1e16], np.ones(1000), [-1e16]])
+    exact = float(sum(fractions.Fraction(t) for t in terms))
+    assert terms @ np.ones(len(terms)) != exact  # the input tells them apart
+    ncol = len(terms)
+
+    def solver(X, y, row_indices, params):
+        return dict(
+            iters=np.array([1]),
+            col_map=np.arange(ncol),
+            center=terms,
+            scale=np.ones(ncol),
+            intercept=np.zeros(1),
+            coef_rows=[np.arange(ncol)],
+            coef_vals=[np.ones(ncol)],
+            lambda_=np.array([0.1]),
+            deviance=np.zeros(1),
+            n_reject=np.zeros(1, dtype=np.int64),
+        )
+
+    monkeypatch.setattr(bl.binomial, "binomial_hsr", solver)
+    X = np.zeros((4, ncol), order="F")
+    fit = bl.biglasso(X, np.array([0, 1, 0, 1]), lambdas=[0.1])
+    assert fit.intercept[0] == -exact
