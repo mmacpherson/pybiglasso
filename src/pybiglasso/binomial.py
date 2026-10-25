@@ -977,6 +977,7 @@ def fit_path_rust(X, y, row_indices, params, n_threads):
         n_threads or 0,
         settings.boundscheck,
     )
+    path.pop("row_path")  # gathered or masked rows; reported for tests
     for kind, il in path.pop("events"):
         where = f"λ[{il + 1}/{params.nlambda}]"
         message = {

@@ -376,7 +376,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 }
 
 /// Stable score and curvature from centered values; strict order, as numba.
-fn centered_moments<C: Col>(c: &C, r: &[f64], w: &[f64], center: f64, scale: f64) -> (f64, f64) {
+fn centered_moments<C: Col>(c: &C, r: &[f64], w: &[f64], center: f64, scale: f64, n_fit: f64) -> (f64, f64) {
     let n = c.n();
     let (mut xwr, mut wxx) = (0.0, 0.0);
     for i in 0..n {
@@ -384,22 +384,22 @@ fn centered_moments<C: Col>(c: &C, r: &[f64], w: &[f64], center: f64, scale: f64
         xwr += z * w[i] * r[i];
         wxx += w[i] * z * z;
     }
-    (xwr, wxx / n as f64)
+    (xwr, wxx / n_fit)
 }
 
 /// Standardized score x_j'(s) / n, with the centered fallback for columns far
 /// from zero (see the numba backend's standardized_score).
 #[inline(always)]
-fn standardized_score<C: Col>(c: &C, s: &[f64], s_sum: f64, center: f64, scale: f64) -> f64 {
+fn standardized_score<C: Col>(c: &C, s: &[f64], s_sum: f64, center: f64, scale: f64, n_fit: f64) -> f64 {
     let n = c.n();
     if center.abs() > 100.0 * scale {
         let mut score = 0.0;
         for i in 0..n {
             score += ((c.at(i) - center) / scale) * s[i];
         }
-        return score / n as f64;
+        return score / n_fit;
     }
-    (dot_col(c, s) - center * s_sum) / (scale * n as f64)
+    (dot_col(c, s) - center * s_sum) / (scale * n_fit)
 }
 
 // The coordinate sweep's pass over the rows. Each sums a column CHUNK rows
@@ -412,6 +412,21 @@ const CHUNK: usize = 2048;
 /// Columns at least this tall share their chunks across threads; shorter
 /// ones take longer to hand out than to sum.
 const PAR_ROWS: usize = 16_384;
+/// row_indices naming at least this share of X's rows, each once, are fit as
+/// a 0/1 weight on every row, so the kernels read whole columns with vector
+/// loads; fewer rows, or repeated ones, are gathered. Part of the results:
+/// the two group sums differently, so changing it changes their last bits.
+/// Half is about where they break even (AMD Ryzen 5 7640U, one thread: there
+/// the mask is 9% faster on wide data and 3% slower on tall, and either way
+/// the gap widens quickly with the share).
+const MASK_SHARE: f64 = 0.5;
+/// The mask sweeps the rows it leaves out with weight 0, where each enters
+/// only as a product with a 0 (w, s, and so the residual's terms), and those
+/// are exactly 0 while x, z = (x - center) / scale and the residual stay
+/// finite. Left-out values within this many scales of the center keep z^2
+/// finite, and the residual's drift (each step's standardized change times z)
+/// unless a step exceeds 1e150; otherwise the fit gathers instead.
+const LEFT_OUT_Z_MAX: f64 = 3e150;
 
 /// A pass's sums; those it doesn't compute stay zero.
 #[derive(Clone, Copy)]
@@ -626,27 +641,59 @@ struct Fit<'a, D> {
     x: &'a D,
     y: &'a [f64],
     params: &'a Params<'a>,
+    /// With row_indices fit as a 0/1 weight on every row of X: 1 for rows
+    /// being fit. The kernels then read whole columns, and y is 0 elsewhere.
+    mask: Option<&'a [f64]>,
+    /// With a mask, the rows being fit in row_indices' order, which center
+    /// and scale sum in, as gathering does: for a column far from zero, the
+    /// center's rounding moves every centered value
+    rows: Option<&'a [usize]>,
+    /// The number of rows being fit
+    n_fit: usize,
 }
 
 impl<D: Design> Fit<'_, D> {
-    fn center_scale(&self) -> Result<(Vec<f64>, Vec<f64>), String> {
-        let stats: Vec<(f64, f64, bool)> = (0..self.x.ncol())
+    /// Each column's center and scale, from the rows being fit; and, with a
+    /// mask, whether the rows it leaves out are safe to sweep (see
+    /// LEFT_OUT_Z_MAX). X may hold anything in rows that aren't fit.
+    fn center_scale(&self) -> Result<(Vec<f64>, Vec<f64>, bool), String> {
+        let stats: Vec<(f64, f64, bool, bool)> = (0..self.x.ncol())
             .into_par_iter()
             .map(|j| {
                 let c = self.x.col(j);
                 let n = c.n();
+                let nf = self.n_fit as f64;
                 let (mut acc, mut invalid) = (0.0, false);
-                for i in 0..n {
-                    let v = c.at(i);
-                    invalid |= !v.is_finite();
-                    acc += v;
+                match self.rows {
+                    Some(rows) => rows.iter().for_each(|&i| {
+                        let v = c.at(i);
+                        invalid |= !v.is_finite();
+                        acc += v;
+                    }),
+                    None => (0..n).for_each(|i| {
+                        let v = c.at(i);
+                        invalid |= !v.is_finite();
+                        acc += v;
+                    }),
                 }
-                let mean = acc / n as f64;
+                let mean = acc / nf;
                 let mut acc = 0.0;
-                for i in 0..n {
-                    acc += (c.at(i) - mean).powi(2);
+                match self.rows {
+                    Some(rows) => rows.iter().for_each(|&i| acc += (c.at(i) - mean).powi(2)),
+                    None => (0..n).for_each(|i| acc += (c.at(i) - mean).powi(2)),
                 }
-                (mean, (acc / n as f64).sqrt(), invalid)
+                let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
+                for i in (0..n).filter(|&i| !self.fits(i)) {
+                    let v = c.at(i);
+                    out_finite &= v.is_finite();
+                    (out_lo, out_hi) = (out_lo.min(v), out_hi.max(v));
+                }
+                let scale = (acc / nf).sqrt();
+                // columns too constant to use are never swept
+                let out_deviation =
+                    if out_lo > out_hi { 0.0 } else { (out_lo - mean).abs().max((out_hi - mean).abs()) };
+                let out_safe = scale <= SCALE_MIN || (out_finite && out_deviation <= LEFT_OUT_Z_MAX * scale);
+                (mean, scale, invalid, out_safe)
             })
             .collect();
         if stats.iter().any(|s| s.2) {
@@ -655,15 +702,17 @@ impl<D: Design> Fit<'_, D> {
         if stats.iter().any(|s| !s.0.is_finite() || !s.1.is_finite()) {
             return Err("X has values too large to standardize safely.".into());
         }
-        Ok(stats.iter().map(|s| (s.0, s.1)).unzip())
+        let (center, scale) = stats.iter().map(|s| (s.0, s.1)).unzip();
+        Ok((center, scale, stats.iter().all(|s| s.3)))
     }
 
     fn compute_z(&self, path: &Path, s: &[f64]) -> Vec<f64> {
         let s_sum = seqsum(s);
+        let nf = self.n_fit as f64;
         path.col_map
             .par_iter()
             .with_min_len(16)
-            .map(|&jj| standardized_score(&self.x.col(jj), s, s_sum, path.center[jj], path.scale[jj]))
+            .map(|&jj| standardized_score(&self.x.col(jj), s, s_sum, path.center[jj], path.scale[jj], nf))
             .collect()
     }
 
@@ -671,10 +720,19 @@ impl<D: Design> Fit<'_, D> {
         self.y[i]
     }
 
+    #[inline(always)]
+    fn fits(&self, i: usize) -> bool {
+        self.mask.is_none_or(|m| m[i] != 0.0)
+    }
+
     /// p, w, s, r from eta; returns -log-likelihood with probabilities clipped
     /// as R does.
     fn update_irls(&self, st: &mut State) -> f64 {
         for i in 0..st.eta.len() {
+            if !self.fits(i) {
+                (st.p[i], st.w[i], st.s[i], st.r[i]) = (0.0, 0.0, 0.0, 0.0);
+                continue;
+            }
             let e = st.eta[i];
             if e > ETA_MAX {
                 st.p[i] = 1.0;
@@ -690,7 +748,7 @@ impl<D: Design> Fit<'_, D> {
             st.r[i] = st.s[i] / st.w[i];
         }
         let mut acc = 0.0;
-        for i in 0..st.eta.len() {
+        for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
             acc += if self.y_at(i) == 1.0 { st.p[i].ln() } else { (1.0 - st.p[i]).ln() };
         }
         -acc
@@ -718,7 +776,7 @@ impl<D: Design> Fit<'_, D> {
     fn coordinate_sweep(&self, path: &Path, st: &mut State, lam: f64) -> Result<f64, String> {
         let p = self.params;
         let n = self.x.nrow();
-        let nrow = n as f64;
+        let nrow = self.n_fit as f64;
         let sum_w = seqsum(&st.w);
         let mut max_update: f64 = 0.0;
         let mut swr = st.sum_w_residuals;
@@ -737,7 +795,7 @@ impl<D: Design> Fit<'_, D> {
                 if let Some((pj, delta, pc)) = pending.take() {
                     swr = Pass::shift(&self.x.col(pj), delta, pc).sweep(n, &mut st.r, &mut st.eta, &st.w).wr;
                 }
-                (xwr, v) = centered_moments(&col, &st.r, &st.w, c, sc);
+                (xwr, v) = centered_moments(&col, &st.r, &st.w, c, sc, nrow);
             } else {
                 let sums = match pending.take() {
                     Some((pj, delta, pc)) => {
@@ -759,7 +817,7 @@ impl<D: Design> Fit<'_, D> {
                 // recompute if subtraction has lost more than about eight
                 // digits, including a positive but unreliable curvature
                 if !v0.is_finite() || numerator <= 1e-8 * magnitude {
-                    (xwr, v) = centered_moments(&col, &st.r, &st.w, c, sc);
+                    (xwr, v) = centered_moments(&col, &st.r, &st.w, c, sc, nrow);
                 } else {
                     (xwr, v) = ((sum_xwr - c * swr) / sc, v0);
                 }
@@ -798,6 +856,7 @@ impl<D: Design> Fit<'_, D> {
         let p = self.params;
         let s_sum = seqsum(&st.s);
         let (s, beta) = (&st.s, &st.beta);
+        let nf = self.n_fit as f64;
         st.z.par_iter_mut()
             .zip(st.active.par_iter_mut())
             .zip(st.strong.par_iter_mut())
@@ -809,7 +868,7 @@ impl<D: Design> Fit<'_, D> {
                     return 0;
                 }
                 let jj = path.col_map[j];
-                *z = standardized_score(&self.x.col(jj), s, s_sum, path.center[jj], path.scale[jj]);
+                *z = standardized_score(&self.x.col(jj), s, s_sum, path.center[jj], path.scale[jj], nf);
                 let l1 = lam * p.penalty_factor[jj] * p.alpha;
                 let l2 = lam * p.penalty_factor[jj] * (1.0 - p.alpha);
                 if (*z - beta[j] * l2).abs() > l1 {
@@ -860,7 +919,7 @@ impl<D: Design> Fit<'_, D> {
 
     fn final_loss(&self, st: &State) -> f64 {
         let mut loss = 0.0;
-        for i in 0..st.eta.len() {
+        for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
             let signed = if self.y_at(i) == 1.0 { -st.eta[i] } else { st.eta[i] };
             loss += signed.max(0.0) + (-signed.abs()).exp().ln_1p();
         }
@@ -873,10 +932,9 @@ impl<D: Design> Fit<'_, D> {
         path.coef_rows[il] = Some(rows);
     }
 
-    fn run(&self) -> Result<Path, String> {
+    fn run(&self, center: Vec<f64>, scale: Vec<f64>) -> Result<Path, String> {
         let p = self.params;
         let nrow = self.x.nrow();
-        let (center, scale) = self.center_scale()?;
         let col_map: Vec<usize> = (0..scale.len()).filter(|&j| scale[j] > SCALE_MIN).collect();
         let ncol_used = col_map.len();
         if ncol_used == 0 {
@@ -906,7 +964,7 @@ impl<D: Design> Fit<'_, D> {
         };
         let z = self.compute_z(&path, self.y);
         let null_intercept = (p.ybar / (1.0 - p.ybar)).ln();
-        let thresh = p.eps * p.null_deviance / nrow as f64;
+        let thresh = p.eps * p.null_deviance / self.n_fit as f64;
         let lambda_max_of = |z: &[f64]| {
             let mut m: f64 = 0.0;
             for j in 0..z.len() {
@@ -1078,15 +1136,41 @@ fn to_dict<'py>(py: Python<'py>, path: Path) -> PyResult<Bound<'py, PyDict>> {
     Ok(d)
 }
 
+/// The rows being fit: all of X's, or row_indices', gathered or as a 0/1
+/// mask over every row (see MASK_SHARE).
+#[derive(Clone, Copy)]
+enum Selection<'a> {
+    All,
+    Gather(&'a [usize]),
+    Mask { idx: &'a [usize], mask: &'a [f64] },
+}
+
+impl<'a> Selection<'a> {
+    fn masked_rows(&self) -> Option<&'a [usize]> {
+        match *self {
+            Selection::Mask { idx, .. } => Some(idx),
+            _ => None,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Selection::All => "all",
+            Selection::Gather(_) => "gather",
+            Selection::Mask { .. } => "mask",
+        }
+    }
+}
+
 fn run_typed<T: Elem>(
     py: Python<'_>,
     x: &Bound<'_, PyUntypedArray>,
-    y: &[f64],
-    row_indices: Option<&[usize]>,
+    y_all: &[f64],
+    rows: Selection<'_>,
     params: &Params,
     n_threads: usize,
     boundscheck: bool,
-) -> PyResult<Path> {
+) -> PyResult<(Path, &'static str)> {
     let x: PyReadonlyArray2<T> = x.extract()?;
     let view = x.as_array();
     let pool = rayon::ThreadPoolBuilder::new()
@@ -1094,34 +1178,98 @@ fn run_typed<T: Elem>(
         .build()
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let fortran = view.column(0).to_slice().is_some();
+    // y as the rows being fit, so kernels index it like the residuals; with a
+    // mask, every row of y, 0 where the mask is (not y * 0: y need only be
+    // finite in the rows being fit)
+    let (y_gathered, y_masked): (Vec<f64>, Vec<f64>) = match rows {
+        Selection::All => (vec![], vec![]),
+        Selection::Gather(idx) => (idx.iter().map(|&i| y_all[i]).collect(), vec![]),
+        Selection::Mask { idx, mask } => (
+            idx.iter().map(|&i| y_all[i]).collect(),
+            y_all.iter().zip(mask).map(|(&y, &m)| if m != 0.0 { y } else { 0.0 }).collect(),
+        ),
+    };
+
     let result = py.detach(|| {
         pool.install(|| {
             macro_rules! go {
-                ($design:expr) => {{
+                ($design:expr, $y:expr, $mask:expr, $n_fit:expr, $rows:expr) => {{
                     let d = $design;
-                    Fit { x: &d, y, params }.run()
+                    let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: $rows.masked_rows(), n_fit: $n_fit };
+                    let (center, scale, mask_safe) = fit.center_scale().map_err(Fail)?;
+                    if !mask_safe {
+                        // a row left out holds something the mask can't sweep
+                        // safely: gather the rows instead
+                        return Err(Fallback);
+                    }
+                    fit.run(center, scale).map(|path| (path, $rows.name())).map_err(Fail)
                 }};
             }
             macro_rules! by_layout {
-                ($checked:literal) => {
-                    match (row_indices, fortran) {
-                        (None, true) => go!(ContigX::<T, $checked> { x: view }),
-                        (None, false) => go!(StridedX::<T, $checked> { x: view }),
-                        (Some(idx), true) => go!(GatherX { x: ContigX::<T, $checked> { x: view }, idx }),
-                        (Some(idx), false) => go!(GatherX { x: StridedX::<T, $checked> { x: view }, idx }),
+                ($checked:literal, $rows:expr) => {
+                    match ($rows, fortran) {
+                        (Selection::All, true) => {
+                            go!(ContigX::<T, $checked> { x: view }, y_all, None, view.nrows(), $rows)
+                        }
+                        (Selection::All, false) => {
+                            go!(StridedX::<T, $checked> { x: view }, y_all, None, view.nrows(), $rows)
+                        }
+                        (Selection::Mask { idx, mask }, true) => {
+                            go!(ContigX::<T, $checked> { x: view }, &y_masked, Some(mask), idx.len(), $rows)
+                        }
+                        (Selection::Mask { idx, mask }, false) => {
+                            go!(StridedX::<T, $checked> { x: view }, &y_masked, Some(mask), idx.len(), $rows)
+                        }
+                        (Selection::Gather(idx), true) => {
+                            go!(
+                                GatherX { x: ContigX::<T, $checked> { x: view }, idx },
+                                &y_gathered,
+                                None,
+                                idx.len(),
+                                $rows
+                            )
+                        }
+                        (Selection::Gather(idx), false) => {
+                            go!(
+                                GatherX { x: StridedX::<T, $checked> { x: view }, idx },
+                                &y_gathered,
+                                None,
+                                idx.len(),
+                                $rows
+                            )
+                        }
                     }
                 };
             }
-            if boundscheck { by_layout!(true) } else { by_layout!(false) }
+            let attempt = |rows: Selection<'_>| -> Result<(Path, &'static str), Stop> {
+                if boundscheck { by_layout!(true, rows) } else { by_layout!(false, rows) }
+            };
+            match attempt(rows) {
+                Err(Fallback) => match rows {
+                    Selection::Mask { idx, .. } => attempt(Selection::Gather(idx)),
+                    _ => unreachable!("only a mask leaves rows out"),
+                },
+                other => other,
+            }
         })
     });
-    result.map_err(PyValueError::new_err)
+    result.map_err(|e| match e {
+        Fail(msg) => PyValueError::new_err(msg),
+        Fallback => unreachable!("a gather never falls back"),
+    })
 }
+
+/// Why a fit stopped short: an error, or a mask that must gather instead.
+enum Stop {
+    Fail(String),
+    Fallback,
+}
+use Stop::{Fail, Fallback};
 
 /// Fit a binomial path; arguments and result as the numba backend's
 /// fit_path, with ybar and null_deviance computed by the caller.
 #[pyfunction]
-#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads, boundscheck))]
+#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads, boundscheck, row_path = "auto"))]
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
@@ -1143,7 +1291,11 @@ fn fit_path<'py>(
     null_deviance: f64,
     n_threads: usize,
     boundscheck: bool,
+    row_path: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
+    if !["auto", "gather", "mask"].contains(&row_path) {
+        return Err(PyValueError::new_err("row_path must be 'auto', 'gather' or 'mask'."));
+    }
     // biglasso() checks all of this; checked again here so a direct call
     // gets an error rather than a panic
     for (name, a) in [("X", x.as_any()), ("y", y.as_any()), ("penalty factors", penalty_factor.as_any())]
@@ -1180,11 +1332,31 @@ fn fit_path<'py>(
         }
         None => None,
     };
-    // y as the rows being fit, so kernels index it like the residuals
-    let y_used: Vec<f64> = match &idx {
-        Some(idx) => idx.iter().map(|&i| y_all[i]).collect(),
-        None => y_all.to_vec(),
-    };
+    let nrow_x = shape[0];
+    // row_indices with no repeats, naming at least MASK_SHARE of X's rows, are
+    // fit through a mask (row_path forces either path, for tests)
+    let mask: Option<Vec<f64>> = idx.as_ref().and_then(|idx| {
+        let wanted = match row_path {
+            "auto" => idx.len() as f64 >= MASK_SHARE * nrow_x as f64,
+            "mask" => true,
+            _ => false,
+        };
+        if !wanted {
+            // a few rows of a tall X: no row-length buffer
+            return None;
+        }
+        let mut m = vec![0.0; nrow_x];
+        for &i in idx {
+            if m[i] != 0.0 {
+                return None;
+            }
+            m[i] = 1.0;
+        }
+        Some(m)
+    });
+    if row_path == "mask" && idx.is_some() && mask.is_none() {
+        return Err(PyValueError::new_err("row_path='mask' needs row_indices without repeats."));
+    }
     let lambdas_vec = lambdas.as_ref().map(|l| l.as_slice().map(|s| s.to_vec())).transpose()?;
     let params = Params {
         alpha,
@@ -1201,12 +1373,19 @@ fn fit_path<'py>(
         ybar,
         null_deviance,
     };
+    let rows = match (&idx, &mask) {
+        (Some(idx), Some(mask)) => Selection::Mask { idx, mask },
+        (Some(idx), None) => Selection::Gather(idx),
+        (None, _) => Selection::All,
+    };
     let dtype = x.dtype();
     macro_rules! dispatch {
         ($($t:ty),*) => {
             $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py)) {
-                let path = run_typed::<$t>(py, x, &y_used, idx.as_deref(), &params, n_threads, boundscheck)?;
-                return to_dict(py, path);
+                let (path, ran) = run_typed::<$t>(py, x, y_all, rows, &params, n_threads, boundscheck)?;
+                let d = to_dict(py, path)?;
+                d.set_item("row_path", ran)?;
+                return Ok(d);
             })*
         };
     }

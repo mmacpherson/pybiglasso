@@ -63,3 +63,16 @@ def test_biglasso_rejects_misaligned_x():
     args = arguments(np.random.default_rng(0))
     with pytest.raises(ValueError, match="aligned"):
         bl.biglasso(misaligned(args["x"]), args["y"], backend="rust")
+
+
+def test_direct_call_rejects_unknown_row_path():
+    args = arguments(np.random.default_rng(0))
+    with pytest.raises(ValueError, match="row_path"):
+        _rust.fit_path(**args, boundscheck=True, row_path="copy")
+
+
+def test_direct_call_rejects_a_mask_with_repeated_rows():
+    args = arguments(np.random.default_rng(0))
+    args["row_indices"] = np.r_[args["row_indices"], 0]
+    with pytest.raises(ValueError, match="repeats"):
+        _rust.fit_path(**args, boundscheck=True, row_path="mask")
