@@ -4,7 +4,7 @@
 #
 # Each CASE_DIR holds params.json, X.bin (nrow x ncol float64, column-major) and
 # y.bin (ny float64; R biglasso itself subsets it by row.idx), as written by
-# tests/rcompare.py. Results go to CASE_DIR/out.json.
+# tests/support/rcompare.py. Results go to CASE_DIR/out.json.
 
 suppressPackageStartupMessages({
   library(biglasso)

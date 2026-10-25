@@ -222,7 +222,7 @@ def run(args):
         t0 = time.perf_counter()
         subprocess.run(cmd, check=True)
         wall = time.perf_counter() - t0
-        import rcompare
+        from support import rcompare
 
         r = rcompare.load_r_output(workdir / "out.json")
         if "error" in r:

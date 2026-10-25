@@ -1,4 +1,4 @@
-"""The solver against the plain numpy reference, `tests/reference.py`.
+"""The solver against the plain numpy reference, `tests/support/reference.py`.
 
 The reference is first held to R itself, on the stored output of the whole
 comparison grid. It then checks what R can't: the default (not r_compatible)
@@ -11,8 +11,7 @@ import warnings
 
 import numpy as np
 import pytest
-import rcompare
-import reference
+from support import rcompare, reference
 
 import pybiglasso as bl
 

@@ -27,7 +27,7 @@ import numpy as np
 
 import pybiglasso as bl
 
-TESTS_DIR = pathlib.Path(__file__).parent
+TESTS_DIR = pathlib.Path(__file__).parent.parent
 R_SCRIPT = TESTS_DIR / "r" / "fit_biglasso.R"
 FIXTURE_PATH = TESTS_DIR / "fixtures" / "r_biglasso.json.gz"
 
