@@ -391,8 +391,10 @@ def _fit_lambda(problem, state, lam, check_kkt):
 
     binomial.py: `_fit_lambda`; R: `cdfit_binomial_lambda_core`.
     """
+    unscanned = "both"  # the scans the last iteration didn't run
     while state.iterations < problem.max_iter:
         state.iterations += 1
+        unscanned = "both"
         update_irls(problem, state)
         # Differs from R biglasso, which always stops here; going on
         # (stop_on_saturation=False) is not in R
@@ -407,9 +409,18 @@ def _fit_lambda(problem, state, lam, check_kkt):
         # if the strong set breaks the conditions, descend again with the
         # enlarged active set; then the same for the rest
         if check_strong_set(problem, state, lam) > 0:
+            unscanned = "rest"
             continue
         if check_rest_set(problem, state, lam) == 0:
             return "converged"
+        unscanned = "none"
+
+    # as R biglasso does, finish the scans when max_iter cuts a fit short:
+    # they set the scores and the strong set the next lambda starts from
+    if check_kkt and unscanned == "both":
+        check_strong_set(problem, state, lam)
+    if check_kkt and unscanned != "none":
+        check_rest_set(problem, state, lam)
     return "max_iter"
 
 
