@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import collections
 import logging
+import math
 import numbers
 import time
 import warnings
@@ -261,7 +262,8 @@ def biglasso(
     for k, il in enumerate(fitted):
         cols = col_map[results["coef_rows"][il]]
         beta = results["coef_vals"][il] / scale[cols]
-        intercept[k] -= center[cols] @ beta
+        # fsum, not @: BLAS picks its summation order by CPU and thread count
+        intercept[k] -= math.fsum(center[cols] * beta)
         rows.append(cols)
         vals.append(beta)
     indptr = np.concatenate([[0], np.cumsum([len(r) for r in rows])])
