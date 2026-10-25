@@ -8,7 +8,9 @@
 //! - Summation order. Every column reduction runs in a fixed order that does
 //!   not depend on the thread count: sequential where the numba backend is
 //!   strict, and LANES independent accumulators, combined in a fixed tree,
-//!   where it uses fastmath. Threads only ever split work across columns.
+//!   where it uses fastmath. Threads split work across columns, and a tall
+//!   column's rows into CHUNK-row chunks, whose sums are added in order, so
+//!   the chunks and their order are the same at every thread count.
 //! - X is read in place, a column at a time, through whatever strides numpy
 //!   gives; it is never copied or converted.
 
@@ -1144,6 +1146,18 @@ fn fit_path<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     // biglasso() checks all of this; checked again here so a direct call
     // gets an error rather than a panic
+    for (name, a) in [("X", x.as_any()), ("y", y.as_any()), ("penalty factors", penalty_factor.as_any())]
+        .into_iter()
+        .chain(row_indices.as_ref().map(|a| ("row_indices", a.as_any())))
+        .chain(lambdas.as_ref().map(|a| ("lambdas", a.as_any())))
+    {
+        // numpy can build arrays whose elements aren't aligned for their type
+        // (offset buffers), and the views below read them through typed
+        // pointers, which would be undefined behavior
+        if !a.getattr("flags")?.getattr("aligned")?.extract::<bool>()? {
+            return Err(PyValueError::new_err(format!("{name} must be aligned to its dtype.")));
+        }
+    }
     let shape = x.shape();
     if shape.len() != 2 || shape[0] == 0 || shape[1] == 0 {
         return Err(PyValueError::new_err("X must be a non-empty 2-D array."));
