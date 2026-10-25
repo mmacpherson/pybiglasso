@@ -305,7 +305,8 @@ def update_intercept(state):
 def coordinate_sweep(problem, state, lam):
     """Minimize the approximation along each active column in turn.
 
-    Returns the largest change in the approximation, v * (change in beta_j)^2.
+    Returns the convergence measure: the largest curvature-weighted squared
+    change in a coefficient, v * (change in beta_j)^2.
 
     binomial.py: `coordinate_sweep`; R: the coordinate loop in
     `cdfit_binomial_lambda_core`, with `wcrossprod_resid`, `wsqsum_bm` and

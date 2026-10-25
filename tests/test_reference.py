@@ -87,11 +87,14 @@ DEFAULT_CASES = [c for c in FAST if c.nrow * c.ncol >= 3000 or c.tag] + BEYOND_R
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("r_compatible", [False, True], ids=["default", "r_compatible"])
 @pytest.mark.parametrize("case", DEFAULT_CASES, ids=lambda c: c.name)
-def test_solver_matches_reference(case, r_compatible, tmp_path):
+def test_solver_matches_reference(case, r_compatible, fixtures, tmp_path):
     data = rcompare.make_case_data(case, tmp_path)
+    # supplied-lambda cases get the grid their stored R fit was given
+    lambdas = fixtures[case.name][1] if case.user_lambdas else None
     options = fit_options(
         case,
         data,
+        lambdas,
         r_compatible=r_compatible,
         stop_on_saturation=case.tag != "past-saturation",
     )

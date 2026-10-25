@@ -563,7 +563,8 @@ def coordinate_sweep(
     """One cyclic coordinate-descent sweep over the active set: update each
     active coefficient in turn, and the residuals with it.
 
-    Returns sum(w * r) and the largest change in the objective, v * shift^2.
+    Returns sum(w * r) and the convergence measure: the largest curvature-
+    weighted squared change in a coefficient, v * shift^2.
 
     Mutates: r, eta, beta
     """
