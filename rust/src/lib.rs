@@ -50,10 +50,12 @@ impl Elem for bool {
 
 /// One column of X, as the rows being fit (all of them, or row_indices).
 ///
-/// The two reads of X itself, `Contig::at` and `Strided::at`, skip the bounds
-/// check, the crate's only unsafe code: checking every gathered or strided
-/// row costs 11-15% of a fit. Every caller indexes below n(), and Gather's
-/// row_indices are range-checked against X's rows before the fit.
+/// The two reads of X itself, `Contig::at` and `Strided::at`, check their
+/// bounds unless CHECKED is false, the crate's only unsafe code: checking
+/// every gathered or strided row costs 11-15% of a fit. Every caller indexes
+/// below n(), and Gather's row_indices are range-checked against X's rows
+/// before the fit, so the check guards against a bug here, not bad input; it
+/// is on by default (the boundscheck setting), and changes no result.
 trait Col: Sync {
     fn n(&self) -> usize;
     /// Row i of the fit; i < n().
@@ -66,8 +68,8 @@ trait Col: Sync {
 }
 
 /// A column contiguous in memory (X in Fortran order).
-struct Contig<'a, T>(&'a [T]);
-impl<T: Elem> Col for Contig<'_, T> {
+struct Contig<'a, T, const CHECKED: bool>(&'a [T]);
+impl<T: Elem, const CHECKED: bool> Col for Contig<'_, T, CHECKED> {
     #[inline(always)]
     fn n(&self) -> usize {
         self.0.len()
@@ -75,6 +77,9 @@ impl<T: Elem> Col for Contig<'_, T> {
     #[inline(always)]
     #[allow(unsafe_code)]
     fn at(&self, i: usize) -> f64 {
+        if CHECKED {
+            return self.0[i].f();
+        }
         debug_assert!(i < self.0.len());
         // SAFETY: i < n(); see Col
         unsafe { self.0.get_unchecked(i) }.f()
@@ -87,8 +92,8 @@ impl<T: Elem> Col for Contig<'_, T> {
 }
 
 /// A column with an arbitrary element stride (X in C order, or a view).
-struct Strided<'a, T>(ArrayView1<'a, T>);
-impl<T: Elem> Col for Strided<'_, T> {
+struct Strided<'a, T, const CHECKED: bool>(ArrayView1<'a, T>);
+impl<T: Elem, const CHECKED: bool> Col for Strided<'_, T, CHECKED> {
     #[inline(always)]
     fn n(&self) -> usize {
         self.0.len()
@@ -96,6 +101,9 @@ impl<T: Elem> Col for Strided<'_, T> {
     #[inline(always)]
     #[allow(unsafe_code)]
     fn at(&self, i: usize) -> f64 {
+        if CHECKED {
+            return self.0[i].f();
+        }
         debug_assert!(i < self.0.len());
         // SAFETY: i < n(); see Col
         unsafe { self.0.uget(i) }.f()
@@ -153,15 +161,15 @@ trait Design: Sync {
     fn nrow(&self) -> usize;
 }
 
-struct ContigX<'a, T> {
+struct ContigX<'a, T, const CHECKED: bool> {
     x: ArrayView2<'a, T>,
 }
-impl<T: Elem> Design for ContigX<'_, T> {
+impl<T: Elem, const CHECKED: bool> Design for ContigX<'_, T, CHECKED> {
     type C<'b>
-        = Contig<'b, T>
+        = Contig<'b, T, CHECKED>
     where
         Self: 'b;
-    fn col(&self, j: usize) -> Contig<'_, T> {
+    fn col(&self, j: usize) -> Contig<'_, T, CHECKED> {
         Contig(self.x.column(j).to_slice().expect("Fortran-contiguous column"))
     }
     fn ncol(&self) -> usize {
@@ -172,15 +180,15 @@ impl<T: Elem> Design for ContigX<'_, T> {
     }
 }
 
-struct StridedX<'a, T> {
+struct StridedX<'a, T, const CHECKED: bool> {
     x: ArrayView2<'a, T>,
 }
-impl<T: Elem> Design for StridedX<'_, T> {
+impl<T: Elem, const CHECKED: bool> Design for StridedX<'_, T, CHECKED> {
     type C<'b>
-        = Strided<'b, T>
+        = Strided<'b, T, CHECKED>
     where
         Self: 'b;
-    fn col(&self, j: usize) -> Strided<'_, T> {
+    fn col(&self, j: usize) -> Strided<'_, T, CHECKED> {
         Strided(self.x.column(j))
     }
     fn ncol(&self) -> usize {
@@ -362,7 +370,7 @@ fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
 
 /// sum(a * b) over two vectors, in LANES accumulators.
 fn dot(a: &[f64], b: &[f64]) -> f64 {
-    dot_col(&Contig(a), b)
+    dot_col(&Contig::<_, true>(a), b)
 }
 
 /// Stable score and curvature from centered values; strict order, as numba.
@@ -1075,6 +1083,7 @@ fn run_typed<T: Elem>(
     row_indices: Option<&[usize]>,
     params: &Params,
     n_threads: usize,
+    boundscheck: bool,
 ) -> PyResult<Path> {
     let x: PyReadonlyArray2<T> = x.extract()?;
     let view = x.as_array();
@@ -1091,12 +1100,17 @@ fn run_typed<T: Elem>(
                     Fit { x: &d, y, params }.run()
                 }};
             }
-            match (row_indices, fortran) {
-                (None, true) => go!(ContigX { x: view }),
-                (None, false) => go!(StridedX { x: view }),
-                (Some(idx), true) => go!(GatherX { x: ContigX { x: view }, idx }),
-                (Some(idx), false) => go!(GatherX { x: StridedX { x: view }, idx }),
+            macro_rules! by_layout {
+                ($checked:literal) => {
+                    match (row_indices, fortran) {
+                        (None, true) => go!(ContigX::<T, $checked> { x: view }),
+                        (None, false) => go!(StridedX::<T, $checked> { x: view }),
+                        (Some(idx), true) => go!(GatherX { x: ContigX::<T, $checked> { x: view }, idx }),
+                        (Some(idx), false) => go!(GatherX { x: StridedX::<T, $checked> { x: view }, idx }),
+                    }
+                };
             }
+            if boundscheck { by_layout!(true) } else { by_layout!(false) }
         })
     });
     result.map_err(PyValueError::new_err)
@@ -1105,7 +1119,7 @@ fn run_typed<T: Elem>(
 /// Fit a binomial path; arguments and result as the numba backend's
 /// fit_path, with ybar and null_deviance computed by the caller.
 #[pyfunction]
-#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, multiplier, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads))]
+#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads, boundscheck))]
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
@@ -1118,7 +1132,7 @@ fn fit_path<'py>(
     eps: f64,
     lambda_min: f64,
     lambda_log_scale: bool,
-    multiplier: PyReadonlyArray1<'py, f64>,
+    penalty_factor: PyReadonlyArray1<'py, f64>,
     dfmax: usize,
     max_iter: i64,
     stop_on_saturation: bool,
@@ -1126,6 +1140,7 @@ fn fit_path<'py>(
     ybar: f64,
     null_deviance: f64,
     n_threads: usize,
+    boundscheck: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     // biglasso() checks all of this; checked again here so a direct call
     // gets an error rather than a panic
@@ -1137,7 +1152,7 @@ fn fit_path<'py>(
     if y_all.len() != shape[0] {
         return Err(PyValueError::new_err("y must have one entry per row of X."));
     }
-    if multiplier.len() != shape[1] {
+    if penalty_factor.len() != shape[1] {
         return Err(PyValueError::new_err("penalty factors must have one entry per column of X."));
     }
     let idx: Option<Vec<usize>> = match &row_indices {
@@ -1164,7 +1179,7 @@ fn fit_path<'py>(
         eps,
         lambda_min,
         lambda_log_scale,
-        penalty_factor: multiplier.as_slice()?,
+        penalty_factor: penalty_factor.as_slice()?,
         dfmax,
         max_iter,
         stop_on_saturation,
@@ -1176,7 +1191,7 @@ fn fit_path<'py>(
     macro_rules! dispatch {
         ($($t:ty),*) => {
             $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py)) {
-                let path = run_typed::<$t>(py, x, &y_used, idx.as_deref(), &params, n_threads)?;
+                let path = run_typed::<$t>(py, x, &y_used, idx.as_deref(), &params, n_threads, boundscheck)?;
                 return to_dict(py, path);
             })*
         };

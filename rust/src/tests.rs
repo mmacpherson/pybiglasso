@@ -1,6 +1,6 @@
 //! The kernels against plain scalar sums, bit for bit: at every SIMD width
-//! this CPU runs, through every kind of column, across chunk and tail sizes,
-//! serial and threaded.
+//! this CPU runs, through every kind of column, bounds-checked or not, across
+//! chunk and tail sizes, serial and threaded.
 
 use super::*;
 use ndarray::{Array2, ShapeBuilder};
@@ -171,42 +171,68 @@ fn check_passes<C: Col>(what: &str, col_x: &C, col_y: &C, x: &[f64], y: &[f64]) 
     );
 }
 
+/// Each test below runs bounds-checked reads of X and unchecked ones.
+macro_rules! checked_and_not {
+    ($body:ident) => {
+        $body::<true>("checked");
+        $body::<false>("unchecked");
+    };
+}
+
 #[test]
 fn passes_contiguous() {
-    for n in SIZES {
-        let (x, y) = (values(n, 1), values(n, 2));
-        check_passes("contiguous", &Contig(&x[..]), &Contig(&y[..]), &x, &y);
-        let x32: Vec<f32> = x.iter().map(|&v| v as f32).collect();
-        let y32: Vec<f32> = y.iter().map(|&v| v as f32).collect();
-        let (xf, yf): (Vec<f64>, Vec<f64>) =
-            (x32.iter().map(|&v| v as f64).collect(), y32.iter().map(|&v| v as f64).collect());
-        check_passes("contiguous f32", &Contig(&x32[..]), &Contig(&y32[..]), &xf, &yf);
+    fn run<const CHECKED: bool>(how: &str) {
+        for n in SIZES {
+            let (x, y) = (values(n, 1), values(n, 2));
+            check_passes(&format!("contiguous, {how}"), &Contig::<_, CHECKED>(&x[..]), &Contig(&y[..]), &x, &y);
+            let x32: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+            let y32: Vec<f32> = y.iter().map(|&v| v as f32).collect();
+            let (xf, yf): (Vec<f64>, Vec<f64>) =
+                (x32.iter().map(|&v| v as f64).collect(), y32.iter().map(|&v| v as f64).collect());
+            check_passes(
+                &format!("contiguous f32, {how}"),
+                &Contig::<_, CHECKED>(&x32[..]),
+                &Contig(&y32[..]),
+                &xf,
+                &yf,
+            );
+        }
     }
+    checked_and_not!(run);
 }
 
 #[test]
 fn passes_strided() {
-    for n in SIZES {
-        // C order: each column's elements three apart
-        let x = Array2::from_shape_vec((n, 3), values(3 * n, 6)).expect("shape");
-        let (cx, cy) = (Strided(x.column(0)), Strided(x.column(2)));
-        check_passes("strided", &cx, &cy, &x.column(0).to_vec(), &x.column(2).to_vec());
+    fn run<const CHECKED: bool>(how: &str) {
+        for n in SIZES {
+            // C order: each column's elements three apart
+            let x = Array2::from_shape_vec((n, 3), values(3 * n, 6)).expect("shape");
+            let (cx, cy) = (Strided::<_, CHECKED>(x.column(0)), Strided(x.column(2)));
+            check_passes(&format!("strided, {how}"), &cx, &cy, &x.column(0).to_vec(), &x.column(2).to_vec());
+        }
     }
+    checked_and_not!(run);
 }
 
 #[test]
 fn passes_gathered() {
-    for n in SIZES {
-        // a row subset in shuffled order, with repeats, from a taller X
-        let nrow = n + 41;
-        let idx: Vec<usize> = values(n, 7).iter().map(|v| (v.abs() * 1e9) as usize % nrow).collect();
-        let x = Array2::from_shape_vec((nrow, 2).f(), values(2 * nrow, 8)).expect("shape");
-        let (x0, x1) = (x.column(0).to_slice().expect("Fortran"), x.column(1).to_slice().expect("Fortran"));
-        let (cx, cy) = (Gather { col: Contig(x0), idx: &idx }, Gather { col: Contig(x1), idx: &idx });
-        let (gx, gy): (Vec<f64>, Vec<f64>) =
-            (idx.iter().map(|&i| x0[i]).collect(), idx.iter().map(|&i| x1[i]).collect());
-        check_passes("gathered", &cx, &cy, &gx, &gy);
+    fn run<const CHECKED: bool>(how: &str) {
+        for n in SIZES {
+            // a row subset in shuffled order, with repeats, from a taller X
+            let nrow = n + 41;
+            let idx: Vec<usize> = values(n, 7).iter().map(|v| (v.abs() * 1e9) as usize % nrow).collect();
+            let x = Array2::from_shape_vec((nrow, 2).f(), values(2 * nrow, 8)).expect("shape");
+            let (x0, x1) = (x.column(0).to_slice().expect("Fortran"), x.column(1).to_slice().expect("Fortran"));
+            let (cx, cy) = (
+                Gather { col: Contig::<_, CHECKED>(x0), idx: &idx },
+                Gather { col: Contig::<_, CHECKED>(x1), idx: &idx },
+            );
+            let (gx, gy): (Vec<f64>, Vec<f64>) =
+                (idx.iter().map(|&i| x0[i]).collect(), idx.iter().map(|&i| x1[i]).collect());
+            check_passes(&format!("gathered, {how}"), &cx, &cy, &gx, &gy);
+        }
     }
+    checked_and_not!(run);
 }
 
 #[test]
@@ -224,7 +250,8 @@ fn dot_matches_lanes() {
             tail += x[i] * s[i];
         }
         let want = combine(&lanes) + tail;
-        assert_eq!(dot_col(&Contig(&x[..]), &s).to_bits(), want.to_bits(), "n={n}");
+        assert_eq!(dot_col(&Contig::<_, true>(&x[..]), &s).to_bits(), want.to_bits(), "n={n}");
+        assert_eq!(dot_col(&Contig::<_, false>(&x[..]), &s).to_bits(), want.to_bits(), "n={n}, unchecked");
     }
 }
 
@@ -233,4 +260,18 @@ fn ordered_sum_is_order_sensitive() {
     // the check above can fail: these values sum differently in plain order
     let t = values(3 * CHUNK + 11, 11);
     assert_ne!(ordered_sum(&t).to_bits(), seqsum(&t).to_bits());
+}
+
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn checked_contiguous_read_checks() {
+    let x = values(5, 12);
+    Contig::<_, true>(&x[..]).at(5);
+}
+
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn checked_strided_read_checks() {
+    let x = Array2::from_shape_vec((5, 3), values(15, 13)).expect("shape");
+    Strided::<_, true>(x.column(1)).at(5);
 }
