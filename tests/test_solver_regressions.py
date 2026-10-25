@@ -203,3 +203,32 @@ def test_nonconverged_fit_reports_final_not_previous_loss(data):
     with pytest.warns(UserWarning, match="Failed to converge"):
         fit = biglasso(X, y, lambdas=[0.01], max_iter=2)
     np.testing.assert_allclose(fit.deviance, fit.score(X, y), rtol=1e-12)
+
+
+# (nrow(X), ncol(X), rows fit): R's rule, nrow(X) > ncol(X), and the rows
+# actually fit choose different defaults in the first two
+@pytest.mark.parametrize(
+    "shape,rows,ratio",
+    [
+        ((120, 60), np.arange(0, 120, 3), 0.05),  # tall X, 40 rows fit
+        ((50, 60), np.r_[np.arange(50), np.arange(25)], 0.001),  # repeats: 75
+        ((120, 60), np.arange(60), 0.05),  # exactly ncol rows: not more
+        ((120, 60), np.arange(61), 0.001),
+    ],
+    ids=["tall-subset", "wide-repeats", "rows-equal-cols", "rows-just-over"],
+)
+def test_default_lambda_min_counts_the_rows_fit(shape, rows, ratio):
+    # Differs from R biglasso, which compares nrow(X) with ncol(X)
+    rng = np.random.default_rng(11)
+    X = np.asfortranarray(rng.normal(size=shape))
+    y = rng.binomial(1, expit(X[:, :3].sum(axis=1))).astype(np.float64)
+    # the whole grid, past saturation, so its last lambda is the end
+    options = dict(row_indices=rows, nlambda=5, stop_on_saturation=False)
+    auto = biglasso(X, y, **options)
+    explicit = biglasso(X, y, lambda_min=ratio, **options)
+    # log and exp of the grid's ends, and a division: a few roundings
+    np.testing.assert_allclose(
+        auto.lambdas[-1] / auto.lambdas[0], ratio, rtol=16 * np.finfo(float).eps
+    )
+    np.testing.assert_array_equal(auto.lambdas, explicit.lambdas)
+    np.testing.assert_array_equal(auto.coef.toarray(), explicit.coef.toarray())
