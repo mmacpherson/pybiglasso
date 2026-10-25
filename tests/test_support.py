@@ -82,6 +82,16 @@ def test_support_certificate_requires_both_strict_margins():
     assert not support_is_certified(
         np.array([0.0, 0.2]), np.array([0.16, 0.0]), 0.2, rounding=0.006, **kwargs
     )
+    # All dyadic: slack=1/4-1/8=1/8, exactly the bound
+    # 1/16 + (1/4)*(1/4). Equality does not certify a zero.
+    assert not support_is_certified(
+        np.array([0.0]),
+        np.array([0.125]),
+        0.25,
+        distance=0.25,
+        residual_bound=0.0625,
+        lipschitz=0.25,
+    )
 
 
 @dataclass
@@ -150,3 +160,14 @@ def test_prefix_is_explicit_and_checks_length():
         assert_bitwise(short, path)
     with pytest.raises(AssertionError):
         assert_bitwise(short, path, length=2)
+
+
+def test_same_trajectory_rejects_relative_error_in_small_lambda():
+    path = toy_path()
+    path.lambdas[-1] = 1e-4
+    changed = copy.deepcopy(path)
+    changed.lambdas[-1] *= 1 + 1e-10
+    # The lambda contract is relative (rtol=1e-12), including at the small
+    # end of the grid. A fixed absolute floor would hide this corruption.
+    with pytest.raises(AssertionError):
+        assert_same_trajectory(changed, path)

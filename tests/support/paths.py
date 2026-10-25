@@ -44,8 +44,7 @@ def assert_same_trajectory(a, b, *, coef_b=None, intercept_b=None, deviance_b=No
     assert len(a) == len(b)
     np.testing.assert_array_equal(a.iterations, b.iterations)
     np.testing.assert_array_equal(a.n_rejected, b.n_rejected)
-    # Preserve the original lambda comparison, including numpy's default atol.
-    np.testing.assert_allclose(a.lambdas, b.lambdas, rtol=1e-12, atol=1e-8)
+    np.testing.assert_allclose(a.lambdas, b.lambdas, rtol=1e-12)
     np.testing.assert_allclose(
         a.coef.toarray(),
         b.coef.toarray() if coef_b is None else coef_b,
