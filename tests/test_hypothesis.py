@@ -1,9 +1,11 @@
 """Small, shrinkable numerical problems, with expectations from the objective.
 
 Theorems: the objective identities, fixed-grid prefixes, and each backend's
-thread-count independence. Implementation contracts: matching iteration counts
-and supports across backends. Those discrete comparisons are not floating-point
-theorems: a rounding change at a screening or stopping boundary can break them.
+thread-count independence. Across backends compare optimality and the certified
+accuracy of the coefficients, including at exact ties. Different reduction orders
+can move a strict screening or stopping comparison across its boundary, so
+cross-backend iteration, rejection and exact-support equality is tested only on a
+separate grid away from those ties.
 
 KKT is tested only in default mode, on overlapping-label, well-conditioned
 designs, with no saturation, exhausted iteration budget, or |eta| > 10 clamp.
@@ -24,6 +26,7 @@ import numpy as np
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
+from rcompare import ATOL, RTOL
 from scipy.linalg import hadamard
 from scipy.special import expit
 from test_default_enet import KKT_TOL
@@ -149,6 +152,11 @@ ITERATION_TIE = SmoothProblem(4, 1, 4, (2, 1, 3, 1), 0.0, 1, 0.75, (0.5,), (0.5,
 SUPPORT_TIE = SmoothProblem(
     8, 1, 3, (1, 1, 2, 1, 2, 1, 2, 1), 0.0, 1, 0.5, (0.5,), (0.5, 0.25)
 )
+# At lambda=1/4, the third column's score and L1 threshold are both 1/8.
+# Different tie decisions alter the finite stopping iterate at the NEXT lambda.
+STOPPING_TIE = SmoothProblem(
+    8, 3, 3, (2, 1, 1, 2, 2, 1, 2, 2), 0.0, 1, 0.25, (0.5, 1.0, 2.0), (0.5, 0.25, 0.125)
+)
 
 
 def assert_bits(a, b):
@@ -221,6 +229,16 @@ def assert_certified_solutions(a, b, X, y):
         # for forming and comparing the two standardized parameter vectors.
         rounding = 64 * Z.size * np.finfo(float).eps * (1 + np.linalg.norm(ta[:, k]))
         assert np.linalg.norm(ta[:, k] - tb[:, k]) <= bound + rounding
+
+
+def assert_backend_rounding_contract(a, b, X, y):
+    assert_certified_solutions(a, b, X, y)
+    # The cross-backend contract uses the project's existing R-agreement policy,
+    # not tolerances inferred from these fits. The independent KKT cap and
+    # segment bound above additionally check that both solve the stated problem.
+    np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray(), rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(a.intercept, b.intercept, rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(a.deviance, b.deviance, rtol=RTOL, atol=ATOL)
 
 
 def independent_objective(X, y, intercept, beta, scale, pf, lam, alpha):
@@ -323,6 +341,14 @@ def test_supplied_grid_prefix_is_exact(problem, prefix, backend):
 @pytest.mark.parametrize("backend", BACKENDS)
 @given(problem=smooth_problems(), compatible=st.booleans())
 @example(problem=SIGNAL, compatible=True)
+@example(problem=SCREENING_TIE, compatible=False)
+@example(problem=SCREENING_TIE, compatible=True)
+@example(problem=ITERATION_TIE, compatible=False)
+@example(problem=ITERATION_TIE, compatible=True)
+@example(problem=SUPPORT_TIE, compatible=False)
+@example(problem=SUPPORT_TIE, compatible=True)
+@example(problem=STOPPING_TIE, compatible=False)
+@example(problem=STOPPING_TIE, compatible=True)
 def test_threads_do_not_change_bits(problem, compatible, backend):
     threads = 2 if backend == "rust" else min(2, numba.config.NUMBA_NUM_THREADS)
     one = problem.fit(backend, r_compatible=compatible)
@@ -371,66 +397,51 @@ def test_kkt_and_penalty_likelihood_order(problem, backend):
         )
 
 
-@pytest.mark.parametrize(
-    "contract",
-    [
-        pytest.param(
-            "iterations",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="At a lambda_max tie, rounding changes KKT activation and iteration counts between backends.",
-            ),
-        ),
-        pytest.param(
-            "support",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="At a lambda_max tie, one backend keeps an exactly zero coefficient and the other a rounding-sized nonzero.",
-            ),
-        ),
-        "solution",
-        pytest.param(
-            "screening",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="At a zero-score strong-rule tie numba and rust disagree on n_rejected (identical null fits).",
-            ),
-        ),
-    ],
-)
 @given(problem=smooth_problems())
 @example(problem=SIGNAL)
 @example(problem=SCREENING_TIE)
 @example(problem=ITERATION_TIE)
 @example(problem=SUPPORT_TIE)
-def test_backends_agree_on_path_and_certified_solution(problem, contract):
+@example(problem=STOPPING_TIE)
+def test_backends_agree_within_certified_solution_accuracy(problem):
     X, y = problem.arrays()
     a, b = (problem.fit(backend) for backend in BACKENDS)
     assert len(a) == len(b) == len(problem.grid)
-    # Discrete agreement is a regression contract on these constructions, not
-    # a theorem for arbitrarily ill-conditioned or boundary inputs.
-    if contract == "iterations":
-        np.testing.assert_array_equal(a.iterations, b.iterations)
-    elif contract == "screening":
-        np.testing.assert_array_equal(a.n_rejected, b.n_rejected)
-    elif contract == "support":
-        np.testing.assert_array_equal(a.coef.toarray() != 0, b.coef.toarray() != 0)
-    else:
-        assert_certified_solutions(a, b, X, y)
+    assert_certified_solutions(a, b, X, y)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        pytest.param(SCREENING_TIE, id="zero-score-screening"),
+        pytest.param(ITERATION_TIE, id="lambda-max-iterations"),
+        pytest.param(SUPPORT_TIE, id="lambda-max-support"),
+        pytest.param(STOPPING_TIE, id="tie-changes-later-stopping-iterate"),
+    ],
+)
+def test_backend_ties_satisfy_optimality_and_agree_within_certified_bound(problem):
+    """At a strict-comparison tie either discrete branch is valid to rounding.
+
+    Keep these reproducers portable: an exactly zero coefficient in one backend
+    and a rounding-sized nonzero in the other is not a support regression.
+    A tie can also change a later finite stopping iterate, so its numerical
+    tolerance comes from independently capped residuals and segment curvature,
+    not a fixed relative summation-error budget for the whole trajectory.
+    """
+    X, y = problem.arrays()
+    a, b = (problem.fit(backend) for backend in BACKENDS)
+    assert_certified_solutions(a, b, X, y)
 
 
 @given(problem=smooth_problems())
 @example(problem=SIGNAL)
 def test_backend_contract_with_positive_strong_cutoffs(problem):
-    """Keep a live search of the contracts alongside their strict xfails.
+    """Discrete equality only on a construction away from the exact ties.
 
-    The original strategy and all minimized failures stay above. This separate
-    construction uses positive sequential cutoffs .09 and .05, rather than
-    zero, and avoids the known dyadic lambda_max ties. It remains an empirical
-    implementation contract; it is not a floating-point theorem either.
+    Positive sequential cutoffs .09 and .05 avoid a zero-score screening tie;
+    the grid also avoids the dyadic lambda_max ties of this family. Equality
+    of counts and support is a property of this construction, not a universal
+    floating-point theorem or a requirement at the explicit ties above.
     """
     problem = dataclasses.replace(problem, grid=(0.37, 0.23, 0.14))
     X, y = problem.arrays()
@@ -438,4 +449,4 @@ def test_backend_contract_with_positive_strong_cutoffs(problem):
     np.testing.assert_array_equal(a.iterations, b.iterations)
     np.testing.assert_array_equal(a.n_rejected, b.n_rejected)
     np.testing.assert_array_equal(a.coef.toarray() != 0, b.coef.toarray() != 0)
-    assert_certified_solutions(a, b, X, y)
+    assert_backend_rounding_contract(a, b, X, y)
