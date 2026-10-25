@@ -46,9 +46,16 @@ r-versions: r-image
 test-r: r-image
 	$(R_ENV) uv run pytest -m r
 
+# first, since it's quick and needs no R
 .PHONY: soak
-soak: r-image
+soak: soak-hypothesis r-image
 	$(R_ENV) uv run pytest -m soak -s
+
+# the property tests on thousands of random examples each (make test runs a
+# fixed 20); a failure is kept in .hypothesis/ and replayed first next time
+.PHONY: soak-hypothesis
+soak-hypothesis:
+	HYPOTHESIS_PROFILE=soak uv run pytest tests/test_hypothesis.py tests/test_hypothesis_boundaries.py
 
 .PHONY: fixtures
 fixtures:

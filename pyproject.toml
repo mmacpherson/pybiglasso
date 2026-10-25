@@ -9,7 +9,8 @@ dev = [
   "pytest-cov",
   "ruff",
   "pybiglasso[all]",
-  "pre-commit>=4.6.2"
+  "pre-commit>=4.6.2",
+  "hypothesis>=6.170.9"
 ]
 
 [project]

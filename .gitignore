@@ -6,6 +6,7 @@ build/
 dist/
 .venv/
 .pytest_cache/
+.hypothesis/
 .coverage
 htmlcov/
 .ipynb_checkpoints/
