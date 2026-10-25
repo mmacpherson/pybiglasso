@@ -81,12 +81,18 @@ def test_nonfinite_memmap_rejected_in_standardization(data, tmp_path, value, sub
         biglasso(mm, y, row_indices=rows)
 
 
-def test_unused_nonfinite_rows_do_not_invalidate_fit(data):
+@pytest.mark.parametrize("value", [np.nan, np.inf, 1e300], ids=str)
+def test_unused_rows_do_not_change_fit(data, value):
     X, y = data
-    X[1, :] = np.nan
     rows = np.arange(0, len(y), 2)
+    copy = biglasso(np.asfortranarray(X[rows]), y[rows], nlambda=3)
+    X[1, :] = value
     fit = biglasso(X, y, row_indices=rows, nlambda=3)
-    assert np.isfinite(fit.coef.data).all()
+    np.testing.assert_array_equal(fit.iterations, copy.iterations)
+    # the same arithmetic in another grouping: rounding, far below eps
+    np.testing.assert_allclose(
+        fit.coef.toarray(), copy.coef.toarray(), rtol=1e-9, atol=1e-12
+    )
 
 
 @pytest.mark.parametrize(

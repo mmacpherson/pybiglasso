@@ -49,7 +49,7 @@ class Case:
     columns: str = "distinct"  # "distinct" | "duplicate" | "affine"
     frac_mono: float = 0.0
     penalty: str = "none"  # "none" | "varied" | "heavy" | "zeros"
-    rows: str = "all"  # "all" | "half"
+    rows: str = "all"  # "all" | "half" | "quarter" | "most"
     dtype: str = "float64"
     memmap: bool = False
     user_lambdas: bool = False
@@ -117,6 +117,8 @@ def fast_grid():
             Case(**base, penalty="heavy"),
             Case(**base, penalty="zeros"),
             Case(**base, rows="half"),
+            Case(**base, rows="quarter"),
+            Case(**base, rows="most"),
             Case(**base, dtype="float32"),
             Case(**base, memmap=True),
             Case(**base, user_lambdas=True),
@@ -241,8 +243,16 @@ def make_case_data(case, workdir):
         penalty_factor[: min(3, case.ncol - 1)] = 0.0
 
     row_indices = None
+    # unordered, as a caller's might be; the rust backend gathers a quarter of
+    # the rows and fits half or more through a mask (MASK_SHARE)
     if case.rows == "half":
         row_indices = np.flip(np.arange(case.nrow)[::2])
+    elif case.rows == "quarter":
+        row_indices = np.flip(np.arange(case.nrow)[::4])
+    elif case.rows == "most":
+        # a 10-fold cross-validation's training rows, shuffled
+        kept = np.arange(case.nrow)[np.arange(case.nrow) % 10 != 0]
+        row_indices = np.random.default_rng(case.seed).permutation(kept)
 
     if case.memmap:
         X = np.memmap(
