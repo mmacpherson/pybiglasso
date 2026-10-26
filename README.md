@@ -167,9 +167,13 @@ upstream changes.
 - **Optimality.** At every lambda along the path, the fit satisfies the
   elastic-net optimality (KKT) conditions to 1e-6, on wide, correlated,
   partly unpenalized, and genotype-like designs.
-- **Other solvers.** scikit-learn's saga solver, tightly converged, finds the
-  same coefficients: to about 1e-7 for the lasso and the elastic net alike. In
-  the benchmarks, glum reaches the same elastic-net objective as well.
+- **Other solvers.** R's glmnet, which minimizes the same objective, and
+  scikit-learn's saga solver, both tightly converged, find the same
+  coefficients: each pair passes the optimality conditions, so their distance
+  is certified, to about 1e-7. glmnet's path is stored from a pinned release
+  and checked at every lambda where no fitted log-odds exceeds 10, beyond
+  which pybiglasso, like R biglasso, clips them. In the benchmarks, glum
+  reaches the same elastic-net objective as well.
 - **Where R differs.** R's elastic-net update (reproduced by
   `r_compatible=True`) doesn't satisfy the optimality conditions, and its
   coefficients differ from saga's by 2–50% of their size on the test problem.
