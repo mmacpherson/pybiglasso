@@ -62,11 +62,12 @@ fixtures:
 	$(MAKE) r-image R_VERSION=$(FIXTURES_R)
 	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:r$(FIXTURES_R) uv run python scripts/make_r_fixtures.py
 
-# where a fit spends its time, with Python 3.15's sampling profiler; runs in
-# an isolated environment so the project's .venv keeps its Python
+# where a fit spends its time, step by step, with Python 3.15's sampling
+# profiler on the numba backend; runs in an isolated environment so the
+# project's .venv keeps its Python
 .PHONY: profile
 profile:
-	uv run --python 3.15 --isolated --with-editable . python -m profiling.sampling \
+	uv run --python 3.15 --isolated --with-editable '.[numba]' python -m profiling.sampling \
 	  run --sort tottime -l 15 benchmarks/profile_fit.py
 
 # the README's benchmark plot, from the committed results; later files win,
