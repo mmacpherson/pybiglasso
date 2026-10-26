@@ -74,8 +74,8 @@ profile:
 
 # the README's benchmark plot, from the committed results; later files win,
 # and glmnet and skglm-enet come first so they only fill in glmnet and skglm's
-# elastic net
-RESULTS = $(addprefix benchmarks/results/path,-glmnet.jsonl -skglm-enet.jsonl .jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -statsmodels.jsonl -final.jsonl)
+# elastic net; path-v020 is pybiglasso 0.2.0 (Rust)
+RESULTS = $(addprefix benchmarks/results/path,-glmnet.jsonl -skglm-enet.jsonl .jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -statsmodels.jsonl -final.jsonl -v020.jsonl)
 
 docs/benchmarks.png: benchmarks/plot.py $(RESULTS)
 	uv run --group bench benchmarks/plot.py $(RESULTS) -o $@
