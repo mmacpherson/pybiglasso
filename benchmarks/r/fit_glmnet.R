@@ -2,11 +2,12 @@
 #
 # Usage: Rscript fit_glmnet.R CASE_DIR [CASE_DIR ...]
 #
-# Each CASE_DIR holds params.json (nrow, ncol, alpha, lambdas), X.bin (the
-# standardized design, nrow x ncol float64, column-major) and y.bin. glmnet
-# minimizes -loglik / n + lambda * ((1 - alpha) / 2 * |b|_2^2 + alpha * |b|_1),
-# the benchmark's objective, so X goes in as is (standardize = FALSE) with the
-# benchmark's lambda grid. Results go to CASE_DIR/out.json.
+# Each CASE_DIR holds params.json (nrow, ncol, alpha, lambdas), X.bin (the raw
+# design, nrow x ncol float64, column-major) and y.bin. glmnet standardizes X
+# (standardize = TRUE, its default) and minimizes -loglik / n + lambda *
+# ((1 - alpha) / 2 * |b|_2^2 + alpha * |b|_1) on that scale, the benchmark's
+# objective, along the benchmark's lambda grid; it reports coefficients on X's
+# own scale. Results go to CASE_DIR/out.json.
 
 suppressPackageStartupMessages({
   library(glmnet)
@@ -23,7 +24,7 @@ fit_case <- function(case_dir) {
   elapsed <- system.time(
     fit <- glmnet(
       X, y, family = "binomial", alpha = prm$alpha, lambda = prm$lambdas,
-      standardize = FALSE, intercept = TRUE
+      standardize = TRUE, intercept = TRUE
     )
   )[["elapsed"]]
 
