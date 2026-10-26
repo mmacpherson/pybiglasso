@@ -50,7 +50,7 @@ wheel. Extras add optional integrations:
 | `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
-| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and removed in 0.3.0 |
+| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.3.0 |
 
 ## Quick start
 
@@ -387,7 +387,7 @@ documenting the state it changes, plus a short driver, `fit_lambda`, that reads
 like the algorithm's outline. To my eye that's easier to read, test, and modify.
 It's a matter of taste, though; some excellent programmers prefer the long
 inlined function you can read straight through (John Carmack has
-[a good essay](http://number-none.com/blow/john_carmack_on_inlined_code.html) on
+[a good essay](https://web.archive.org/web/20261006034120/http://number-none.com/blow/john_carmack_on_inlined_code.html) on
 why). The solver takes exactly the same iterations as R's at every lambda; the R
 comparison checks this in every case.
 
@@ -418,7 +418,7 @@ bits differ between Linux, macOS, and Windows. So results are bit-identical at
 any thread count, on any CPU, and on every operating system with a wheel.
 
 The deprecated numba backend (`backend="numba"`) is in
-`src/pybiglasso/binomial.py`, one numba kernel per step, until 0.3.0 removes it.
+`src/pybiglasso/binomial.py`, one numba kernel per step; it is slated for removal in 0.3.0.
 
 ## Scope
 
