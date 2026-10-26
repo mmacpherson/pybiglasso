@@ -43,6 +43,10 @@ to observed output.
   biglasso version (`FIXTURES_BIGLASSO` in `scripts/make_r_fixtures.py`). When
   adding a case to `tests/support/rcompare.py`, check that the old code fails it if it is
   meant to catch a regression.
+- **glmnet output**: `tests/fixtures/r_glmnet.json.gz` holds R glmnet's fits of
+  the default objective (`tests/support/rglmnet.py`), from the same image and
+  `make fixtures`, pinned by `FIXTURES_GLMNET`. They are compared through
+  certificates (both fits pass KKT, then a certified distance), not values.
 - **Independent checks**: KKT conditions computed from first principles
   (`tests/test_default_enet.py`), scikit-learn's saga solver, and invariances
   such as shifting X.
