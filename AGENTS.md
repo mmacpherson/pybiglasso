@@ -91,9 +91,14 @@ to observed output.
 
 ## Architecture
 
-- `src/pybiglasso/binomial.py` — the solver: `biglasso()`, the driver
-  (`fit_path`, `_fit_lambda`), and one numba kernel per step. The README's
-  "How the code is organized" maps each kernel to R biglasso's C++.
+- `src/pybiglasso/binomial.py` — `biglasso()`: validation, then the solver;
+  also the deprecated numba backend (`fit_path`, `_fit_lambda`, one numba
+  kernel per step), until 0.3.0
+- `rust/src/lib.rs` — the solver (the default backend): the whole path in one
+  call. The README's "How the code is organized" maps its steps to R
+  biglasso's C++.
+- `tests/support/reference.py` — the same algorithm in plain numpy, step by
+  step; the tests hold both backends to it
 - `src/pybiglasso/path.py` — `BiglassoPath`, the fitted path: prediction, scoring,
   dataframe export
 - `src/pybiglasso/sklearn.py` — `BiglassoClassifier`, `BiglassoClassifierCV`
@@ -105,10 +110,13 @@ to observed output.
 
 - **Out of core**: X is read a column at a time, through the memmap, and never
   loaded or copied; row subsets are index arrays into the same X.
-- **Numba compiles each array type separately** (a read-only memmap is not a
+- **Numba (deprecated backend) compiles each array type separately** (a read-only memmap is not a
   writable array), so warm-ups must use the same type as the fit.
-- **Reproducibility**: kernels sum in a fixed order (`dot`, `seqsum`), so results
-  are bit-identical at any thread count; don't replace them with `@` or `.sum()`.
+- **Reproducibility**: every sum runs in an order fixed by the data's shape
+  (Rust: CHUNK-row chunks added in order, LANES accumulators combined in a
+  fixed tree, no fused multiply-add; numba: `dot`, `seqsum`), so results are
+  bit-identical at any thread count, and in Rust at any SIMD width; don't
+  replace them with `@` or `.sum()`, or let operations fuse.
 
 ## Public history
 

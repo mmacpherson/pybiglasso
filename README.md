@@ -354,12 +354,14 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   It is off by default.
 - **Store X compactly.** Since the work is mostly moving bytes, a narrower
   dtype is faster: small integers (counts, categories, 0/1 indicators) as
-  `int8` or `uint8` take 8x less memory and disk than float64, and fit about
-  2.5x faster, with the same results to about 1e-13. `float32` halves both.
+  `int8` or `uint8` take 8x less memory and disk than float64, and fit
+  1.3–1.6x faster in memory; `float32` halves the memory and is about as fast.
+  Each value is read as a float64, so values that a narrower dtype holds
+  exactly give bit-identical results.
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).
-  It costs little on a whole Fortran-ordered X, and up to about 20% on a fit
+  It costs little on a whole Fortran-ordered X, and up to about 15% on a fit
   over a subset of rows, as in cross-validation, where every read goes through
   an index. `PYBIGLASSO_BOUNDSCHECK=0` turns it off; the path is the same
   (lambdas, iterations, screening), with coefficients identical in the Rust
@@ -375,32 +377,41 @@ loop with its strong rule and KKT checks, and `cdfit_binomial_lambda_core` runs
 the coordinate descent at each lambda. That keeps the algorithm in a few places,
 close to how it's written in the papers.
 
-pybiglasso splits the same algorithm into one small numba kernel per step, each
-documenting the state it changes, plus a short driver, `_fit_lambda`, that reads
+pybiglasso splits the same algorithm into one small function per step, each
+documenting the state it changes, plus a short driver, `fit_lambda`, that reads
 like the algorithm's outline. To my eye that's easier to read, test, and modify.
 It's a matter of taste, though; some excellent programmers prefer the long
 inlined function you can read straight through (John Carmack has
 [a good essay](http://number-none.com/blow/john_carmack_on_inlined_code.html) on
-why). The kernels compile to native code, so Python only sequences them, and the
-solver takes exactly the same iterations as R's at every lambda; the R
+why). The solver takes exactly the same iterations as R's at every lambda; the R
 comparison checks this in every case.
 
-The driver, in plain numpy, works on whole arrays where the C++ writes out
-loops: the strong rule is one mask over all columns, and the lambda grid one
-`logspace`. Inside the kernels, loops are explicit, which lets one pass compute
-several sums at once. Explicit loops also fix the order of summation, so results
-are bit-identical at any thread count; that's why the kernels use small `dot`
-and `seqsum` helpers rather than `@` and `.sum()`.
+The solver is written twice, in the same steps. The one that runs is Rust
+(`rust/src/lib.rs`): one call from Python fits the whole path. The readable one,
+[`tests/support/reference.py`](tests/support/reference.py), is plain numpy,
+step by step, and imports nothing from pybiglasso; the tests hold the Rust
+solver to it, and both to R.
 
-| pybiglasso (`src/pybiglasso/binomial.py`) | R biglasso (`src/`) |
+| pybiglasso (`rust/src/lib.rs`) | R biglasso (`src/`) |
 |---|---|
 | `center_scale`, `compute_z` | `standardize_and_get_residual` (utilities.cpp) |
 | `update_irls` | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
 | `update_intercept` | intercept update in `cdfit_binomial_lambda_core` |
-| `coordinate_sweep` (`column_moments`, `apply_shift`) | coordinate loop in `cdfit_binomial_lambda_core`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
-| `check_strong_set`, `check_rest_set` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
-| `_fit_lambda` | `cdfit_binomial_lambda_core` |
-| `fit_path` | `cdfit_binomial_ssr` |
+| `coordinate_sweep` (`Pass`) | coordinate loop in `cdfit_binomial_lambda_core`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
+| `check` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
+| `fit_lambda` | `cdfit_binomial_lambda_core` |
+| `run` | `cdfit_binomial_ssr` |
+
+Every sum over rows runs in an order fixed by the data's shape alone. Threads
+split the work by column, and a tall column's rows into 2,048-row chunks whose
+sums are added in order. Within a chunk, eight running sums are combined in a
+fixed order, so vector instructions of any width (AVX2, AVX-512, ARM's NEON)
+give the same result, and no multiply and add are fused into one instruction,
+which would round differently. So results are bit-identical at any thread count
+and on any CPU.
+
+The deprecated numba backend (`backend="numba"`) is in
+`src/pybiglasso/binomial.py`, one numba kernel per step, until 0.3.0 removes it.
 
 ## Scope
 

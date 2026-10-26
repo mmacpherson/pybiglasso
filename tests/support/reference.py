@@ -2,11 +2,11 @@
 
 This is the algorithm `pybiglasso.biglasso` runs (R biglasso 1.7.2's
 `biglasso(..., family = "binomial", screen = "SSR")`, with pybiglasso's
-documented differences from it), in the same steps as
-`src/pybiglasso/binomial.py`; each function's docstring names its counterparts
-there and in R. What binomial.py does for speed or for a fixed summation order
-(one pass for several sums, reading X a column at a time, `dot` and `seqsum`)
-is plain numpy here: the fit rows are copied and standardized outright, and
+documented differences from it), in the same steps as the Rust solver
+(`rust/src/lib.rs`) and the numba one (`src/pybiglasso/binomial.py`); each
+function's docstring names its counterparts in binomial.py and in R. What the
+solvers do for speed or for a fixed summation order (one pass for several sums,
+reading X a column at a time, fixed-order sums) is plain numpy here: the fit rows are copied and standardized outright, and
 sums are `@` and `.sum()`. So results agree with the solvers' to rounding, not
 bit for bit. Nothing here imports pybiglasso, so the tests can hold the
 solver to it.
