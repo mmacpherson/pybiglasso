@@ -25,11 +25,12 @@ THRESH, MAXIT = 1e-14, 10_000_000
 
 
 def glmnet_grid():
-    """Tall cases (n > p), where curvature certifies distances."""
+    """Tall cases (n > p), where curvature certifies distances, and wide ones
+    (p > n), where the duality gap does (penalty factors all positive)."""
     Case = rcompare.Case
     cases = [
         Case(nrow, ncol, alpha=alpha)
-        for nrow, ncol in ((300, 40), (1000, 20))
+        for nrow, ncol in ((300, 40), (1000, 20), (60, 200))
         for alpha in (1.0, 0.5, 0.2)
     ]
     cases += [
@@ -37,6 +38,7 @@ def glmnet_grid():
         Case(300, 40, alpha=1.0, penalty="zeros"),
         Case(1000, 20, alpha=0.5, data="dosage"),
         Case(300, 40, alpha=0.5, response="rare"),
+        Case(80, 300, alpha=0.5, penalty="varied"),
     ]
     return cases
 

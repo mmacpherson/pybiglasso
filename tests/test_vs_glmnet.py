@@ -5,8 +5,9 @@
 
 pybiglasso fits glmnet's lambda grid. The two paths take different routes,
 so each lambda's pair is compared as two solutions of one problem: both must
-pass its KKT conditions, and convexity then bounds their distance
-(support.certificates.assert_same_optimum).
+pass its KKT conditions, and then convexity bounds their distance: through
+the curvature of tall data (support.certificates.assert_same_optimum), or
+through the duality gap of wide data (assert_gap_close).
 
 The solver clips |eta| at ETA_CLIP, as R biglasso does, and solves the
 clipped problem there, so the comparison holds where glmnet's own fit keeps
@@ -19,6 +20,8 @@ from support import rglmnet
 from support.certificates import (
     KKT_TOL,
     assert_same_optimum,
+    duality_gap,
+    gap_coefficient_distance,
     standardize,
     standardized_kkt,
     standardized_theta,
@@ -96,15 +99,26 @@ def assert_matches_glmnet(case, data, glmnet):
     # never vacuous: something beyond the null model is compared
     assert glmnet["beta"][:, unclipped].any()
     for k in unclipped:
-        assert_same_optimum(
-            p["Z"],
-            p["y"],
-            p["ours"][k],
-            p["theirs"][k],
-            p["lambdas"][k],
-            case.alpha,
-            p["penalty"],
-        )
+        args = (p["lambdas"][k], case.alpha, p["penalty"])
+        if case.nrow > case.ncol:
+            assert_same_optimum(p["Z"], p["y"], p["ours"][k], p["theirs"][k], *args)
+        else:
+            assert_gap_close(p["Z"], p["y"], p["ours"][k], p["theirs"][k], *args)
+
+
+def assert_gap_close(Z, y, ours, theirs, lam, alpha, penalty):
+    """Wide data: no curvature in every direction, so the duality gap
+    certifies instead. Both fits pass KKT (the caps carry the teeth); for
+    alpha < 1, ridge curvature bounds each fit's coefficients' distance from
+    the optimum by its gap, so the two lie within the sum. The lasso has no
+    such bound when p > n: its optimum need not be unique."""
+    for theta in (ours, theirs):
+        assert standardized_kkt(Z, y, theta, lam, alpha, penalty) < KKT_TOL
+    gaps = [duality_gap(Z, y, theta, lam, alpha, penalty) for theta in (ours, theirs)]
+    assert all(np.isfinite(gaps))
+    if alpha < 1:
+        radii = [gap_coefficient_distance(g, lam, alpha, penalty) for g in gaps]
+        assert np.linalg.norm(ours[1:] - theirs[1:]) <= sum(radii)
 
 
 @pytest.fixture(scope="session")

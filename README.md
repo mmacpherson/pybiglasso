@@ -169,11 +169,13 @@ upstream changes.
   partly unpenalized, and genotype-like designs.
 - **Other solvers.** R's glmnet, which minimizes the same objective, and
   scikit-learn's saga solver, both tightly converged, find the same
-  coefficients: each pair passes the optimality conditions, so their distance
-  is certified, to about 1e-7. glmnet's path is stored from a pinned release
-  and checked at every lambda where no fitted log-odds exceeds 10, beyond
-  which pybiglasso, like R biglasso, clips them. In the benchmarks, glum
-  reaches the same elastic-net objective as well.
+  coefficients: each pair passes the optimality conditions, and then their
+  distance is certified, to about 1e-7 on tall data and, through the duality
+  gap, to about 1e-5 on wide data (all but the wide lasso, whose optimum
+  need not be unique). glmnet's path is stored from a pinned release and
+  checked at every lambda where no fitted log-odds exceeds 10, beyond which
+  pybiglasso, like R biglasso, clips them. In the benchmarks, glum reaches
+  the same elastic-net objective as well.
 - **Where R differs.** R's elastic-net update (reproduced by
   `r_compatible=True`) doesn't satisfy the optimality conditions, and its
   coefficients differ from saga's by 2–50% of their size on the test problem.
