@@ -44,6 +44,7 @@ def main():
             data = rcompare.make_case_data(case, Path(temp) / case.name)
             assert rcompare.data_digest(data) == digest, case.name
             options = dict(
+                family="binomial",
                 alpha=case.alpha,
                 nlambda=case.nlambda,
                 eps=rcompare.EPS,

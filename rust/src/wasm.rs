@@ -18,6 +18,7 @@ extern "C" {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
+    family: String,
     alpha: f64,
     nlambda: usize,
     eps: f64,
@@ -32,6 +33,7 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            family: "binomial".into(),
             alpha: 1.0,
             nlambda: 100,
             eps: 1e-7,
@@ -112,6 +114,9 @@ impl Dataset {
 impl Dataset {
     fn fit_inner(&self, options: JsValue) -> Result<JsValue, String> {
         let options: Options = serde_wasm_bindgen::from_value(options).map_err(|e| e.to_string())?;
+        if options.family != "binomial" {
+            return Err("This browser binding currently supports only family='binomial'.".into());
+        }
         if !options.alpha.is_finite() || options.alpha <= 0.0 || options.alpha > 1.0 {
             return Err("alpha must be in (0, 1]; alpha=0 (ridge) is not implemented.".into());
         }

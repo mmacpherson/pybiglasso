@@ -154,7 +154,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
     } else {
       if (!dataset) throw new Error("Load the selected columns first.");
       const start = performance.now();
-      const path = dataset.fit({ alpha: request.alpha, nlambda: request.nlambda, eps: request.eps }) as ModelPath;
+      const path = dataset.fit({ family: "binomial", alpha: request.alpha, nlambda: request.nlambda, eps: request.eps }) as ModelPath;
       send({ kind: "result", path, milliseconds: performance.now() - start });
     }
   } catch (error) {

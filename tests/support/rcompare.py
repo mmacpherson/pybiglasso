@@ -333,6 +333,7 @@ def fit_py(case, data, lambdas=None):
         fit = bl.biglasso(
             data["X"],
             data["y"],
+            family="binomial",
             alpha=case.alpha,
             nlambda=case.nlambda,
             lambdas=lambdas,
