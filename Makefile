@@ -1,14 +1,16 @@
 default: test
 
 .PHONY: test
+# across every core (pytest-xdist); the R comparison below stays in one
+# process, which runs R once
 test:
-	uv run pytest
+	uv run pytest -n auto
 
 # the newest versions pyproject.toml allows, ignoring uv.lock: what a new
 # install gets
 .PHONY: test-latest
 test-latest:
-	UV_LOCKED=false uv run --upgrade pytest
+	UV_LOCKED=false uv run --upgrade pytest -n auto
 
 .PHONY: lint
 lint:

@@ -10,7 +10,8 @@ dev = [
   "ruff",
   "pybiglasso[all,numba]",
   "pre-commit>=4.6.2",
-  "hypothesis>=6.170.9"
+  "hypothesis>=6.170.9",
+  "pytest-xdist>=3.8.0"
 ]
 
 [project]
