@@ -45,8 +45,28 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
+    # The Rust build, from main's last run, when the Rust sources are
+    # unchanged: the key hashes their contents, and only an exact hit restores.
+    # A checkout dates every file now, so cargo would rebuild; dating the
+    # sources before the restored build lets it reuse that build.
+    - name: Restore the Rust build, if its sources are unchanged
+      id: rust-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: rust-test-${{ matrix.os }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+    - name: Date the Rust sources before the restored build
+      if: steps.rust-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: git ls-files -z rust | xargs -0 touch -t 200001010000
     - name: Bit for bit at every SIMD width this CPU runs
       run: make test-rust
+    - name: Save the Rust build for later runs
+      if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: ${{ steps.rust-cache.outputs.cache-primary-key }}
 
   test:
     name: Python ${{ matrix.python }} (${{ matrix.os }})
@@ -70,8 +90,28 @@ jobs:
     - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
       with:
         python-version: ${{ matrix.python }}
+    # The Rust build, from main's last run, when the Rust sources are
+    # unchanged: the key hashes their contents, and only an exact hit restores.
+    # A checkout dates every file now, so cargo would rebuild; dating the
+    # sources before the restored build lets it reuse that build.
+    - name: Restore the Rust build, if its sources are unchanged
+      id: rust-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: rust-ext-${{ matrix.os }}-py${{ matrix.python }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+    - name: Date the Rust sources before the restored build
+      if: steps.rust-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: git ls-files -z rust | xargs -0 touch -t 200001010000
     - name: Tests (against stored R biglasso 1.7.2 output)
       run: make test
+    - name: Save the Rust build for later runs
+      if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: ${{ steps.rust-cache.outputs.cache-primary-key }}
     - name: Tests, numba backend (deprecated; goes in 0.3.0)
       run: make test
       env:
