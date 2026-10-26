@@ -361,9 +361,11 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).
-  It costs little on a whole Fortran-ordered X, and up to about 15% on a fit
-  over a subset of rows, as in cross-validation, where every read goes through
-  an index. `PYBIGLASSO_BOUNDSCHECK=0` turns it off; the path is the same
+  It costs little where X's rows are read in place: a whole Fortran-ordered X,
+  or a subset of at least half its rows without repeats, as in
+  cross-validation, which is read through a mask. Where every read goes
+  through an index or a stride (C-ordered X, or a smaller or repeating
+  `row_indices`), it costs up to about 15%. `PYBIGLASSO_BOUNDSCHECK=0` turns it off; the path is the same
   (lambdas, iterations, screening), with coefficients identical in the Rust
   backend and equal to about 1e-11 in numba's, whose vectorized sums the
   check reorders. numba reads the setting at import, and caches compiled
