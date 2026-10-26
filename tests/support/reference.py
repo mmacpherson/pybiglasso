@@ -1,4 +1,4 @@
-"""R biglasso's logistic path, written plainly in numpy: a reference for the tests.
+"""R biglasso's paths, written plainly in numpy: a reference for the tests.
 
 This is the algorithm `pybiglasso.biglasso` runs (R biglasso 1.7.2's
 `biglasso(..., family = "binomial", screen = "SSR")`, with pybiglasso's
@@ -20,6 +20,9 @@ solved by coordinate descent on a quadratic approximation of the NLL (IRLS),
 for a decreasing grid of lambdas, each fit starting from the last. At each
 lambda the sequential strong rule guesses which columns can be nonzero;
 descent runs on the active set, and KKT checks correct the guess.
+
+`gaussian_path` ports the least-squares solver directly, with RSS/(2n) in
+place of mean NLL. It is held to R before the production Gaussian kernel.
 """
 
 import dataclasses
@@ -33,6 +36,142 @@ MIN_SCALE = 1e-6
 ETA_MAX, MIN_WEIGHT = 10.0, 1e-4
 # the path stops once the loss falls below this fraction of the null loss
 SATURATED = 0.01
+
+
+def gaussian_path(
+    X,
+    y,
+    alpha=1.0,
+    nlambda=100,
+    lambdas=None,
+    eps=1e-7,
+    lambda_min=None,
+    lambda_log_scale=True,
+    penalty_factor=None,
+    row_indices=None,
+    dfmax=None,
+    max_iter=1000,
+    r_compatible=False,
+):
+    """Plain numpy port of R biglasso 1.7.2's `cdfit_gaussian_ssr`.
+
+    Unlike logistic IRLS, Gaussian sweeps update the exact residual and use
+    unit curvature. There is no saturation cutoff. R's loss is RSS, set only
+    after both KKT scans pass (even if the iteration budget was exhausted).
+    Arguments have already been validated, as in the binomial reference.
+    """
+    X, y = np.asarray(X, dtype=np.float64), np.asarray(y, dtype=np.float64)
+    if row_indices is not None:
+        X, y = X[row_indices], y[row_indices]
+    nrow, ncol = X.shape
+    center, scale = center_scale(X)
+    used = np.flatnonzero(scale > MIN_SCALE)
+    Xs = (X[:, used] - center[used]) / scale[used]
+    pf = (
+        np.ones(len(used))
+        if penalty_factor is None
+        else np.asarray(penalty_factor)[used]
+    )
+    dfmax = ncol + 1 if dfmax is None else dfmax
+    lambda_min = (0.001 if nrow > ncol else 0.05) if lambda_min is None else lambda_min
+    ybar = y.mean()
+    residual = y - ybar
+    tolerance = eps * (residual @ residual) / nrow
+    beta = np.zeros(len(used))
+    scores = compute_z(Xs, residual)
+    active = np.zeros(len(used), dtype=bool)
+    strong = active.copy()
+    events = []
+
+    def sweep(lam):
+        largest = 0.0
+        for j in np.flatnonzero(active):
+            scores[j] = Xs[:, j] @ residual / nrow + beta[j]
+            l1, l2 = lam * alpha * pf[j], lam * (1 - alpha) * pf[j]
+            value = np.sign(scores[j]) * max(abs(scores[j]) - l1, 0.0) / (1 + l2)
+            shift = value - beta[j]
+            if shift != 0:
+                largest = max(largest, shift**2)
+                residual[:] -= shift * Xs[:, j]
+                beta[j] = value
+        return largest
+
+    def scan(columns, lam, *, rest=False):
+        scores[columns] = Xs[:, columns].T @ residual / nrow
+        violations = columns[
+            np.abs(scores[columns] - beta[columns] * lam * (1 - alpha) * pf[columns])
+            > lam * alpha * pf[columns]
+        ]
+        active[violations] = True
+        if rest:
+            strong[violations] = True
+        return len(violations)
+
+    lambda_max = largest_lambda(scores, pf, alpha)
+    automatic = lambdas is None
+    if automatic and np.any(pf == 0):
+        # Differs from R biglasso: fit unpenalized columns first, so the grid
+        # starts where the penalized coefficients can all be zero.
+        active[pf == 0] = True
+        for _ in range(max_iter):
+            if sweep(0.0) < tolerance:
+                break
+        else:
+            raise ValueError("Unpenalized prefit failed to converge.")
+        scores = compute_z(Xs, residual)
+        lambda_max = largest_lambda(scores, pf, alpha)
+
+    grid = (
+        lambda_grid(lambda_max, max(lambda_min, 1e-6), nlambda, lambda_log_scale)
+        if automatic
+        else np.asarray(lambdas, dtype=np.float64)
+    )
+    path = dict(lambda_=[], loss=[], iter=[], rejections=[], beta=[])
+
+    def record(lam, loss, iterations, rejected):
+        coefficients = np.zeros(ncol)
+        coefficients[used] = beta / scale[used]
+        path["lambda_"].append(lam)
+        path["loss"].append(loss)
+        path["iter"].append(iterations)
+        path["rejections"].append(rejected)
+        path["beta"].append(np.r_[ybar - center @ coefficients, coefficients])
+
+    if automatic:
+        record(grid[0], residual @ residual, 0, len(used))
+    previous = lambda_max
+    for lam in grid[1:] if automatic else grid:
+        index = len(path["lambda_"])
+        if index and np.count_nonzero(beta) > dfmax:
+            events.append(("dfmax", index))
+            break
+        strong[:] = np.abs(scores) > (2 * lam - previous) * alpha * pf
+        rejected = len(used) - np.count_nonzero(strong)
+        iterations, loss = 0, 0.0
+        while iterations < max_iter:
+            while iterations < max_iter:
+                while iterations < max_iter:
+                    iterations += 1
+                    if sweep(lam) < tolerance:
+                        break
+                if not scan(np.flatnonzero(strong & ~active), lam):
+                    break
+            if not scan(np.flatnonzero(~strong), lam, rest=True):
+                loss = residual @ residual
+                break
+        if iterations == max_iter:
+            events.append(("max_iter", index))
+        record(lam, loss if r_compatible else residual @ residual, iterations, rejected)
+        previous = lam
+    return dict(
+        center=center,
+        scale=scale,
+        events=events,
+        **{
+            k: np.asarray(v).T if k == "beta" else np.asarray(v)
+            for k, v in path.items()
+        },
+    )
 
 
 @dataclasses.dataclass
@@ -85,6 +224,7 @@ def fit_path(
     max_iter=1000,
     stop_on_saturation=True,
     r_compatible=False,
+    family="binomial",
 ):
     """Fit the path; arguments are `pybiglasso.biglasso`'s, already validated.
 
@@ -97,6 +237,24 @@ def fit_path(
     binomial.py: `biglasso` and `fit_path`; R: `biglasso` and
     `cdfit_binomial_ssr`.
     """
+    if family == "gaussian":
+        return gaussian_path(
+            X,
+            y,
+            alpha,
+            nlambda,
+            lambdas,
+            eps,
+            lambda_min,
+            lambda_log_scale,
+            penalty_factor,
+            row_indices,
+            dfmax,
+            max_iter,
+            r_compatible,
+        )
+    if family != "binomial":
+        raise ValueError(f"Unknown family {family!r}")
     X = np.asarray(X, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     if row_indices is not None:

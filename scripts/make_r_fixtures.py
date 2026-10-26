@@ -23,12 +23,20 @@ FIXTURES_GLMNET = "5.1"
 
 
 def main():
-    cases = rcompare.fast_grid()
+    cases = rcompare.fast_grid() + rcompare.gaussian_grid()
+    # Keep the prescribed R inputs stable across backend/toolchain changes.
+    # A regenerated fixture must not silently change the problem it checks.
+    previous = rcompare.load_fixtures() if rcompare.FIXTURE_PATH.exists() else {}
     with tempfile.TemporaryDirectory() as tmp:
         dirs, prepared = [], []
         for case in cases:
             d = pathlib.Path(tmp) / case.name
-            prepared.append(rcompare.prepare_case(case, d))
+            lambdas = previous.get(case.name, (None, None, None))[1]
+            prepared.append(
+                rcompare.prepare_case(
+                    case, d, lambdas, fit_python=case.family == "binomial"
+                )
+            )
             dirs.append(d)
         r_outputs = rcompare.run_r(dirs)
 
@@ -50,6 +58,8 @@ def main():
 
     failures = 0
     for case, (py, _, _), r in zip(cases, prepared, r_outputs, strict=True):
+        if py is None:
+            continue
         problems = rcompare.compare(py, r)
         if problems:
             failures += 1
@@ -67,7 +77,7 @@ def main():
     )
     print(
         f"wrote {len(cases)} cases to {rcompare.FIXTURE_PATH}; "
-        f"{len(cases) - failures} agree, {failures} disagree"
+        f"{failures} disagreements among implemented production families"
     )
     glmnet_fixtures()
 

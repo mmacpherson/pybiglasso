@@ -1,4 +1,4 @@
-"""Independent numerical checks for the default logistic elastic-net objective.
+"""Independent numerical checks for logistic and Gaussian elastic-net objectives.
 
 These helpers use numpy/scipy and the mathematical problem, not solver kernels.
 KKT is not an accuracy promise for clipped, saturated or unconverged fits, or
@@ -39,6 +39,42 @@ def with_ones(Xs):
 
 def mean_nll_gradient(Z, y, theta):
     return Z.T @ (expit(Z @ theta) - y) / len(y)
+
+
+def gaussian_subgradient_residual(Z, y, theta, lam, alpha, penalty_factor=1.0):
+    """Minimum-norm subgradient of RSS/(2n) plus the standardized penalty."""
+    theta = np.asarray(theta)
+    batch = theta.ndim == 2
+    response = y[:, None] if batch else y
+    gradient = Z.T @ (Z @ theta - response) / len(y)
+    pf = np.asarray(penalty_factor)
+    if batch and pf.ndim:
+        pf = pf[:, None]
+    beta = theta[1:]
+    l1 = lam * alpha * pf
+    residual = gradient.copy()
+    residual[1:] += lam * (1 - alpha) * pf * beta + np.where(
+        beta != 0, l1 * np.sign(beta), np.clip(-gradient[1:], -l1, l1)
+    )
+    return residual
+
+
+def gaussian_curvature(Z, lam=0.0, alpha=1.0, penalty_factor=1.0):
+    """Least eigenvalue of the constant full Hessian, including the intercept.
+
+    As with segment_curvature, subtract a relative eigensolver allowance;
+    this distance check uses floating-point linear algebra, not intervals.
+    Ridge can supply curvature even when X is wide.
+    """
+    hessian = Z.T @ Z / len(Z)
+    ridge = np.broadcast_to(
+        lam * (1 - alpha) * np.asarray(penalty_factor), Z.shape[1] - 1
+    )
+    hessian += np.diag(np.r_[0.0, ridge])
+    eigenvalues = np.linalg.eigvalsh(hessian)
+    lower = eigenvalues.min() - 1e-12 * np.abs(eigenvalues).max()
+    assert np.isfinite(lower) and lower > 0, "no curvature to certify a distance"
+    return lower
 
 
 def subgradient_residual(Z, y, theta, lam, alpha, penalty_factor=1.0, *, eta=None):
@@ -252,11 +288,11 @@ def residual_rounding(Z, y, theta, lam, alpha, penalty_factor=1.0):
 
 
 @dataclass(frozen=True)
-class _LogisticGap:
+class _GapCertificate:
     primal: float
     dual: float
     gap: float
-    point: tuple[Fraction, ...]  # u = (q-y)/n, exactly feasible
+    point: tuple[Fraction, ...]  # exactly feasible dual point
     scores: tuple[Fraction, ...]  # X'u, evaluated exactly
     rounding: float
 
@@ -415,7 +451,7 @@ def _gap_certificate(Z, y, theta, lam, alpha, penalty_factor):
     gap = _fraction_float(Fraction(primal) - Fraction(dual), upper=True)
     rounding = math.ulp(primal) + math.ulp(dual)
     assert np.isfinite(gap) and gap >= 0, "invalid primal-dual gap"
-    return _LogisticGap(primal, dual, gap, point, scores, rounding)
+    return _GapCertificate(primal, dual, gap, point, scores, rounding)
 
 
 def duality_gap(Z, y, theta, lam, alpha, penalty_factor=1.0):
@@ -474,6 +510,97 @@ def gap_safe_zeros(Z, y, theta, lam, alpha, penalty_factor=1.0):
     for col, score, threshold in zip(Z[:, 1:].T, cert.scores, l1, strict=True):
         norm2 = sum((Fraction(float(x)) ** 2 for x in col), Fraction())
         norm = _sqrt_fraction_upper(norm2)
+        uncertainty = math.nextafter(radius * norm, math.inf)
+        upper = math.nextafter(
+            _fraction_float(abs(score), upper=True) + uncertainty, math.inf
+        )
+        safe.append(upper < _fraction_float(threshold, upper=False))
+    return np.array(safe)
+
+
+def _gaussian_gap_certificate(Z, y, theta, lam, alpha, penalty_factor):
+    """Exact rational primal/dual algebra for small least-squares test data.
+
+    With u=(y-prediction)/n, the dual is y'u-n||u||²/2-g*(X'u).
+    The intercept imposes sum(u)=0. Lasso additionally constrains |X'u|<=l1;
+    elastic net instead subtracts the soft-threshold quadratic conjugate.
+    Positive penalty factors only, as for the logistic gap oracle.
+    """
+    Z, y, theta = np.asarray(Z), np.asarray(y), np.asarray(theta)
+    if Z.ndim != 2 or y.shape != (len(Z),) or theta.shape != (Z.shape[1],):
+        raise ValueError("expected Z=(n,p+1), y=(n,), theta=(p+1,)")
+    if not np.all(Z[:, 0] == 1) or not all(np.isfinite(v).all() for v in (Z, y, theta)):
+        raise ValueError("finite inputs and an intercept column of ones required")
+    l1, l2 = _gap_parameters(lam, alpha, penalty_factor, Z.shape[1] - 1)
+    design = [tuple(Fraction(float(x)) for x in row) for row in Z]
+    response = tuple(Fraction(float(v)) for v in y)
+    coefficients = tuple(Fraction(float(v)) for v in theta)
+    residual = tuple(
+        yi - sum((x * b for x, b in zip(row, coefficients, strict=True)), Fraction())
+        for row, yi in zip(design, response, strict=True)
+    )
+    n = len(y)
+    mean_residual = sum(residual, Fraction()) / n
+    point = tuple((r - mean_residual) / n for r in residual)
+    columns = tuple(zip(*(row[1:] for row in design), strict=True))
+    scores = tuple(
+        sum((x * u for x, u in zip(col, point, strict=True)), Fraction())
+        for col in columns
+    )
+    if alpha == 1:
+        contraction = min(
+            [Fraction(1), *(a / abs(s) for a, s in zip(l1, scores, strict=True) if s)]
+        )
+        point = tuple(u * contraction for u in point)
+        scores = tuple(s * contraction for s in scores)
+        conjugate = Fraction()
+        assert all(abs(s) <= a for s, a in zip(scores, l1, strict=True))
+    else:
+        conjugate = sum(
+            (
+                max(abs(s) - a, 0) ** 2 / (2 * b)
+                for s, a, b in zip(scores, l1, l2, strict=True)
+            ),
+            Fraction(),
+        )
+    assert sum(point, Fraction()) == 0
+    penalty = sum(
+        (
+            a * abs(b) + c * b * b / 2
+            for a, c, b in zip(l1, l2, coefficients[1:], strict=True)
+        ),
+        Fraction(),
+    )
+    primal_exact = sum((r * r for r in residual), Fraction()) / (2 * n) + penalty
+    dual_exact = (
+        sum((yi * u for yi, u in zip(response, point, strict=True)), Fraction())
+        - n * sum((u * u for u in point), Fraction()) / 2
+        - conjugate
+    )
+    assert primal_exact >= dual_exact
+    primal = _fraction_float(primal_exact, upper=True)
+    dual = _fraction_float(dual_exact, upper=False)
+    gap = _fraction_float(primal_exact - dual_exact, upper=True)
+    return _GapCertificate(
+        primal, dual, gap, point, scores, math.ulp(primal) + math.ulp(dual)
+    )
+
+
+def gaussian_duality_gap(Z, y, theta, lam, alpha, penalty_factor=1.0):
+    """Outward-rounded upper bound on Gaussian objective suboptimality."""
+    return _gaussian_gap_certificate(Z, y, theta, lam, alpha, penalty_factor).gap
+
+
+def gaussian_gap_safe_zeros(Z, y, theta, lam, alpha, penalty_factor=1.0):
+    """Zeros at every optimum, using the dual sphere of radius sqrt(2 gap/n)."""
+    cert = _gaussian_gap_certificate(Z, y, theta, lam, alpha, penalty_factor)
+    l1, _ = _gap_parameters(lam, alpha, penalty_factor, Z.shape[1] - 1)
+    radius = _sqrt_fraction_upper(Fraction(2) * Fraction(float(cert.gap)) / len(y))
+    safe = []
+    for col, score, threshold in zip(Z[:, 1:].T, cert.scores, l1, strict=True):
+        norm = _sqrt_fraction_upper(
+            sum((Fraction(float(x)) ** 2 for x in col), Fraction())
+        )
         uncertainty = math.nextafter(radius * norm, math.inf)
         upper = math.nextafter(
             _fraction_float(abs(score), upper=True) + uncertainty, math.inf
