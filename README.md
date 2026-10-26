@@ -407,8 +407,10 @@ split the work by column, and a tall column's rows into 2,048-row chunks whose
 sums are added in order. Within a chunk, eight running sums are combined in a
 fixed order, so vector instructions of any width (AVX2, AVX-512, ARM's NEON)
 give the same result, and no multiply and add are fused into one instruction,
-which would round differently. So results are bit-identical at any thread count
-and on any CPU.
+which would round differently. Exponentials and logarithms come from a portable
+implementation rather than the operating system's math library, whose last
+bits differ between Linux, macOS, and Windows. So results are bit-identical at
+any thread count, on any CPU, and on every operating system with a wheel.
 
 The deprecated numba backend (`backend="numba"`) is in
 `src/pybiglasso/binomial.py`, one numba kernel per step, until 0.3.0 removes it.
