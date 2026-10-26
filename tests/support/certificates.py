@@ -181,17 +181,25 @@ def path_theta(path, k, center, scale):
     return standardized_theta(path.intercept[k], coef, center, scale)
 
 
-def same_optimum_bound(Z, y, theta_a, theta_b, lam, alpha, penalty_factor=1.0):
-    """(distance, bound) for two approximate solutions of one problem.
+def assert_same_optimum(
+    Z, y, theta_a, theta_b, lam, alpha, penalty_factor=1.0, *, cap=KKT_TOL
+):
+    """Two approximate solutions of one problem, certified close.
 
-    The bound is certified_distance from the two subgradient residuals'
-    2-norms. It holds for any two points, so on its own it has no teeth: a
-    fit at the wrong lambda passes it, with a residual (and bound) to match.
-    Callers cap both residuals first, at KKT_TOL, and fit at eps=1e-14.
+    The problem is the caller's, as requested (lam, alpha and penalty_factor
+    from the inputs, not from a fit's metadata). Both points must pass its KKT
+    conditions within cap; then convexity bounds their distance by
+    certified_distance from the residuals' 2-norms. That bound holds for any
+    two points, so the caps carry the teeth: a fit of another problem fails
+    them. KKT_TOL assumes eps=1e-14. Returns (distance, bound).
     """
-    norms = [
-        np.linalg.norm(subgradient_residual(Z, y, t, lam, alpha, penalty_factor))
+    residuals = [
+        subgradient_residual(Z, y, t, lam, alpha, penalty_factor)
         for t in (theta_a, theta_b)
     ]
+    assert max(np.abs(r).max() for r in residuals) < cap
     distance = np.linalg.norm(np.asarray(theta_a) - np.asarray(theta_b))
-    return distance, certified_distance(Z, y, theta_a, theta_b, *norms)
+    norms = (np.linalg.norm(r) for r in residuals)
+    bound = certified_distance(Z, y, theta_a, theta_b, *norms)
+    assert distance <= bound
+    return distance, bound

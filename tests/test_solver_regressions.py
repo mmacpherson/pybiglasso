@@ -7,12 +7,9 @@ import numpy as np
 import pytest
 from scipy.special import expit
 from support.certificates import (
-    KKT_TOL,
-    kkt_residual,
+    assert_same_optimum,
     path_theta,
-    same_optimum_bound,
     standardize,
-    standardized_kkt,
     standardized_theta,
     subgradient_residual,
     with_ones,
@@ -40,22 +37,21 @@ def test_automatic_singleton_rejected_but_explicit_singleton_fits(
     with pytest.raises(ValueError, match=r"at least 2.*lambdas=\[value\]"):
         biglasso(X, y, nlambda=1, **kwargs)
     full = biglasso(X, y, nlambda=5, **kwargs)
-    explicit = biglasso(X, y, nlambda=1, lambdas=full.lambdas[-1:], **kwargs)
+    lam = full.lambdas[-1]
+    explicit = biglasso(X, y, nlambda=1, lambdas=[lam], **kwargs)
     assert explicit.n_nonzero[0] > 0
-    # two routes to one optimum: each passes KKT, and convexity bounds the gap
-    assert kkt_residual(full, X, y, len(full) - 1) < KKT_TOL
-    assert kkt_residual(explicit, X, y, 0) < KKT_TOL
+    # two routes to the optimum at lam (alpha 1, the default): each passes
+    # its KKT conditions, and convexity bounds the gap
     Xs, center, scale = standardize(X)
-    distance, bound = same_optimum_bound(
+    assert_same_optimum(
         with_ones(Xs),
         y,
         path_theta(full, len(full) - 1, center, scale),
         path_theta(explicit, 0, center, scale),
-        explicit.lambdas[0],
-        explicit.alpha,
-        explicit.penalty_factor,
+        lam,
+        1.0,
+        1.0 if pf is None else pf,
     )
-    assert distance <= bound
 
 
 @pytest.mark.parametrize("r_compatible", [False, True])
@@ -63,8 +59,9 @@ def test_automatic_singleton_rejected_but_explicit_singleton_fits(
 def test_translation_preserves_solution_and_kkt(data, r_compatible, subset):
     X, y = data
     rows = np.arange(0, len(y), 2) if subset else None
+    lambdas = np.array([0.03, 0.01])
     kwargs = dict(
-        lambdas=[0.03, 0.01], eps=1e-14, row_indices=rows, r_compatible=r_compatible
+        lambdas=lambdas, eps=1e-12, row_indices=rows, r_compatible=r_compatible
     )
     shifted = np.asfortranarray(X + 1e8)
     with warnings.catch_warnings():
@@ -76,32 +73,28 @@ def test_translation_preserves_solution_and_kkt(data, r_compatible, subset):
     Xs, center, scale = standardize(A)
     coef = fit.coef.toarray()
     theta = np.vstack([fit.intercept + center @ coef, coef * scale[:, None]])
-    residual = subgradient_residual(
-        with_ones(Xs),
-        yy,
-        theta,
-        fit.lambdas,
-        fit.alpha,
-        fit.penalty_factor,
-        eta=eta,
-    )
-    assert abs(residual).max() < KKT_TOL
+    # the lasso (alpha 1, the default) at the lambdas requested, with
+    # predictions in the shifted fit's own arithmetic. 5e-7 is the
+    # first-release review's ceiling, tighter than KKT_TOL; it is kept as a
+    # stated cap, not derived
+    cap = 5e-7
+    residual = subgradient_residual(with_ones(Xs), yy, theta, lambdas, 1.0, eta=eta)
+    assert abs(residual).max() < cap
 
     # the shift rounds X to 1e8's spacing (1.5e-8), so the shifted problem is
-    # a slightly different one; the unshifted fit is an approximate solution
-    # of it, and convexity bounds the two fits' distance
+    # a slightly different one. The unshifted fit must pass its KKT conditions
+    # too, at the same cap: then convexity bounds the two fits' distance
     _, base_center, base_scale = standardize(B)
-    for k in range(len(fit)):
-        distance, bound = same_optimum_bound(
+    for k, lam in enumerate(lambdas):
+        assert_same_optimum(
             with_ones(Xs),
             yy,
             path_theta(base, k, base_center, base_scale),
             path_theta(fit, k, center, scale),
-            fit.lambdas[k],
-            fit.alpha,
-            fit.penalty_factor,
+            lam,
+            1.0,
+            cap=cap,
         )
-        assert distance <= bound
 
     # predictions on the shifted rows cancel terms near 1e8: in any summation
     # order, a sum of m float products is within gamma_m of the exact sum of
@@ -226,10 +219,7 @@ def test_only_unpenalized_features_vary(data):
         standardized_theta(explicit.intercept[k], coef[:2, k], center, scale)
         for k in range(2)
     )
-    for theta in (a, b):
-        assert standardized_kkt(Z, y, theta, 0.1, 1.0, 0.0) < KKT_TOL
-    distance, bound = same_optimum_bound(Z, y, a, b, 0.1, 1.0, 0.0)
-    assert distance <= bound
+    assert_same_optimum(Z, y, a, b, 0.1, 1.0, 0.0)
 
 
 @pytest.mark.parametrize("linear", [False, True])

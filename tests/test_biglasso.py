@@ -9,11 +9,10 @@ import pytest
 import scipy.sparse as sps
 from support.certificates import (
     KKT_TOL,
+    assert_same_optimum,
     kkt_residual,
     path_theta,
-    same_optimum_bound,
     standardize,
-    standardized_kkt,
     with_ones,
 )
 from support.paths import assert_bitwise
@@ -72,17 +71,15 @@ def test_feature_names_from_dataframe(data):
     assert p.feature_names[0] == "snp0"
 
 
-def assert_matches_saga(sklm, path, k, X, y):
-    """Both fits pass KKT, and convexity bounds their distance."""
+def assert_matches_saga(sklm, path, k, X, y, alpha):
+    """saga at the path's k-th lambda: both pass KKT for that lambda and the
+    alpha requested, and convexity bounds their distance."""
     Xs, center, scale = standardize(X)
     Z, lam = with_ones(Xs), path.lambdas[k]
-    sk = saga(sklm, C=1 / (len(y) * lam), l1_ratio=path.alpha).fit(Xs, y)
+    sk = saga(sklm, C=1 / (len(y) * lam), l1_ratio=alpha).fit(Xs, y)
     theirs = np.concatenate([sk.intercept_, sk.coef_.ravel()])
-    assert kkt_residual(path, X, y, k) < KKT_TOL
-    assert standardized_kkt(Z, y, theirs, lam, path.alpha) < KKT_TOL
     ours = path_theta(path, k, center, scale)
-    distance, bound = same_optimum_bound(Z, y, ours, theirs, lam, path.alpha)
-    assert distance <= bound
+    assert_same_optimum(Z, y, ours, theirs, lam, alpha)
 
 
 def test_lasso_matches_independent_solver(data):
@@ -91,7 +88,7 @@ def test_lasso_matches_independent_solver(data):
     X, y = data
     p = bl.biglasso(X, y, alpha=1.0, nlambda=8, lambda_min=0.02, eps=1e-14)
     for k in (2, 4, 7):
-        assert_matches_saga(sklm, p, k, X, y)
+        assert_matches_saga(sklm, p, k, X, y, 1.0)
 
 
 @pytest.mark.parametrize("alpha", [0.5, 0.2])
@@ -102,7 +99,7 @@ def test_elastic_net_matches_independent_solver(data, alpha):
     p = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-14)
     r = bl.biglasso(X, y, alpha=alpha, lambdas=p.lambdas, eps=1e-14, r_compatible=True)
     for k in (2, 4, 7):
-        assert_matches_saga(sklm, p, k, X, y)
+        assert_matches_saga(sklm, p, k, X, y, alpha)
         # R's update solves a different problem: its fit, as converged, fails
         # the documented objective's KKT conditions
         assert kkt_residual(r, X, y, k) > KKT_TOL
@@ -244,20 +241,20 @@ def test_default_grid_matches_same_grid_as_user_lambdas(data, penalty):
         pf = np.random.default_rng(0).uniform(0.5, 2, X.shape[1])
     a = bl.biglasso(X, y, penalty_factor=pf, nlambda=10, eps=1e-14)
     b = bl.biglasso(X, y, penalty_factor=pf, lambdas=a.lambdas, eps=1e-14)
-    # two routes to each optimum: both pass KKT, and convexity bounds the gap
+    np.testing.assert_array_equal(b.lambdas, a.lambdas)
+    # two routes to each optimum (alpha 1, the default): both pass KKT at the
+    # lambda b was given, and convexity bounds the gap
     Xs, center, scale = standardize(X)
-    for k in range(len(a)):
-        assert max(kkt_residual(a, X, y, k), kkt_residual(b, X, y, k)) < KKT_TOL
-        distance, bound = same_optimum_bound(
+    for k, lam in enumerate(a.lambdas):
+        assert_same_optimum(
             with_ones(Xs),
             y,
             path_theta(a, k, center, scale),
             path_theta(b, k, center, scale),
-            a.lambdas[k],
-            a.alpha,
+            lam,
+            1.0,
             pf,
         )
-        assert distance <= bound
 
 
 def test_unpenalized_columns_enter_at_lambda_max(data):
