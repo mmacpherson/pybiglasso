@@ -2049,7 +2049,6 @@ name = "pybiglasso"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
-    { name = "numba" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -2062,6 +2061,9 @@ all = [
     { name = "polars" },
     { name = "scikit-learn" },
     { name = "seaborn" },
+]
+numba = [
+    { name = "numba" },
 ]
 pandas = [
     { name = "pandas" },
@@ -2088,7 +2090,7 @@ bench = [
 dev = [
     { name = "hypothesis" },
     { name = "pre-commit" },
-    { name = "pybiglasso", extra = ["all"] },
+    { name = "pybiglasso", extra = ["all", "numba"] },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -2096,7 +2098,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "numba" },
+    { name = "numba", marker = "extra == 'numba'" },
     { name = "numpy" },
     { name = "pandas", marker = "extra == 'pandas'" },
     { name = "polars", marker = "extra == 'polars'" },
@@ -2105,7 +2107,7 @@ requires-dist = [
     { name = "scipy" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13" },
 ]
-provides-extras = ["all", "pandas", "polars", "sklearn", "viz"]
+provides-extras = ["all", "numba", "pandas", "polars", "sklearn", "viz"]
 
 [package.metadata.requires-dev]
 bench = [
@@ -2119,7 +2121,7 @@ bench = [
 dev = [
     { name = "hypothesis", specifier = ">=6.170.9" },
     { name = "pre-commit", specifier = ">=4.6.2" },
-    { name = "pybiglasso", extras = ["all"] },
+    { name = "pybiglasso", extras = ["all", "numba"] },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },

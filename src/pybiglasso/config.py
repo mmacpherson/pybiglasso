@@ -32,7 +32,8 @@ def check_switch(name, value):
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
-    backend: str = "numba"
+    # "numba" is deprecated, an optional extra, and goes in 0.3.0
+    backend: str = "rust"
     # Check every index into an array against its bounds. Inputs are checked
     # before a fit either way, so this guards against a bug in pybiglasso
     # itself, at some cost in speed; results are the same with it on or off.

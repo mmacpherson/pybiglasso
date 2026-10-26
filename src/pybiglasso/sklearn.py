@@ -13,7 +13,6 @@ import os
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 
-import numba
 import numpy as np
 import scipy.sparse as sps
 from sklearn.base import BaseEstimator, ClassifierMixin
@@ -309,7 +308,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         # launch from two threads at once; the full fit above has chosen
         # the layer
         backend = settings.backend if self.backend is None else self.backend
-        if n_jobs > 1 and backend == "numba" and numba.threading_layer() == "workqueue":
+        if n_jobs > 1 and backend == "numba" and _numba_layer() == "workqueue":
             if self.n_jobs is not None and self.n_jobs != 1:
                 warnings.warn(
                     "numba's workqueue threading layer can't fit folds in "
@@ -384,3 +383,9 @@ class _NoImprovement:
         )
         eta = linear_predictor(self.X, coef, np.array([intercept]), self.rows)
         return self.sign * score_logits(self.y, eta, self.metric)[0]
+
+
+def _numba_layer():
+    import numba  # only for backend="numba", an optional extra
+
+    return numba.threading_layer()
