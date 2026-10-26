@@ -56,6 +56,7 @@ def test_directed_softplus_encloses_high_precision_value(z):
         Fraction(0),
         Fraction(1),
         Fraction(1, 2),
+        Fraction(1, 3),  # nonterminating Decimal: lower and upper brackets differ
         Fraction(1, 10**20),
         1 - Fraction(1, 10**20),
     ],
@@ -195,14 +196,19 @@ def test_gap_and_radius_do_not_depend_on_callers_decimal_context():
         assert gap_coefficient_distance(before, 0.1, 0.5) == radius
 
 
-def test_gap_safe_radius_cannot_screen_a_known_nonzero(monkeypatch):
+@pytest.mark.parametrize("copies", [1, 4])
+def test_gap_safe_radius_cannot_screen_a_known_nonzero(monkeypatch, copies):
     # A near-lambda_max lasso optimum is beta=log((1-lambda)/lambda)>0.
     # Supply another feasible dual center, q=(.49,.51), rather than the
     # constructor's near-optimal center. Shrinking the sphere by sqrt(2)
-    # wrongly screens this nonzero; this pins both the n and factor-2 scales.
+    # wrongly screens this nonzero. Replication leaves the mean objective,
+    # scores and gap unchanged; the column norm grows by sqrt(copies) and
+    # the correct radius shrinks by sqrt(copies). n=8 also distinguishes 2n
+    # from n**2, which coincide at n=2 and would undersize the sphere here.
     from types import SimpleNamespace
 
-    Z, y, lam = np.array([[1.0, -1.0], [1.0, 1.0]]), np.array([0.0, 1.0]), 0.499
+    Z = np.tile(np.array([[1.0, -1.0], [1.0, 1.0]]), (copies, 1))
+    y, lam = np.tile(np.array([0.0, 1.0]), copies), 0.499
     theta = np.array([0.0, np.log((1 - lam) / lam)])
     assert theta[1] > 0
     with decimal.localcontext() as ctx:
