@@ -221,7 +221,8 @@ def biglasso(
             f"got values {set(np.unique(y_used))}."
         )
 
-    nrow, ncol = get_nrow(X, row_indices), X.shape[1]
+    nrow = X.shape[0] if row_indices is None else len(row_indices)
+    ncol = X.shape[1]
 
     if feature_names is not None:
         feature_names = tuple(str(f) for f in feature_names)
@@ -1010,11 +1011,6 @@ def fit_path_rust(X, y, row_indices, params, n_threads, on_lambda=None):
         raise ValueError(
             'The rust backend needs X aligned to its dtype; use backend="numba".'
         )
-    y_used = y if row_indices is None else y[row_indices]
-    ybar = y_used.mean()
-    null_deviance = (
-        -1.0 * (y_used * np.log(ybar) + (1 - y_used) * np.log(1 - ybar)).sum()
-    )
     path = _rust.fit_path(
         X,
         y,
@@ -1030,8 +1026,6 @@ def fit_path_rust(X, y, row_indices, params, n_threads, on_lambda=None):
         params.max_iter,
         bool(params.stop_on_saturation),
         bool(params.r_compatible),
-        float(ybar),
-        float(null_deviance),
         n_threads or 0,
         settings.boundscheck,
         on_lambda=on_lambda,
