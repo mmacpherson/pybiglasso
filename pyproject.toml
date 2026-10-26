@@ -8,7 +8,7 @@ dev = [
   "pytest",
   "pytest-cov",
   "ruff",
-  "pybiglasso[all]",
+  "pybiglasso[all,numba]",
   "pre-commit>=4.6.2",
   "hypothesis>=6.170.9"
 ]
@@ -26,7 +26,6 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Mathematics"
 ]
 dependencies = [
-  "numba",
   "numpy",
   "scipy"
 ]
@@ -51,6 +50,8 @@ version = "0.1.1"
 
 [project.optional-dependencies]
 all = ["pybiglasso[polars,pandas,sklearn,viz]"]
+# the deprecated numba backend (backend="numba"), until 0.3.0 removes it
+numba = ["numba"]
 pandas = ["pandas"]
 polars = ["polars"]
 sklearn = ["scikit-learn>=1.6"]

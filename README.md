@@ -40,8 +40,8 @@ floating-point precision (see [Validation](#validation)).
 pip install pybiglasso
 ```
 
-The core depends only on numba, numpy, and scipy. Extras add optional
-integrations:
+The core depends only on numpy and scipy; the solver is compiled Rust, in the
+wheel. Extras add optional integrations:
 
 | extra | adds |
 |---|---|
@@ -50,6 +50,7 @@ integrations:
 | `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
+| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and removed in 0.3.0 |
 
 ## Quick start
 
@@ -341,9 +342,9 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   `n_threads=1` there. Results are bit-identical at any thread count.
 - **Cross-validation scales with cores.** `BiglassoClassifierCV(n_jobs=...)`
   fits folds in parallel threads that share one X (and, for a memmap, one page
-  cache); results don't depend on `n_jobs`. This needs numba's tbb or omp
-  threading layer; where numba falls back to workqueue, as on macOS by default,
-  folds run one at a time.
+  cache); results don't depend on `n_jobs`. With the deprecated numba backend
+  this needs numba's tbb or omp threading layer; where numba falls back to
+  workqueue, as on macOS by default, folds run one at a time.
 - **Cross-validation can stop each fold early.** With
   `BiglassoClassifierCV(early_stopping=10)`, a fold's path stops once its
   held-out score has gone 10 alphas without improving, as bigstatsr's
@@ -407,8 +408,8 @@ and `seqsum` helpers rather than `@` and `.sum()`.
 - SSR (sequential strong rule) screening only. R uses its newer Hybrid and
   Adaptive rules only for the plain lasso without penalty factors, and they
   were no faster than SSR on our benchmarks.
-- The first call in a session pays a few seconds of numba compilation; after
-  that, compiled kernels are cached on disk.
+- With the deprecated numba backend, the first call in a session pays a few
+  seconds of compilation; after that, compiled kernels are cached on disk.
 
 ## Citation
 

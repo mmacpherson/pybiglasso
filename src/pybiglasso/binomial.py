@@ -7,24 +7,55 @@ import numbers
 import time
 import warnings
 
-import numba as nb
 import numpy as np
 import scipy.sparse as sps
 
 from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
+try:
+    import numba as nb
+except ImportError:  # an optional extra since 0.2.0, for the numba backend
+    nb = None
+
 logger = logging.getLogger(__name__)
 
-# numba's on-disk cache doesn't key on boundscheck, so a kernel cached under one
-# setting would load under the other; only the default is cached. NUMBA_BOUNDSCHECK,
-# if set, overrides the decorator, so then nothing is.
-jit = functools.partial(
-    nb.njit,
-    nogil=True,
-    boundscheck=settings.boundscheck,
-    cache=settings.boundscheck and nb.config.BOUNDSCHECK is None,
-)
+if nb is None:
+    # the kernels stay plain functions, which only the numba backend calls
+    def jit(*args, **_):
+        return args[0] if args and callable(args[0]) else (lambda f: f)
+
+else:
+    # numba's on-disk cache doesn't key on boundscheck, so a kernel cached under
+    # one setting would load under the other; only the default is cached.
+    # NUMBA_BOUNDSCHECK, if set, overrides the decorator, so then nothing is.
+    jit = functools.partial(
+        nb.njit,
+        nogil=True,
+        boundscheck=settings.boundscheck,
+        cache=settings.boundscheck and nb.config.BOUNDSCHECK is None,
+    )
+
+_numba_warned = False
+
+
+def _use_numba():
+    """The numba backend is deprecated: warn once a process, or say how to get it."""
+    global _numba_warned
+    if nb is None:
+        raise ImportError(
+            'backend="numba" needs numba: pip install "pybiglasso[numba]". '
+            "It is deprecated and goes in pybiglasso 0.3.0; the default, "
+            'backend="rust", needs nothing more.'
+        )
+    if not _numba_warned:
+        _numba_warned = True
+        warnings.warn(
+            "The numba backend is deprecated and goes in pybiglasso 0.3.0; use the "
+            'default, backend="rust".',
+            FutureWarning,
+            stacklevel=3,
+        )
 
 
 def _integer(name, value, minimum=1):
@@ -143,6 +174,8 @@ def biglasso(
     if n_threads is not None:
         _integer("n_threads", n_threads)
     backend = settings.backend if backend is None else check_backend(backend)
+    if backend == "numba":
+        _use_numba()
     if not np.isfortran(X):
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
