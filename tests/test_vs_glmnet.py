@@ -17,8 +17,10 @@ import numpy as np
 import pytest
 from support import rglmnet
 from support.certificates import (
+    KKT_TOL,
     assert_same_optimum,
     standardize,
+    standardized_kkt,
     standardized_theta,
     with_ones,
 )
@@ -39,8 +41,13 @@ def clipped_lambdas(X, glmnet):
     return np.abs(eta).max(axis=0) > ETA_CLIP
 
 
-def assert_matches_glmnet(case, data, glmnet, *, clipped=False):
-    """Both fits are certified close at each lambda unclipped (or clipped)."""
+def fit_glmnet_grid(case, data, glmnet):
+    """pybiglasso on glmnet's grid, and the standardized problem both solve.
+
+    Checks what every comparison assumes: glmnet's whole path, without errors
+    or warnings, and constant columns (monomorphic dosages) zero in both fits,
+    which leaves them out of the problem.
+    """
     assert glmnet["jerr"] == 0 and not glmnet["warnings"], glmnet["warnings"]
     X, y, pf = data["X"], data["y"], data["penalty_factor"]
     lambdas = glmnet["lambda_"]
@@ -55,24 +62,49 @@ def assert_matches_glmnet(case, data, glmnet, *, clipped=False):
         stop_on_saturation=False,
     )
     np.testing.assert_array_equal(fit.lambdas, lambdas)
-
-    # constant columns (monomorphic dosages) are no part of the problem
     varying = X.std(axis=0) > 0
     coef = fit.coef.toarray()
     assert not coef[~varying].any() and not glmnet["beta"][~varying].any()
     Xs, center, scale = standardize(X[:, varying])
-    Z = with_ones(Xs)
-    penalty = 1.0 if pf is None else pf[varying]
 
-    selected = np.flatnonzero(clipped_lambdas(X, glmnet) == clipped)
-    # never vacuous: something beyond the null model is compared
-    assert glmnet["beta"][:, selected].any()
-    for k in selected:
-        ours = standardized_theta(fit.intercept[k], coef[varying, k], center, scale)
-        theirs = standardized_theta(
-            glmnet["intercept"][k], glmnet["beta"][varying, k], center, scale
+    def theta(intercept, beta):
+        return standardized_theta(intercept, beta[varying], center, scale)
+
+    return dict(
+        Z=with_ones(Xs),
+        y=y,
+        lambdas=lambdas,
+        penalty=1.0 if pf is None else pf[varying],
+        ours=[theta(fit.intercept[k], coef[:, k]) for k in range(len(lambdas))],
+        theirs=[
+            theta(glmnet["intercept"][k], glmnet["beta"][:, k])
+            for k in range(len(lambdas))
+        ],
+    )
+
+
+def assert_matches_glmnet(case, data, glmnet):
+    """glmnet passes KKT at every lambda, clipped or not, and pybiglasso is
+    certified close to it at every unclipped one."""
+    p = fit_glmnet_grid(case, data, glmnet)
+    for k, lam in enumerate(p["lambdas"]):
+        residual = standardized_kkt(
+            p["Z"], p["y"], p["theirs"][k], lam, case.alpha, p["penalty"]
         )
-        assert_same_optimum(Z, y, ours, theirs, lambdas[k], case.alpha, penalty)
+        assert residual < KKT_TOL, f"glmnet at lambda {k}: {residual:.2e}"
+    unclipped = np.flatnonzero(~clipped_lambdas(data["X"], glmnet))
+    # never vacuous: something beyond the null model is compared
+    assert glmnet["beta"][:, unclipped].any()
+    for k in unclipped:
+        assert_same_optimum(
+            p["Z"],
+            p["y"],
+            p["ours"][k],
+            p["theirs"][k],
+            p["lambdas"][k],
+            case.alpha,
+            p["penalty"],
+        )
 
 
 @pytest.fixture(scope="session")
@@ -92,8 +124,8 @@ def test_matches_stored_glmnet(case, fixtures, tmp_path):
 
 
 def test_rare_response_reaches_the_clip(fixtures, tmp_path):
-    """The xfail below has clipped lambdas to compare; its other
-    preconditions are test_matches_stored_glmnet's for the same case."""
+    """The xfail below has clipped lambdas to check. Its reference, glmnet at
+    those lambdas, passes KKT in test_matches_stored_glmnet."""
     _, glmnet = fixtures[RARE.name]
     data, _ = rglmnet.prepare_case(RARE, tmp_path)
     assert clipped_lambdas(data["X"], glmnet).any()
@@ -105,10 +137,21 @@ def test_rare_response_reaches_the_clip(fixtures, tmp_path):
     reason="pybiglasso-h7i: the |eta| > 10 clip biases the default objective",
 )
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_clipped_lambdas_match_stored_glmnet(fixtures, tmp_path):
+def test_clipped_lambdas_pass_kkt(fixtures, tmp_path):
+    """pybiglasso's own KKT conditions at every clipped lambda, all checked
+    before failing: fixed, this passes, and the strict xfail reports it."""
     _, glmnet = fixtures[RARE.name]
     data, _ = rglmnet.prepare_case(RARE, tmp_path)
-    assert_matches_glmnet(RARE, data, glmnet, clipped=True)
+    p = fit_glmnet_grid(RARE, data, glmnet)
+    clipped = np.flatnonzero(clipped_lambdas(data["X"], glmnet))
+    residuals = {
+        int(k): standardized_kkt(
+            p["Z"], p["y"], p["ours"][k], p["lambdas"][k], RARE.alpha, p["penalty"]
+        )
+        for k in clipped
+    }
+    failing = {k: f"{r:.1e}" for k, r in residuals.items() if not r < KKT_TOL}
+    assert not failing, f"KKT residual above KKT_TOL at clipped lambdas {failing}"
 
 
 @pytest.fixture(scope="session")
