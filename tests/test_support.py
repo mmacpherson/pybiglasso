@@ -232,3 +232,31 @@ def test_residual_rounding_bounds_the_float_error():
         # and half an ulp, to round the exact value to a float
         bound = residual_rounding(Z, y, theta, lam, alpha, pf)
         assert np.all(np.abs(computed - want) <= bound + np.spacing(abs(want)) / 2)
+
+
+def test_same_optimum_computes_in_float64_whatever_the_inputs(monkeypatch):
+    """residual_rounding's unit roundoff is float64's: float32 inputs must be
+    promoted, not computed in float32 under a float64 error bound."""
+    import support.certificates as certificates
+
+    rng = np.random.default_rng(6)
+    Z = np.column_stack([np.ones(40), rng.normal(size=(40, 2))]).astype(np.float32)
+    y = rng.binomial(1, 0.5, size=40).astype(np.float32)
+    theta = np.array([0.1, 0.3, -0.2], dtype=np.float32)
+    promoted = [v.astype(np.float64) for v in (Z, y, theta)]
+    np.testing.assert_array_equal(
+        residual_rounding(Z, y, theta, 0.05, 0.5),
+        residual_rounding(*promoted, 0.05, 0.5),
+    )
+
+    seen = []
+    real = certificates.subgradient_residual
+
+    def spy(Z, y, theta, *args, **kwargs):
+        seen.append((Z.dtype, y.dtype, theta.dtype))
+        return real(Z, y, theta, *args, **kwargs)
+
+    monkeypatch.setattr(certificates, "subgradient_residual", spy)
+    with pytest.raises(AssertionError):  # not an optimum: the caps refuse it
+        certificates.assert_same_optimum(Z, y, theta, theta, 0.05, 0.5)
+    assert seen and all(dtypes == (np.float64,) * 3 for dtypes in seen)
