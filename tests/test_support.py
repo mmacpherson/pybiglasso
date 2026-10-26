@@ -1,6 +1,7 @@
 """Negative controls and analytic examples for the independent test oracles."""
 
 import copy
+import decimal
 from dataclasses import dataclass
 
 import numpy as np
@@ -11,6 +12,7 @@ from support.certificates import (
     certified_distance,
     gradient_lipschitz,
     objective,
+    residual_rounding,
     standardized_kkt,
     subgradient_residual,
     support_is_certified,
@@ -192,3 +194,41 @@ def test_same_trajectory_rejects_relative_error_in_small_lambda():
     # end of the grid. A fixed absolute floor would hide this corruption.
     with pytest.raises(AssertionError):
         assert_same_trajectory(changed, path)
+
+
+def test_residual_rounding_bounds_the_float_error():
+    """Against the residual in 50-digit decimals, from the exact values of the
+    same float inputs: near the optimum and away from it, with a zero
+    coefficient and unequal penalty factors."""
+    rng = np.random.default_rng(5)
+    Z = np.column_stack([np.ones(200), rng.normal(size=(200, 3)) * [1, 10, 0.1]])
+    y = rng.binomial(1, 0.3, size=200).astype(float)
+    lam, alpha, pf = 0.02, 0.7, np.array([0.5, 1.0, 2.0])
+    Dec = decimal.Decimal
+
+    def exact(theta):
+        with decimal.localcontext() as ctx:
+            ctx.prec = 50
+            t = [Dec(v) for v in theta]
+            eta = [sum(Dec(z) * tj for z, tj in zip(row, t, strict=True)) for row in Z]
+            score = [
+                1 / (1 + (-e).exp()) - Dec(yi) for e, yi in zip(eta, y, strict=True)
+            ]
+            n = len(y)
+            g = [sum(Dec(Z[i, j]) * score[i] for i in range(n)) / n for j in range(4)]
+            out = [g[0]]
+            for j, b in enumerate(t[1:]):
+                l1 = Dec(lam) * Dec(alpha) * Dec(pf[j])
+                gj = g[j + 1] + Dec(lam) * (1 - Dec(alpha)) * Dec(pf[j]) * b
+                if b == 0:
+                    out.append(gj - max(-l1, min(l1, gj)))
+                else:
+                    out.append(gj + (l1 if b > 0 else -l1))
+            return np.array([float(v) for v in out])
+
+    for theta in (np.array([-0.8, 0.3, 0.0, -2.0]), np.array([0.1, -0.05, 0.02, 0.0])):
+        computed = subgradient_residual(Z, y, theta, lam, alpha, pf)
+        want = exact(theta)
+        # and half an ulp, to round the exact value to a float
+        bound = residual_rounding(Z, y, theta, lam, alpha, pf)
+        assert np.all(np.abs(computed - want) <= bound + np.spacing(abs(want)) / 2)

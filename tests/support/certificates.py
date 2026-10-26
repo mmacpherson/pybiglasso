@@ -199,7 +199,40 @@ def assert_same_optimum(
     ]
     assert max(np.abs(r).max() for r in residuals) < cap
     distance = np.linalg.norm(np.asarray(theta_a) - np.asarray(theta_b))
-    norms = (np.linalg.norm(r) for r in residuals)
+    # the true residuals, not the computed ones, bound the distance: near an
+    # optimum (the null model at lambda_max, say) rounding is all there is
+    norms = (
+        np.linalg.norm(r)
+        + np.linalg.norm(residual_rounding(Z, y, t, lam, alpha, penalty_factor))
+        for r, t in zip(residuals, (theta_a, theta_b), strict=True)
+    )
     bound = certified_distance(Z, y, theta_a, theta_b, *norms)
     assert distance <= bound
     return distance, bound
+
+
+def residual_rounding(Z, y, theta, lam, alpha, penalty_factor=1.0):
+    """Elementwise bound on the rounding error in subgradient_residual.
+
+    The standard model, unit roundoff u and gamma_k = k u / (1 - k u)
+    (Higham, Accuracy and Stability, chapter 3): eta = Z theta is within
+    gamma_m |Z| |theta|; expit, 1/4-Lipschitz, passes a quarter of that on
+    and adds at most 4 u; p - y adds one rounding; the mean of n products
+    gamma_(n+1) of its magnitudes; the penalty terms three roundings each.
+    These are first-order terms; doubling covers the higher-order rest.
+    """
+    unit = np.finfo(float).eps / 2
+
+    def gamma(k):
+        return k * unit / (1 - k * unit)
+
+    n, m = Z.shape
+    absZ = np.abs(Z)
+    score = expit(Z @ theta) - y
+    score_error = (
+        gamma(m) * (absZ @ np.abs(theta)) / 4 + 4 * unit + unit * np.abs(score)
+    )
+    error = (gamma(n + 1) * (absZ.T @ np.abs(score)) + absZ.T @ score_error) / n
+    pf = np.asarray(penalty_factor)
+    error[1:] += 3 * unit * lam * pf * (alpha + (1 - alpha) * np.abs(theta[1:]))
+    return 2 * error
