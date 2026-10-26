@@ -36,7 +36,10 @@ def test_classifier_matches_functional_api(data):
     ref = bl.biglasso(X, y, alpha=0.7, lambdas=[lam])
     np.testing.assert_allclose(clf.coef_.ravel(), ref.coef.toarray().ravel())
     np.testing.assert_allclose(clf.intercept_, ref.intercept)
-    # and close to the warm-started path solution at the same lambda
+    # and close to the warm-started path solution at the same lambda. The
+    # classifier fits at the default eps=1e-7, which bounds no KKT residual,
+    # so no certificate applies (test_biglasso certifies warm against cold
+    # starts at eps=1e-14); 1e-4 is a stated ceiling for default accuracy
     np.testing.assert_allclose(
         clf.coef_.ravel(), path.coef[:, [6]].toarray().ravel(), atol=1e-4
     )

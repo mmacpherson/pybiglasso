@@ -1,11 +1,19 @@
 """Regression tests for the numerical and input failures found before release."""
 
 import warnings
+from fractions import Fraction
 
 import numpy as np
 import pytest
 from scipy.special import expit
-from support.certificates import standardize, subgradient_residual, with_ones
+from support.certificates import (
+    assert_same_optimum,
+    path_theta,
+    standardize,
+    standardized_theta,
+    subgradient_residual,
+    with_ones,
+)
 
 from pybiglasso import biglasso
 
@@ -25,16 +33,25 @@ def test_automatic_singleton_rejected_but_explicit_singleton_fits(
 ):
     X, y = data
     pf = np.array([0, 1, 1]) if unpenalized else None
-    kwargs = dict(penalty_factor=pf, lambda_log_scale=not linear, eps=1e-12)
+    kwargs = dict(penalty_factor=pf, lambda_log_scale=not linear, eps=1e-14)
     with pytest.raises(ValueError, match=r"at least 2.*lambdas=\[value\]"):
         biglasso(X, y, nlambda=1, **kwargs)
     full = biglasso(X, y, nlambda=5, **kwargs)
-    explicit = biglasso(X, y, nlambda=1, lambdas=full.lambdas[-1:], **kwargs)
+    lam = full.lambdas[-1]
+    explicit = biglasso(X, y, nlambda=1, lambdas=[lam], **kwargs)
     assert explicit.n_nonzero[0] > 0
-    np.testing.assert_allclose(
-        full.coef[:, [-1]].toarray(), explicit.coef.toarray(), atol=2e-6
+    # two routes to the optimum at lam (alpha 1, the default): each passes
+    # its KKT conditions, and convexity bounds the gap
+    Xs, center, scale = standardize(X)
+    assert_same_optimum(
+        with_ones(Xs),
+        y,
+        path_theta(full, len(full) - 1, center, scale),
+        path_theta(explicit, 0, center, scale),
+        lam,
+        1.0,
+        1.0 if pf is None else pf,
     )
-    np.testing.assert_allclose(full.intercept[-1:], explicit.intercept, atol=2e-6)
 
 
 @pytest.mark.parametrize("r_compatible", [False, True])
@@ -42,34 +59,59 @@ def test_automatic_singleton_rejected_but_explicit_singleton_fits(
 def test_translation_preserves_solution_and_kkt(data, r_compatible, subset):
     X, y = data
     rows = np.arange(0, len(y), 2) if subset else None
+    lambdas = np.array([0.03, 0.01])
     kwargs = dict(
-        lambdas=[0.03, 0.01], eps=1e-12, row_indices=rows, r_compatible=r_compatible
+        lambdas=lambdas, eps=1e-12, row_indices=rows, r_compatible=r_compatible
     )
     shifted = np.asfortranarray(X + 1e8)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         base = biglasso(X, y, **kwargs)
         fit = biglasso(shifted, y, **kwargs)
-    np.testing.assert_allclose(fit.coef.toarray(), base.coef.toarray(), atol=3e-7)
-    np.testing.assert_allclose(
-        fit.decision_function(shifted), base.decision_function(X), atol=3e-7
-    )
-    A, yy = (shifted, y) if rows is None else (shifted[rows], y[rows])
+    B, A, yy = (X, shifted, y) if rows is None else (X[rows], shifted[rows], y[rows])
     eta = fit.intercept + A @ fit.coef.toarray()
     Xs, center, scale = standardize(A)
     coef = fit.coef.toarray()
     theta = np.vstack([fit.intercept + center @ coef, coef * scale[:, None]])
-    residual = subgradient_residual(
-        with_ones(Xs),
-        yy,
-        theta,
-        fit.lambdas,
-        fit.alpha,
-        fit.penalty_factor,
-        eta=eta,
-    )
-    assert abs(residual[1:]).max() < 5e-7
-    assert abs(residual[0]).max() < 5e-7
+    # the lasso (alpha 1, the default) at the lambdas requested, with
+    # predictions in the shifted fit's own arithmetic. 5e-7 is the
+    # first-release review's ceiling, tighter than KKT_TOL; it is kept as a
+    # stated cap, not derived
+    cap = 5e-7
+    residual = subgradient_residual(with_ones(Xs), yy, theta, lambdas, 1.0, eta=eta)
+    assert abs(residual).max() < cap
+
+    # the shift rounds X to 1e8's spacing (1.5e-8), so the shifted problem is
+    # a slightly different one. The unshifted fit must pass its KKT conditions
+    # too, at the same cap: then convexity bounds the two fits' distance
+    _, base_center, base_scale = standardize(B)
+    for k, lam in enumerate(lambdas):
+        assert_same_optimum(
+            with_ones(Xs),
+            yy,
+            path_theta(base, k, base_center, base_scale),
+            path_theta(fit, k, center, scale),
+            lam,
+            1.0,
+            cap=cap,
+        )
+
+    # predictions on the shifted rows cancel terms near 1e8: in any summation
+    # order, a sum of m float products is within gamma_m of the exact sum of
+    # the terms' magnitudes (Higham, Accuracy and Stability, section 3.1)
+    m = X.shape[1] + 1
+    unit = np.finfo(float).eps / 2
+    gamma = m * unit / (1 - m * unit)
+    got = fit.decision_function(shifted)
+    for k in range(len(fit)):
+        c = [Fraction(v) for v in coef[:, k]]
+        for i, row in enumerate(shifted):
+            terms = [Fraction(fit.intercept[k])]
+            terms += [Fraction(x) * cj for x, cj in zip(row, c, strict=True)]
+            exact = sum(terms)
+            size = sum(abs(t) for t in terms)
+            # and half an ulp to round the exact value for the comparison
+            assert abs(got[i, k] - float(exact)) <= gamma * size + unit * abs(exact)
 
 
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
@@ -166,10 +208,18 @@ def test_only_unpenalized_features_vary(data):
     X[:, 2] = 1
     with pytest.raises(ValueError, match="varying penalized feature"):
         biglasso(X, y, penalty_factor=[0, 0, 1])
-    explicit = biglasso(X, y, penalty_factor=[0, 0, 1], lambdas=[0.1, 0.01])
-    np.testing.assert_allclose(
-        explicit.coef.toarray()[:, 0], explicit.coef.toarray()[:, 1], atol=1e-4
+    explicit = biglasso(X, y, penalty_factor=[0, 0, 1], lambdas=[0.1, 0.01], eps=1e-14)
+    # with column 2 constant, both lambdas pose one problem, the unpenalized
+    # fit of columns 0 and 1: each passes KKT, and convexity bounds the gap
+    coef = explicit.coef.toarray()
+    assert not coef[2].any()
+    Xs, center, scale = standardize(X[:, :2])
+    Z = with_ones(Xs)
+    a, b = (
+        standardized_theta(explicit.intercept[k], coef[:2, k], center, scale)
+        for k in range(2)
     )
+    assert_same_optimum(Z, y, a, b, 0.1, 1.0, 0.0)
 
 
 @pytest.mark.parametrize("linear", [False, True])

@@ -9,6 +9,7 @@ import tracemalloc
 
 import numpy as np
 import pytest
+from support.paths import SAME_TRAJECTORY
 
 import pybiglasso as bl
 from pybiglasso import path as path_module
@@ -118,7 +119,10 @@ def test_sklearn_converts_only_what_the_kernels_cannot_read():
     ref = BiglassoClassifier(alpha=0.01).fit(X.astype(np.float64), y)
     for dtype in (np.int8, np.uint8, np.float16):
         est = BiglassoClassifier(alpha=0.01).fit(X.astype(dtype), y)
-        np.testing.assert_allclose(est.coef_, ref.coef_, rtol=1e-6, atol=1e-9)
+        # the values are small integers, exact in every dtype, but each dtype
+        # compiles its own fastmath kernels, which may sum in another order:
+        # the same trajectory up to rounding (support.paths.SAME_TRAJECTORY)
+        np.testing.assert_allclose(est.coef_, ref.coef_, **SAME_TRAJECTORY)
         np.testing.assert_array_equal(est.predict(X.astype(dtype)), ref.predict(X))
 
 

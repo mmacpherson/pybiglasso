@@ -1,14 +1,18 @@
 """Negative controls and analytic examples for the independent test oracles."""
 
 import copy
+import decimal
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
 from scipy import sparse
 from support.certificates import (
+    assert_same_optimum,
+    certified_distance,
     gradient_lipschitz,
     objective,
+    residual_rounding,
     standardized_kkt,
     subgradient_residual,
     support_is_certified,
@@ -94,6 +98,25 @@ def test_support_certificate_requires_both_strict_margins():
     )
 
 
+def test_same_optimum_bound_holds_for_any_two_points_but_caps_bite():
+    """Monotonicity of the subdifferential gives mu |d|^2 <= (e_a + e_b) |d|
+    for any two points, not only near-optima, so random pairs, some with
+    zeros, check the bound with no fitted expectation. Such points fail the
+    caps, which assert_same_optimum checks first."""
+    rng = np.random.default_rng(3)
+    Z = np.column_stack([np.ones(40), rng.normal(size=(40, 3))])
+    y = rng.binomial(1, 0.4, size=40).astype(float)
+    pf = np.array([0.5, 1.0, 2.0])
+    for _ in range(50):
+        a, b = rng.normal(size=(2, 4)) * rng.binomial(1, 0.7, size=(2, 4))
+        e = [
+            np.linalg.norm(subgradient_residual(Z, y, t, 0.05, 0.5, pf)) for t in (a, b)
+        ]
+        assert np.linalg.norm(a - b) <= certified_distance(Z, y, a, b, *e)
+        with pytest.raises(AssertionError):
+            assert_same_optimum(Z, y, a, b, 0.05, 0.5, pf)
+
+
 @dataclass
 class ToyPath:
     """A model-shaped container, not recorded output from a solver."""
@@ -171,3 +194,69 @@ def test_same_trajectory_rejects_relative_error_in_small_lambda():
     # end of the grid. A fixed absolute floor would hide this corruption.
     with pytest.raises(AssertionError):
         assert_same_trajectory(changed, path)
+
+
+def test_residual_rounding_bounds_the_float_error():
+    """Against the residual in 50-digit decimals, from the exact values of the
+    same float inputs: near the optimum and away from it, with a zero
+    coefficient and unequal penalty factors."""
+    rng = np.random.default_rng(5)
+    Z = np.column_stack([np.ones(200), rng.normal(size=(200, 3)) * [1, 10, 0.1]])
+    y = rng.binomial(1, 0.3, size=200).astype(float)
+    lam, alpha, pf = 0.02, 0.7, np.array([0.5, 1.0, 2.0])
+    Dec = decimal.Decimal
+
+    def exact(theta):
+        with decimal.localcontext() as ctx:
+            ctx.prec = 50
+            t = [Dec(v) for v in theta]
+            eta = [sum(Dec(z) * tj for z, tj in zip(row, t, strict=True)) for row in Z]
+            score = [
+                1 / (1 + (-e).exp()) - Dec(yi) for e, yi in zip(eta, y, strict=True)
+            ]
+            n = len(y)
+            g = [sum(Dec(Z[i, j]) * score[i] for i in range(n)) / n for j in range(4)]
+            out = [g[0]]
+            for j, b in enumerate(t[1:]):
+                l1 = Dec(lam) * Dec(alpha) * Dec(pf[j])
+                gj = g[j + 1] + Dec(lam) * (1 - Dec(alpha)) * Dec(pf[j]) * b
+                if b == 0:
+                    out.append(gj - max(-l1, min(l1, gj)))
+                else:
+                    out.append(gj + (l1 if b > 0 else -l1))
+            return np.array([float(v) for v in out])
+
+    for theta in (np.array([-0.8, 0.3, 0.0, -2.0]), np.array([0.1, -0.05, 0.02, 0.0])):
+        computed = subgradient_residual(Z, y, theta, lam, alpha, pf)
+        want = exact(theta)
+        # and half an ulp, to round the exact value to a float
+        bound = residual_rounding(Z, y, theta, lam, alpha, pf)
+        assert np.all(np.abs(computed - want) <= bound + np.spacing(abs(want)) / 2)
+
+
+def test_same_optimum_computes_in_float64_whatever_the_inputs(monkeypatch):
+    """residual_rounding's unit roundoff is float64's: float32 inputs must be
+    promoted, not computed in float32 under a float64 error bound."""
+    import support.certificates as certificates
+
+    rng = np.random.default_rng(6)
+    Z = np.column_stack([np.ones(40), rng.normal(size=(40, 2))]).astype(np.float32)
+    y = rng.binomial(1, 0.5, size=40).astype(np.float32)
+    theta = np.array([0.1, 0.3, -0.2], dtype=np.float32)
+    promoted = [v.astype(np.float64) for v in (Z, y, theta)]
+    np.testing.assert_array_equal(
+        residual_rounding(Z, y, theta, 0.05, 0.5),
+        residual_rounding(*promoted, 0.05, 0.5),
+    )
+
+    seen = []
+    real = certificates.subgradient_residual
+
+    def spy(Z, y, theta, *args, **kwargs):
+        seen.append((Z.dtype, y.dtype, theta.dtype))
+        return real(Z, y, theta, *args, **kwargs)
+
+    monkeypatch.setattr(certificates, "subgradient_residual", spy)
+    with pytest.raises(AssertionError):  # not an optimum: the caps refuse it
+        certificates.assert_same_optimum(Z, y, theta, theta, 0.05, 0.5)
+    assert seen and all(dtypes == (np.float64,) * 3 for dtypes in seen)
