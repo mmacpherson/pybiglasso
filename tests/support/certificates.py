@@ -191,8 +191,12 @@ def assert_same_optimum(
     conditions within cap; then convexity bounds their distance by
     certified_distance from the residuals' 2-norms. That bound holds for any
     two points, so the caps carry the teeth: a fit of another problem fails
-    them. KKT_TOL assumes eps=1e-14. Returns (distance, bound).
+    them. KKT_TOL assumes eps=1e-14. Returns (distance, bound). Inputs are
+    promoted to float64, the arithmetic residual_rounding assumes.
     """
+    Z, y, theta_a, theta_b = (
+        np.asarray(v, dtype=np.float64) for v in (Z, y, theta_a, theta_b)
+    )
     residuals = [
         subgradient_residual(Z, y, t, lam, alpha, penalty_factor)
         for t in (theta_a, theta_b)
@@ -219,9 +223,13 @@ def residual_rounding(Z, y, theta, lam, alpha, penalty_factor=1.0):
     gamma_m |Z| |theta|; expit, 1/4-Lipschitz, passes a quarter of that on
     and adds at most 4 u; p - y adds one rounding; the mean of n products
     gamma_(n+1) of its magnitudes; the penalty terms three roundings each.
-    These are first-order terms; doubling covers the higher-order rest.
+    These are first-order terms; doubling covers the higher-order rest. u is
+    float64's, so inputs are promoted to float64, as subgradient_residual
+    then computes in it too. An allowance for finite, well-scaled problems
+    (no overflow or underflow), not an interval enclosure.
     """
-    unit = np.finfo(float).eps / 2
+    Z, y, theta = (np.asarray(v, dtype=np.float64) for v in (Z, y, theta))
+    unit = np.finfo(np.float64).eps / 2
 
     def gamma(k):
         return k * unit / (1 - k * unit)
