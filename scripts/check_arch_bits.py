@@ -24,13 +24,19 @@ CANDIDATE_MACHINES = {
 }
 
 
-def array_bits(array):
+def array_bits(array, *, include_data=False):
     # Shape and dtype matter too: equal raw bytes alone can mask a layout bug.
-    return dict(
+    raw = array.tobytes(order="C")
+    result = dict(
         shape=list(array.shape),
         dtype=array.dtype.str,
-        sha256=hashlib.sha256(array.tobytes(order="C")).hexdigest(),
+        sha256=hashlib.sha256(raw).hexdigest(),
     )
+    if include_data:
+        # Small output arrays let a failed comparison identify the first
+        # lambda/ulp, rather than requiring another native build to diagnose it.
+        result["data"] = raw.hex()
+    return result
 
 
 def record(output):
@@ -69,7 +75,10 @@ def record(output):
             )
             cases[f"{name}/alpha={alpha}"] = dict(
                 inputs={"X": array_bits(X), "y": array_bits(y)},
-                fit={key: array_bits(value) for key, value in arrays.items()},
+                fit={
+                    key: array_bits(value, include_data=True)
+                    for key, value in arrays.items()
+                },
             )
     snapshot = dict(
         machine=platform.machine().lower(),

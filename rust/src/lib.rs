@@ -19,6 +19,10 @@
 #![allow(clippy::needless_range_loop)]
 
 use ndarray::{ArrayView1, ArrayView2};
+// Differs from R biglasso: R uses the platform math library. Portable
+// exp/log/log1p keep the Rust path's bits independent of that library;
+// agreement with R remains to floating-point precision.
+use libm::{exp, log, log1p};
 use numpy::{
     Element, IntoPyArray, PyArrayDescrMethods, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray,
     PyUntypedArrayMethods, ToPyArray,
@@ -236,6 +240,33 @@ fn seqsum(a: &[f64]) -> f64 {
         out += v;
     }
     out
+}
+
+/// Null-model statistics in the selected row order, without NumPy's
+/// platform-dependent logarithms or reduction order in the stopping threshold.
+/// The caller has range-checked rows; unused responses need not be valid.
+fn null_model(y: &[f64], rows: Option<&[usize]>) -> Result<(f64, f64), &'static str> {
+    let n = rows.map_or(y.len(), |idx| idx.len());
+    let row = |i| rows.map_or(i, |idx| idx[i]);
+    let mut ones = 0;
+    for i in 0..n {
+        let value = y[row(i)];
+        if value == 1.0 {
+            ones += 1;
+        } else if value != 0.0 {
+            return Err("Selected responses must be 0 or 1.");
+        }
+    }
+    if ones == 0 || ones == n {
+        return Err("Selected responses must contain both 0s and 1s.");
+    }
+    let ybar = ones as f64 / n as f64;
+    let (positive, negative) = (log(ybar), log(1.0 - ybar));
+    let mut loss = 0.0;
+    for i in 0..n {
+        loss -= if y[row(i)] == 1.0 { positive } else { negative };
+    }
+    Ok((ybar, loss))
 }
 
 // The fastmath kernels below keep LANES accumulators, lane k summing rows
@@ -746,7 +777,8 @@ impl<D: Design> Fit<'_, D> {
                 st.p[i] = 0.0;
                 st.w[i] = W_MIN;
             } else {
-                st.p[i] = e.exp() / (1.0 + e.exp());
+                let ee = exp(e);
+                st.p[i] = ee / (1.0 + ee);
                 st.w[i] = st.p[i] * (1.0 - st.p[i]);
             }
             st.s[i] = self.y_at(i) - st.p[i];
@@ -754,7 +786,7 @@ impl<D: Design> Fit<'_, D> {
         }
         let mut acc = 0.0;
         for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
-            acc += if self.y_at(i) == 1.0 { st.p[i].ln() } else { (1.0 - st.p[i]).ln() };
+            acc += if self.y_at(i) == 1.0 { log(st.p[i]) } else { log(1.0 - st.p[i]) };
         }
         -acc
     }
@@ -939,7 +971,7 @@ impl<D: Design> Fit<'_, D> {
         let mut loss = 0.0;
         for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
             let signed = if self.y_at(i) == 1.0 { -st.eta[i] } else { st.eta[i] };
-            loss += signed.max(0.0) + (-signed.abs()).exp().ln_1p();
+            loss += signed.max(0.0) + log1p(exp(-signed.abs()));
         }
         loss
     }
@@ -992,7 +1024,7 @@ impl<D: Design> Fit<'_, D> {
             events: vec![],
         };
         let z = self.compute_z(&path, self.y);
-        let null_intercept = (p.ybar / (1.0 - p.ybar)).ln();
+        let null_intercept = log(p.ybar / (1.0 - p.ybar));
         let thresh = p.eps * p.null_deviance / self.n_fit as f64;
         let lambda_max_of = |z: &[f64]| {
             let mut m: f64 = 0.0;
@@ -1054,9 +1086,9 @@ impl<D: Design> Fit<'_, D> {
             if lambda_max == 0.0 {
                 path.lambda.fill(0.0);
             } else if p.lambda_log_scale {
-                let ys = linspace((p.lambda_min * lambda_max).ln(), lambda_max.ln(), nl);
+                let ys = linspace(log(p.lambda_min * lambda_max), log(lambda_max), nl);
                 for k in 0..nl {
-                    path.lambda[k] = ys[nl - 1 - k].exp();
+                    path.lambda[k] = exp(ys[nl - 1 - k]);
                 }
             } else {
                 path.lambda.copy_from_slice(&linspace(lambda_max, p.lambda_min * lambda_max, nl));
@@ -1302,9 +1334,9 @@ enum Stop {
 use Stop::{Fail, Fallback};
 
 /// Fit a binomial path; arguments and result as the numba backend's
-/// fit_path, with ybar and null_deviance computed by the caller.
+/// fit_path. Null-model statistics use the same portable math as the fit.
 #[pyfunction]
-#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, ybar, null_deviance, n_threads, boundscheck, row_path = "auto", on_lambda = None))]
+#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, n_threads, boundscheck, row_path = "auto", on_lambda = None))]
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
@@ -1322,8 +1354,6 @@ fn fit_path<'py>(
     max_iter: i64,
     stop_on_saturation: bool,
     r_compatible: bool,
-    ybar: f64,
-    null_deviance: f64,
     n_threads: usize,
     boundscheck: bool,
     row_path: &str,
@@ -1368,6 +1398,7 @@ fn fit_path<'py>(
         }
         None => None,
     };
+    let (ybar, null_deviance) = null_model(y_all, idx.as_deref()).map_err(PyValueError::new_err)?;
     let nrow_x = shape[0];
     // row_indices with no repeats, naming at least MASK_SHARE of X's rows, are
     // fit through a mask (row_path forces either path, for tests)
