@@ -215,7 +215,8 @@ with pip, that fits L1 or elastic-net logistic regression on a CPU: scikit-learn
 **Other Python solvers.** Each competitor was stopped once it took 10x as long
 as pybiglasso, which would otherwise have stretched the run to many hours. (The
 competitors ran against 0.1.x, whose times set the cap; 0.2.0 is faster, so
-glum's one finish, the 50,000 x 2,000 elastic net on 12 threads, is now 18x.) Only
+against it the caps fall at 11–25x, and glum's one finish, the 50,000 x 2,000
+elastic net on 12 threads, is at 18x.) Only
 skglm finishes within that on every dataset, at 5–7x for the lasso and 6–9x for
 the elastic net. statsmodels
 (lasso only) ran only on the tall datasets: its L1 fit uses a general-purpose

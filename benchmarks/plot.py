@@ -2,7 +2,7 @@
 """Plot the in-memory benchmark results as time relative to pybiglasso.
 
 Each solver is shown at its best thread count; runs stopped at the ratio cap
-are drawn at the cap. Later files override earlier ones for the same
+are drawn at the cap, as a ratio to the pybiglasso time plotted. Later files override earlier ones for the same
 (dataset, alpha, solver, threads), so reruns on a quiet machine win.
 
     uv run --group bench benchmarks/plot.py results/path.jsonl ... -o out.png
@@ -39,7 +39,7 @@ def relative(df):
     best = df.groupby(["dataset", "alpha", "solver"], as_index=False).agg(
         seconds=("seconds", "min"),
         timed_out=("timed_out", "all"),
-        ratio_cap=("ratio_cap", "first"),
+        cap=("cap", "min"),
     )
     base = best[best.solver == "pybiglasso"].set_index(["dataset", "alpha"]).seconds
     best = best[best.solver.isin(LABELS)].copy()
@@ -47,7 +47,15 @@ def relative(df):
         best.seconds
         / base.loc[list(zip(best.dataset, best.alpha, strict=True))].to_numpy()
     )
-    best.loc[best.timed_out, "ratio"] = best.ratio_cap
+    # a run stopped at the cap took at least that long; caps were set against
+    # an earlier pybiglasso, so rebase them on the one plotted
+    stopped = best.timed_out
+    best.loc[stopped, "ratio"] = (
+        best.cap[stopped]
+        / base.loc[
+            list(zip(best.dataset[stopped], best.alpha[stopped], strict=True))
+        ].to_numpy()
+    )
     best["solver"] = best.solver.map(LABELS)
     best["penalty"] = best.alpha.map({1.0: "lasso", 0.5: "elastic net (α=0.5)"})
     best["result"] = best.timed_out.map({False: "finished", True: "stopped at cap"})
@@ -76,7 +84,7 @@ def main():
             y=so.Nominal(order=order),
             marker=so.Nominal(["o", ">"], order=["finished", "stopped at cap"]),
         )
-        .limit(x=(0.8, 22))
+        .limit(x=(0.8, 30))
         .label(x="× pybiglasso time", y="", color="", marker="")
         .layout(size=(9, 6), engine="constrained")
     )
