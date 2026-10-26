@@ -24,11 +24,11 @@ path, with cross-validation to choose the penalty, without loading it into
 memory.
 
 It's also fast when the data does fit in memory. On a full 100-step lasso path
-over 5,000 samples by 50,000 features, it is 2.2x faster than R's glmnet, 2.3x
-faster than R biglasso, and 4.7x faster than skglm, the fastest of the other
+over 5,000 samples by 50,000 features, it is 2.3x faster than R's glmnet, 2.5x
+faster than R biglasso, and 5.2x faster than skglm, the fastest of the other
 Python solvers we tested. Across the four benchmark problems, with 1,000 to
-50,000 features, it runs 1.9–2.7x faster than glmnet, 2–5x faster than R
-biglasso, and 4–7x faster than skglm.
+50,000 features, it runs 2.1–4.5x faster than glmnet, 2.5–9x faster than R
+biglasso, and 5–9x faster than skglm.
 
 It is an unofficial Python port of the R package
 [biglasso](https://github.com/pbreheny/biglasso), and reproduces its results to
@@ -205,7 +205,7 @@ time is the best of 3 runs. Every multithreaded solver is shown at its fastest
 thread count: 1, 6, or 12. The scripts and raw results are in
 [`benchmarks/`](benchmarks/).
 
-![Time relative to pybiglasso, by dataset and solver](https://raw.githubusercontent.com/mmacpherson/pybiglasso/v0.1.1/docs/benchmarks.png)
+![Time relative to pybiglasso, by dataset and solver](https://raw.githubusercontent.com/mmacpherson/pybiglasso/v0.2.0/docs/benchmarks.png)
 
 **Which solvers.** R biglasso, the original; R's glmnet, whose coordinate
 descent biglasso builds on; and every maintained Python package, installable
@@ -213,8 +213,10 @@ with pip, that fits L1 or elastic-net logistic regression on a CPU: scikit-learn
 (its liblinear and saga solvers), glum, skglm, and statsmodels.
 
 **Other Python solvers.** Each competitor was stopped once it took 10x as long
-as pybiglasso, which would otherwise have stretched the run to many hours. Only
-skglm finishes within that on every dataset, at 4–6x for the lasso and 5–7x for
+as pybiglasso, which would otherwise have stretched the run to many hours. (The
+competitors ran against 0.1.x, whose times set the cap; 0.2.0 is faster, so
+glum's one finish, the 50,000 x 2,000 elastic net on 12 threads, is now 18x.) Only
+skglm finishes within that on every dataset, at 5–7x for the lasso and 6–9x for
 the elastic net. statsmodels
 (lasso only) ran only on the tall datasets: its L1 fit uses a general-purpose
 optimizer with dense matrices over twice the columns, which would need about
@@ -223,39 +225,38 @@ large the gaps get, the smallest problem (5,000 x 1,000) also ran with no cap:
 
 | Solver | Lasso | Elastic net (α=0.5) | Worst relative suboptimality |
 |---|---|---|---|
-| pybiglasso | 0.71 s | 0.74 s | 1e-6 |
-| pybiglasso, `eps=1e-10` | 1.62 s | 1.54 s | 3e-10 |
-| glmnet 5.1 (R) | 1.4 s (1.9x) | 1.4 s (1.9x) | 2e-6 |
-| skglm | 4.1 s (6x) | 4.4 s (6x) | 2e-4 |
-| glum, 6 threads | 9.6 s (14x) | 10.9 s (15x) | 6e-9 |
-| sklearn liblinear | 20.5 s (29x) | — | 5e-6 |
-| sklearn saga | 90.7 s (128x) | 94.8 s (128x) | 1e-5 |
+| pybiglasso | 0.60 s | 0.60 s | 1e-6 |
+| pybiglasso, `eps=1e-10` | 1.37 s | 1.34 s | 3e-10 |
+| glmnet 5.1 (R) | 1.4 s (2.3x) | 1.4 s (2.3x) | 2e-6 |
+| skglm | 4.1 s (7x) | 4.4 s (7x) | 2e-4 |
+| glum, 6 threads | 9.6 s (16x) | 10.9 s (18x) | 6e-9 |
+| sklearn liblinear | 20.5 s (34x) | — | 5e-6 |
+| sklearn saga | 90.7 s (151x) | 94.8 s (157x) | 1e-5 |
 | statsmodels | over 900 s (over 1,000x) | — | — |
 
 **R biglasso 1.7.2.** Times are in seconds; "best" is each package at its
 fastest thread count. For the lasso, both packages fit identical paths. For the
 elastic net, each ran its own update (see
 [Differences](#differences-from-r-biglasso)); pybiglasso with
-`r_compatible=True`, which matches R, is within about 20% of its default's
-time.
+`r_compatible=True`, which matches R, takes about as long as its default.
 
 | Dataset | Penalty | pybiglasso, 1 thread | R, 1 thread | pybiglasso, best | R, best | Speedup (best) |
 |---|---|---|---|---|---|---|
-| 5,000 x 1,000 | lasso | 0.77 | 4.06 | 0.71 | 3.92 | 5.5x |
-| 5,000 x 1,000 | elastic net | 0.74 | 4.17 | 0.74 | 4.04 | 5.5x |
-| 50,000 x 2,000 | lasso | 11.5 | 55.7 | 10.6 | 54.1 | 5.1x |
-| 50,000 x 2,000 | elastic net | 11.7 | 56.1 | 10.6 | 52.9 | 5.0x |
-| 2,000 x 20,000 | lasso | 1.33 | 4.71 | 1.13 | 2.90 | 2.6x |
-| 2,000 x 20,000 | elastic net | 1.35 | 4.80 | 1.15 | 2.99 | 2.6x |
-| 5,000 x 50,000 | lasso | 8.61 | 27.2 | 6.86 | 15.5 | 2.3x |
-| 5,000 x 50,000 | elastic net | 8.05 | 27.5 | 6.86 | 15.9 | 2.3x |
+| 5,000 x 1,000 | lasso | 0.62 | 4.06 | 0.60 | 3.92 | 6.5x |
+| 5,000 x 1,000 | elastic net | 0.63 | 4.17 | 0.60 | 4.04 | 6.7x |
+| 50,000 x 2,000 | lasso | 9.31 | 55.7 | 6.23 | 54.1 | 8.7x |
+| 50,000 x 2,000 | elastic net | 9.35 | 56.1 | 6.32 | 52.9 | 8.4x |
+| 2,000 x 20,000 | lasso | 1.23 | 4.71 | 1.08 | 2.90 | 2.7x |
+| 2,000 x 20,000 | elastic net | 1.31 | 4.80 | 1.08 | 2.99 | 2.8x |
+| 5,000 x 50,000 | lasso | 7.45 | 27.2 | 6.29 | 15.5 | 2.5x |
+| 5,000 x 50,000 | elastic net | 7.43 | 27.5 | 6.42 | 15.9 | 2.5x |
 
 R's adaptive screening rule is no faster than SSR on these problems.
 
 **glmnet 5.1.** glmnet fit the standardized matrix as given (`standardize =
 FALSE`), with an intercept, along the same lambda grid, at its default
 tolerance; it runs on one thread. Its objective is the benchmark's. It fit
-every path in full, at 1.9–2.7x pybiglasso's best time (1.7–2.4x pybiglasso's
+every path in full, at 2.1–4.5x pybiglasso's best time (1.8–3.0x pybiglasso's
 on one thread), and about as accurately: a worst relative suboptimality of 2e-8
 to 3e-6, against pybiglasso's 6e-8 to 3e-6.
 
@@ -264,16 +265,17 @@ memory capped at 3 GB. pybiglasso read a numpy memmap under a cgroup memory
 limit; R read a file-backed `big.matrix` in a container with the same limit,
 and both were measured from their cgroup's accounting. Before each run, the
 matrix was evicted from the page cache. Both fit the same 20-lambda lasso path
-and agree to 1e-9, with identical iteration counts.
+and agree to 1e-9, with identical iteration counts. pybiglasso ran twice, and
+both runs are shown; R ran once.
 
 | | Fit time | Peak memory | Re-read from disk during the fit |
 |---|---|---|---|
-| pybiglasso, 1 thread | 108 s | 3.2 GB (at the cap) | 8.6 GB |
-| pybiglasso, 6 threads | 137 s | 3.2 GB (at the cap) | 16.0 GB |
-| R biglasso 1.7.2 | 182 s, plus 43 s to build the `big.matrix` | 3.2 GB (at the cap) | 16.5 GB |
+| pybiglasso, 1 thread | 111 s, 131 s | 3.2 GB (at the cap) | 7.9 GB, 10.9 GB |
+| pybiglasso, 6 threads | 109 s, 151 s | 3.2 GB (at the cap) | 13.3 GB, 15.1 GB |
+| R biglasso 1.7.2 | 148 s, plus 41 s to build the `big.matrix` | 3.2 GB (at the cap) | 10.6 GB |
 
-Under the same limit, R re-reads about twice as much of the matrix from disk.
-Extra threads hurt here: they evict pages each other still need.
+Here the disk sets the pace, and times vary by a third from run to run. Extra
+threads don't reliably help: they evict pages each other still need.
 
 **Not compared**, by the rule above:
 

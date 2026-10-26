@@ -70,11 +70,13 @@ def main():
         )
         .add(so.Dot(pointsize=7), so.Dodge(empty="fill"))
         .scale(
-            x=so.Continuous(trans="log").tick(at=[1, 2, 5, 10]).label(like="{x:g}×"),
+            x=so.Continuous(trans="log")
+            .tick(at=[1, 2, 5, 10, 20])
+            .label(like="{x:g}×"),
             y=so.Nominal(order=order),
             marker=so.Nominal(["o", ">"], order=["finished", "stopped at cap"]),
         )
-        .limit(x=(0.8, 13))
+        .limit(x=(0.8, 22))
         .label(x="× pybiglasso time", y="", color="", marker="")
         .layout(size=(9, 6), engine="constrained")
     )
