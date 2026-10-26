@@ -45,14 +45,14 @@ def _use_numba():
     if nb is None:
         raise ImportError(
             'backend="numba" needs numba: pip install "pybiglasso[numba]". '
-            "It is deprecated and slated for removal in pybiglasso 0.3.0; the default, "
+            "It is deprecated and slated for removal in pybiglasso 0.4.0; the default, "
             'backend="rust", needs nothing more.'
         )
     if not _numba_warned:
         _numba_warned = True
         warnings.warn(
             "The numba backend is deprecated and slated for removal in pybiglasso "
-            '0.3.0; use the default, backend="rust".',
+            '0.4.0; use the default, backend="rust".',
             FutureWarning,
             stacklevel=3,
         )

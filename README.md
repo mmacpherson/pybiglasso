@@ -50,7 +50,7 @@ wheel. Extras add optional integrations:
 | `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
-| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.3.0 |
+| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.4.0 |
 
 ## Quick start
 
@@ -419,7 +419,7 @@ bits differ between Linux, macOS, and Windows. So results are bit-identical at
 any thread count, on any CPU, and on every operating system with a wheel.
 
 The deprecated numba backend (`backend="numba"`) is in
-`src/pybiglasso/binomial.py`, one numba kernel per step; it is slated for removal in 0.3.0.
+`src/pybiglasso/binomial.py`, one numba kernel per step; it is slated for removal in 0.4.0.
 
 ## Scope
 
