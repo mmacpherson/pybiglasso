@@ -20,7 +20,6 @@ def misaligned(a):
 def arguments(rng):
     X = np.asfortranarray(rng.normal(size=(40, 5)))
     y = (X[:, 0] + rng.normal(size=40) > 0).astype(np.float64)
-    ybar = y.mean()
     return dict(
         x=X,
         y=y,
@@ -36,8 +35,6 @@ def arguments(rng):
         max_iter=1000,
         stop_on_saturation=True,
         r_compatible=False,
-        ybar=ybar,
-        null_deviance=-(y * np.log(ybar) + (1 - y) * np.log(1 - ybar)).sum(),
         n_threads=1,
     )
 

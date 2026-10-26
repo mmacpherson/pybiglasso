@@ -1,5 +1,6 @@
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
+libm = { version = "0.2.16", default-features = false }
 ndarray = "0.17"
 numpy = "0.30"
 pulp = { version = "0.22.3", features = ["x86-v4"] }

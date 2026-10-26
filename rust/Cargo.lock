@@ -222,6 +222,7 @@ name = "pybiglasso-rs"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "libm",
  "ndarray",
  "numpy",
  "pulp",

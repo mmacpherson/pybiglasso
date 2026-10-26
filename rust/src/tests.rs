@@ -5,6 +5,23 @@
 use super::*;
 use ndarray::{Array2, ShapeBuilder};
 
+#[test]
+fn null_model_counts_only_selected_rows() {
+    let y = [0.0, 1.0, f64::NAN, 0.0];
+    let rows = [1, 3, 1, 0];
+    let (mean, loss) = null_model(&y, Some(&rows)).unwrap();
+    assert_eq!(mean, 0.5);
+    // Four balanced Bernoulli observations: negative log likelihood = 4 ln(2).
+    assert_eq!(loss, 4.0 * std::f64::consts::LN_2);
+}
+
+#[test]
+fn null_model_rejects_invalid_selected_responses() {
+    assert!(null_model(&[], None).is_err());
+    assert!(null_model(&[0.0, 0.0], None).is_err());
+    assert!(null_model(&[1.0, f64::NAN], None).is_err());
+}
+
 /// Values of mixed sign and magnitude, so that summing in a different order
 /// changes the last bits; deterministic, so a failure reproduces.
 fn values(n: usize, seed: u64) -> Vec<f64> {
