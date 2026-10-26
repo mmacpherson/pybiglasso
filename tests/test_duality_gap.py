@@ -251,6 +251,9 @@ def fit_wide(design, alpha, backend):
             X, y, alpha=alpha, penalty_factor=pf, backend=backend, **FIT_OPTIONS
         )
     assert len(path) == len(FIT_OPTIONS["lambdas"])
+    np.testing.assert_array_equal(path.lambdas, FIT_OPTIONS["lambdas"])
+    assert path.alpha == alpha
+    np.testing.assert_array_equal(path.penalty_factor, pf)
     Xs, center, scale = standardize(X)
     return path, with_ones(Xs), center, scale, y, pf
 
