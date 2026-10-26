@@ -297,10 +297,6 @@ places, mostly where we think R's behavior may not be what was intended; if
 we've erred we'd be glad to be corrected. Each departure is marked in the code
 with a comment beginning "Differs from R biglasso".
 
-- **Math library.** R uses the platform's exponential and logarithm functions.
-  The Rust backend uses portable implementations of the same functions, whose
-  last bits do not depend on the platform math library. Agreement with R is
-  still to floating-point precision.
 - **Elastic net.** For `alpha < 1`, R's logistic coordinate update divides by
   `v * (1 + l2)`, where the elastic-net objective in its documentation calls
   for `v + l2`, so the two solve somewhat different problems. pybiglasso uses

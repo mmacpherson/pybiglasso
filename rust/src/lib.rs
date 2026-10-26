@@ -19,9 +19,8 @@
 #![allow(clippy::needless_range_loop)]
 
 use ndarray::{ArrayView1, ArrayView2};
-// Differs from R biglasso: R uses the platform math library. Portable
-// exp/log/log1p keep the Rust path's bits independent of that library;
-// agreement with R remains to floating-point precision.
+// Portable exp/log/log1p keep the Rust path's bits independent of the
+// platform math library, whose last-bit rounding varies by OS.
 use libm::{exp, log, log1p};
 use numpy::{
     Element, IntoPyArray, PyArrayDescrMethods, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray,
