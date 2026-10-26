@@ -24,10 +24,10 @@ path, with cross-validation to choose the penalty, without loading it into
 memory.
 
 It's also fast when the data does fit in memory. On a full 100-step lasso path
-over 5,000 samples by 50,000 features, it is 2.3x faster than R's glmnet, 2.5x
+over 5,000 samples by 50,000 features, it is 2.4x faster than R's glmnet, 2.5x
 faster than R biglasso, and 5.2x faster than skglm, the fastest of the other
 Python solvers we tested. Across the four benchmark problems, with 1,000 to
-50,000 features, it runs 2.1–4.5x faster than glmnet, 2.5–9x faster than R
+50,000 features, it runs 2.1–4.7x faster than glmnet, 2.5–9x faster than R
 biglasso, and 5–9x faster than skglm.
 
 It is an unofficial Python port of the R package
@@ -228,7 +228,7 @@ large the gaps get, the smallest problem (5,000 x 1,000) also ran with no cap:
 |---|---|---|---|
 | pybiglasso | 0.60 s | 0.60 s | 1e-6 |
 | pybiglasso, `eps=1e-10` | 1.37 s | 1.34 s | 3e-10 |
-| glmnet 5.1 (R) | 1.4 s (2.3x) | 1.4 s (2.3x) | 2e-6 |
+| glmnet 5.1 (R) | 1.4 s (2.3x) | 1.4 s (2.4x) | 2e-6 |
 | skglm | 4.1 s (7x) | 4.4 s (7x) | 2e-4 |
 | glum, 6 threads | 9.6 s (16x) | 10.9 s (18x) | 6e-9 |
 | sklearn liblinear | 20.5 s (34x) | — | 5e-6 |
@@ -254,11 +254,12 @@ elastic net, each ran its own update (see
 
 R's adaptive screening rule is no faster than SSR on these problems.
 
-**glmnet 5.1.** glmnet fit the standardized matrix as given (`standardize =
-FALSE`), with an intercept, along the same lambda grid, at its default
-tolerance; it runs on one thread. Its objective is the benchmark's. It fit
-every path in full, at 2.1–4.5x pybiglasso's best time (1.8–3.0x pybiglasso's
-on one thread), and about as accurately: a worst relative suboptimality of 2e-8
+**glmnet 5.1.** glmnet standardized X itself (`standardize = TRUE`, its
+default), as pybiglasso does, so both times include standardizing; the Python
+solvers, which don't standardize, were given X already standardized. glmnet fit
+with an intercept, along the same lambda grid, at its default tolerance; it runs
+on one thread. Its objective is the benchmark's. It fit every path in full, at
+2.1–4.7x pybiglasso's best time (1.8–3.1x pybiglasso's on one thread), and about as accurately: a worst relative suboptimality of 2e-8
 to 3e-6, against pybiglasso's 6e-8 to 3e-6.
 
 **Out of core.** This test fits a 12 GB float64 matrix (20,000 x 75,000) with

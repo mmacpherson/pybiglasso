@@ -261,7 +261,8 @@ def fit_r_adaptive(X, Xs, y, lambdas, alpha, threads):
 
 def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads):
     """Fit in R's glmnet; returns (coef, intercept, R's own fit seconds,
-    glmnet's version)."""
+    glmnet's version). glmnet gets raw X and standardizes it itself, as its
+    users run it and as pybiglasso does, so its time includes that."""
     import numpy as np
 
     sys.path.insert(0, str(HERE.parent / "tests"))
@@ -270,10 +271,10 @@ def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads):
     def load(path):
         return json.loads(pathlib.Path(path).read_text())
 
-    nrow, ncol = Xs.shape
+    nrow, ncol = X.shape
     with tempfile.TemporaryDirectory(dir=os.environ.get("R_WORKDIR")) as d:
         d = pathlib.Path(d)
-        np.asfortranarray(Xs, dtype=np.float64).ravel(order="F").tofile(d / "X.bin")
+        np.asfortranarray(X, dtype=np.float64).ravel(order="F").tofile(d / "X.bin")
         np.asarray(y, dtype=np.float64).tofile(d / "y.bin")
         params = dict(nrow=nrow, ncol=ncol, alpha=alpha, lambdas=list(lambdas))
         (d / "params.json").write_text(json.dumps(params))
@@ -282,6 +283,9 @@ def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads):
         raise RuntimeError(r["error"])
     coef = np.array(r["beta"], dtype=np.float64).reshape(r["beta_dim"], order="F").T
     intercept = np.atleast_1d(np.array(r["intercept"], dtype=np.float64))
+    # glmnet reports X's own scale; the standardized one is the benchmark's
+    intercept = intercept + coef @ X.mean(axis=0)
+    coef = coef * X.std(axis=0)
     # glmnet fits every lambda of a supplied grid, but pad a short path (a
     # fit that stopped partway) so its objectives line up by lambda
     pad = len(lambdas) - coef.shape[0]
