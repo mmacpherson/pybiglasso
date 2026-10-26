@@ -1,0 +1,71 @@
+name: Browser playground
+
+on:
+  pull_request:
+    paths: [rust/**, web/**, scripts/check_wasm.py, tests/support/rcompare.py, tests/fixtures/r_biglasso.json.gz, src/pybiglasso/common.py, .github/workflows/browser.yml]
+  push:
+    branches: [main]
+    paths: [rust/**, web/**, scripts/check_wasm.py, tests/support/rcompare.py, tests/fixtures/r_biglasso.json.gz, src/pybiglasso/common.py, .github/workflows/browser.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: 1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: web/package-lock.json
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      with:
+        python-version: '3.14'
+    - name: Install wasm-pack
+      run: cargo install wasm-pack --locked --version 0.15.0
+    - name: Build the static app and Wasm solver
+      working-directory: web
+      run: npm ci && npm run build
+    - name: Import and binding tests
+      working-directory: web
+      run: npm test
+    - name: Wasm against independent R fixtures
+      run: uv run python scripts/check_wasm.py
+    - name: Install browser engines
+      working-directory: web
+      run: npx playwright install --with-deps chromium firefox webkit
+    - name: Browser integration
+      working-directory: web
+      run: npm run test:browser
+    - name: Browser numerical identity
+      run: |
+        uv run python scripts/check_wasm.py --engine chromium --native-bits
+        uv run python scripts/check_wasm.py --engine firefox --native-bits
+        uv run python scripts/check_wasm.py --engine webkit --native-bits
+    - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+      if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      with:
+        path: web/dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+    - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+    - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      id: deploy

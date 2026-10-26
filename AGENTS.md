@@ -94,9 +94,11 @@ to observed output.
 - `src/pybiglasso/binomial.py` — `biglasso()`: validation, then the solver;
   also the deprecated numba backend (`fit_path`, `_fit_lambda`, one numba
   kernel per step), until 0.3.0
-- `rust/src/lib.rs` — the solver (the default backend): the whole path in one
-  call. The README's "How the code is organized" maps its steps to R
-  biglasso's C++.
+- `rust/src/solver.rs` — the shared solver (the default backend): the whole
+  path in one call, with Python bindings in `rust/src/python.rs` and browser
+  bindings in `rust/src/wasm.rs`. The README maps its steps to R biglasso's C++.
+- `web/` — the static browser playground and CSV/Parquet import worker;
+  `make browser` builds it, `make test-browser` checks it against R and in browsers.
 - `tests/support/reference.py` — the same algorithm in plain numpy, step by
   step; the tests hold both backends to it
 - `src/pybiglasso/path.py` — `BiglassoPath`, the fitted path: prediction, scoring,

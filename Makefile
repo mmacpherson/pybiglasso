@@ -19,6 +19,14 @@ lint:
 test-rust:
 	cargo test --release --manifest-path rust/Cargo.toml
 
+.PHONY: browser test-browser
+browser:
+	cd web && npm ci && npm run build
+
+test-browser: browser
+	uv run python scripts/check_wasm.py
+	cd web && npm test && npm run test:browser
+
 .PHONY: update-hooks run-hooks-all-files
 update-hooks:
 	uv run pre-commit autoupdate
