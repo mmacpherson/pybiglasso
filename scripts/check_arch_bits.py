@@ -1,11 +1,11 @@
-"""Compare fixed Rust fits on Linux x86, Linux ARM and macOS ARM.
+"""Compare fixed Rust fits on Linux x86, Linux ARM, macOS ARM and Windows x86.
 
 CI records each platform independently, then uses that run's x86 snapshot as
 the reference. This checks equality across machines, not solver correctness:
 there are no solver-generated golden values to bless or regenerate.
 
     uv run python scripts/check_arch_bits.py record x86.json
-    python scripts/check_arch_bits.py compare x86.json linux-arm.json mac-arm.json
+    python scripts/check_arch_bits.py compare x86.json linux-arm.json mac-arm.json win.json
 """
 
 import argparse
@@ -17,6 +17,11 @@ from pathlib import Path
 
 PROBLEMS = {"tall": (2057, 17), "wide": (97, 129)}
 ALPHAS = (1.0, 0.5)
+CANDIDATE_MACHINES = {
+    "Linux": ("aarch64", "arm64"),
+    "Darwin": ("aarch64", "arm64"),
+    "Windows": ("amd64", "x86_64"),
+}
 
 
 def array_bits(array):
@@ -84,21 +89,33 @@ def compare(reference, candidates):
     expected = {f"{name}/alpha={alpha}" for name in PROBLEMS for alpha in ALPHAS}
     assert set(baseline["cases"]) == expected
     systems = set()
+    differences = []
     for path in candidates:
         other = json.loads(path.read_text())
-        assert other["machine"] in ("aarch64", "arm64"), path
+        assert other["system"] in CANDIDATE_MACHINES, path
+        assert other["machine"] in CANDIDATE_MACHINES[other["system"]], path
         systems.add(other["system"])
         assert set(other["cases"]) == expected, path
+        mismatches = []
         for case in sorted(expected):
             a, b = baseline["cases"][case], other["cases"][case]
             assert a["inputs"] == b["inputs"], f"{path}: {case} inputs differ"
             assert a["fit"].keys() == b["fit"].keys(), f"{path}: {case} fields differ"
             for field in a["fit"]:
-                assert a["fit"][field] == b["fit"][field], (
-                    f"{path}: {case} {field} bits differ from {reference}"
-                )
-        print(f"{path}: all {len(expected)} fits bit-identical to {reference}")
-    assert len(candidates) == 2 and systems == {"Linux", "Darwin"}
+                if a["fit"][field] != b["fit"][field]:
+                    mismatches.append(
+                        f"{path}: {case} {field} bits differ from {reference}"
+                    )
+        if mismatches:
+            differences.extend(mismatches)
+            print(
+                f"{path}: {len(mismatches)} field comparisons differ from {reference}"
+            )
+        else:
+            print(f"{path}: all {len(expected)} fits bit-identical to {reference}")
+    assert len(candidates) == 3 and systems == CANDIDATE_MACHINES.keys()
+    # Report every platform, even when an earlier candidate already differs.
+    assert not differences, "\n".join(differences)
 
 
 def main():

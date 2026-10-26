@@ -49,10 +49,11 @@ jobs:
     - name: Rust kernels, bit for bit at every SIMD width this CPU runs
       run: make test-rust
     - name: Record fixed Rust fits for the cross-architecture check
-      if: matrix.python == '3.14' && matrix.os != 'windows-latest'
+      if: matrix.python == '3.14'
+      shell: bash
       run: uv run python scripts/check_arch_bits.py record rust-bits-${{ matrix.os }}.json
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
-      if: matrix.python == '3.14' && matrix.os != 'windows-latest'
+      if: matrix.python == '3.14'
       with:
         name: rust-bits-${{ matrix.os }}
         path: rust-bits-${{ matrix.os }}.json
@@ -60,7 +61,7 @@ jobs:
         retention-days: 7
 
   rust-cross-architecture:
-    name: Rust fits, bit-identical across x86 and ARM
+    name: Rust fits, bit-identical across platforms
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -72,12 +73,13 @@ jobs:
         pattern: rust-bits-*
         path: snapshots
         merge-multiple: true
-    - name: Compare both ARM runners against this run's Linux x86 reference
+    - name: Compare ARM and Windows runners against this run's Linux x86 reference
       run: >-
         python3 scripts/check_arch_bits.py compare
         snapshots/rust-bits-ubuntu-latest.json
         snapshots/rust-bits-ubuntu-24.04-arm.json
         snapshots/rust-bits-macos-latest.json
+        snapshots/rust-bits-windows-latest.json
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
