@@ -24,9 +24,20 @@ settings, with identical path hashes: the ungated candidate is slower on every
 setting. These measurements predate the gate and must not be read as timings
 of the final gated ARM build.
 
+The reported M1 Pro run used macOS 26.7.2, arm64 Python 3.13.13, NumPy 2.5.4
+and Homebrew rustc 1.99.1 (`58cf8f9c3`, LLVM 23.1.3), targeting
+`aarch64-apple-darwin`, with no custom `RUSTFLAGS` or `target-cpu` reported.
+Baseline source was `7cdd687`, candidate `2b03702`. The complete run contains
+30 settings at 1/4/8 threads, six timed fits per build; twelve settings are
+the int8 targets summarized above. This was a shared desktop with applications
+open and reported system load declining from 9.5 to 5.7, not an idle-machine
+measurement. Sanitized raw JSONL, the run script and load records are pending
+transfer; these figures are reported evidence, not a local raw-record audit.
+
 Assembly probes cross-compiled with Rust 1.98 / LLVM 22.1.8 for
 `aarch64-apple-darwin` (`target-cpu=apple-m1`) and generic
-`aarch64-unknown-linux-gnu` explain the different lowering. The old array map
+`aarch64-unknown-linux-gnu` show different lowering. These are not the measured
+M1 run's compiler and flags. In the probes, the old array map
 loads eight int8 values with one 64-bit load and extracts them in registers;
 `from_fn` emits eight byte loads. Both use eight scalar integer-to-double
 conversions, not a packed NEON conversion. This persists in the actual score,
