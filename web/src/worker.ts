@@ -3,16 +3,23 @@ import { parquetMetadataAsync, parquetRead, parquetReadObjects } from "hyparquet
 import { compressors } from "hyparquet-compressors";
 import init, { Dataset } from "../pkg/solver.js";
 import wasmUrl from "../pkg/solver_bg.wasm?url";
-import { binaryClasses, checkSize, numericValue, responseValue } from "./data.mjs";
-import type { Inspection, Loaded, ModelPath, Reply, Request } from "./types";
+import { assignFolds, binaryClasses, checkSize, chooseLambda, numericValue, responseValue } from "./data.mjs";
+import type { CrossValidation, Inspection, Loaded, ModelPath, Reply, Request } from "./types";
 
 const send = (message: Reply) => self.postMessage(message);
 const host = globalThis as typeof globalThis & { pybiglassoProgress: (done: number, total: number) => void };
-host.pybiglassoProgress = (done, total) => send({ kind: "progress", message: `Fitting λ ${done} of ${total}`, done, total });
+// with cross-validation, each fit's lambdas count toward the whole run
+let stage = { label: "", before: 0, fits: 1 };
+host.pybiglassoProgress = (done, total) => send({
+  kind: "progress", message: `${stage.label}Fitting λ ${done} of ${total}`,
+  done: stage.before + done, total: stage.fits * total,
+});
 const ready = init({ module_or_path: wasmUrl });
 let file: File | undefined;
 let inspection: Inspection | undefined;
 let dataset: Dataset | undefined;
+// the response as fit (0/1 for binomial), for assigning folds
+let response: Float64Array | undefined;
 let family: "binomial" | "gaussian" = "binomial";
 let busy = false;
 
@@ -85,7 +92,7 @@ async function load(target: string, features: string[], positive: string, select
       || new Set(features).size !== features.length || features.some((c) => !inspection!.columns.includes(c))) {
     throw new Error("Choose a response and at least one different feature.");
   }
-  dataset?.free(); dataset = undefined;
+  dataset?.free(); dataset = undefined; response = undefined;
   const labels = new Set<string>();
   let rows = inspection.rows ?? 0;
   send({ kind: "progress", message: "Checking rows and memory…" });
@@ -104,6 +111,7 @@ async function load(target: string, features: string[], positive: string, select
   const bytes = checkSize(rows, features.length);
   await ready;
   const next = new Dataset(rows, features.length);
+  const y = new Float64Array(rows);
   let positives = 0;
   try {
     if (/\.parquet$/i.test(file.name)) {
@@ -116,7 +124,7 @@ async function load(target: string, features: string[], positive: string, select
               if (labels.size > 2) throw new Error("The response must have exactly two classes.");
               const y = Number(label === positive); positives += y; return y;
             });
-            next.write_response(chunk.rowStart, values);
+            next.write_response(chunk.rowStart, values); y.set(values, chunk.rowStart);
           } else {
             const index = features.indexOf(chunk.columnName);
             const values = Float64Array.from(chunk.columnData, (v: unknown, i: number) => numericValue(v, chunk.columnName, chunk.rowStart + i));
@@ -130,17 +138,18 @@ async function load(target: string, features: string[], positive: string, select
         for (const [j, name] of features.entries()) {
           next.write_column(j, start, Float64Array.from(chunk, (r, i) => numericValue(r[name], name, start + i)));
         }
-        next.write_response(start, Float64Array.from(chunk, (row, i) => {
+        const values = Float64Array.from(chunk, (row, i) => {
           if (selectedFamily === "gaussian") return numericValue(row[target], target, start + i);
-          const y = Number(responseValue(row[target]) === positive); positives += y; return y;
-        }));
+          const label = Number(responseValue(row[target]) === positive); positives += label; return label;
+        });
+        next.write_response(start, values); y.set(values, start);
         start += chunk.length;
         send({ kind: "progress", message: `Reading ${start.toLocaleString()} of ${rows.toLocaleString()} rows` });
       });
     }
     const classes: [string, string] = selectedFamily === "binomial" ? binaryClasses(labels, positive) as [string, string] : ["", ""];
     family = selectedFamily;
-    dataset = next;
+    dataset = next; response = y;
     return { family, rows, features, classes, positives, bytes };
   } catch (error) { next.free(); throw error; }
 }
@@ -159,8 +168,26 @@ self.onmessage = async (event: MessageEvent<Request>) => {
     } else {
       if (!dataset) throw new Error("Load the selected columns first.");
       const start = performance.now();
-      const path = dataset.fit({ family, alpha: request.alpha, nlambda: request.nlambda, eps: request.eps }) as ModelPath;
-      send({ kind: "result", path, milliseconds: performance.now() - start });
+      const options = { family, alpha: request.alpha, eps: request.eps };
+      stage = { label: request.folds ? "All rows · " : "", before: 0, fits: 1 + request.folds };
+      const path = dataset.fit({ ...options, nlambda: request.nlambda }) as ModelPath;
+      let cv: CrossValidation | undefined;
+      if (request.folds && path.lambdas.length) {
+        const fold = assignFolds(response!, request.folds, family === "binomial");
+        const holdout: number[][] = [];
+        for (let f = 0; f < request.folds; f++) {
+          stage = { label: `Fold ${f + 1} of ${request.folds} · `, before: (f + 1) * path.lambdas.length, fits: 1 + request.folds };
+          const rows = [...fold.keys()];
+          // each fold refits the full data's lambdas, as the Python CV does
+          const part = dataset.fit({
+            ...options, lambdas: path.lambdas,
+            train_rows: rows.filter((i) => fold[i] !== f), test_rows: rows.filter((i) => fold[i] === f),
+          }) as ModelPath;
+          holdout.push(part.holdout!);
+        }
+        cv = { folds: request.folds, ...chooseLambda(holdout, path.lambdas.length) };
+      }
+      send({ kind: "result", path, cv, milliseconds: performance.now() - start });
     }
   } catch (error) {
     send({ kind: "error", message: error instanceof Error ? error.message : String(error) });
