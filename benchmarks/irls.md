@@ -68,3 +68,28 @@ and int8, with full rows, a permuted mask, a small gathered subset and
 repeated row indices. Independent R fixtures and the live R comparison
 remain the correctness oracle; the same-input comparisons establish that
 this optimization preserves existing results.
+
+## Weight-sum reuse follow-up
+
+The intercept update and the coordinate sweep both need `sum(w)`, and neither
+changes `w`. Compute that same sequential sum once per IRLS iteration and pass
+it to both consumers. This removes one row scan without changing arithmetic
+order, allocations, or parallel dispatch. A dyadic native test independently
+checks the intercept's weighted normal equation and the unchanged weights.
+
+The same alternating DLL harness compared this follow-up against `a6ea67a`
+(the parallel-IRLS parent), with four fits per version and thread count on the
+development workstation above. Selected medians in seconds:
+
+| Rows × columns | Threads | Parent | Weight-sum reuse |
+|---|---:|---:|---:|
+| 500,000 × 40 | 1 | 1.8239 | 1.7785 |
+| | 6 | 0.9628 | 0.9174 |
+| | 12 | 0.9273 | 0.8772 |
+
+No competing build or test process was observed during this short run. Absolute
+times differ from the earlier experiment, so these are within-run comparisons,
+not evidence that the earlier serial trade-off has disappeared. Smaller cases
+were near the timing noise floor. All fit hashes matched across both versions,
+repetitions and thread counts. Dedicated-runner confirmation remains necessary
+before making a general performance claim.

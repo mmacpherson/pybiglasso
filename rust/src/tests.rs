@@ -6,6 +6,40 @@ use super::*;
 use ndarray::{Array2, ShapeBuilder};
 
 #[test]
+fn intercept_solves_weighted_normal_equation_with_shared_weight_sum() {
+    let n = 20;
+    let mut st = State {
+        eta: Rows::new(n, 2.0),
+        irls_work: Rows::new(n, 0.0),
+        w: Rows::new(n, 0.0),
+        s: Rows::new(n, 0.0),
+        r: Rows::new(n, 0.0),
+        beta: vec![],
+        active: vec![],
+        strong: vec![],
+        z: vec![],
+        intercept: 0.5,
+        sum_w_residuals: 0.0,
+    };
+    for i in 0..n {
+        st.w[i] = [0.125, 0.25, 0.375, 0.5][i % 4];
+        st.r[i] = [-1.0, 0.0, 1.0, 2.0][i % 4];
+    }
+    // Each block has sum(w) = sum(w*r) = 1.25, hence shift = 1.
+    // All terms are dyadic: these expectations need no rounding allowance.
+    let sum_w = seqsum(&st.w);
+    assert_eq!(sum_w, 6.25);
+    assert_eq!(Fit::<ContigX<f64, true>>::update_intercept(&mut st, sum_w), 1.5);
+    assert_eq!(st.intercept, 1.5);
+    assert_eq!(st.sum_w_residuals, 0.0);
+    assert_eq!(seqsum(&st.w), sum_w);
+    for i in 0..n {
+        assert_eq!(st.r[i], [-2.0, -1.0, 0.0, 1.0][i % 4]);
+        assert_eq!(st.eta[i], 3.0);
+    }
+}
+
+#[test]
 fn irls_matches_row_formulas_and_sequential_loss() {
     for n in [7, CHUNK + 1, PAR_IRLS_ROWS - 1, PAR_IRLS_ROWS, PAR_IRLS_ROWS + 7, 40_003] {
         let eta: Vec<f64> = (0..n).map(|i| [-10.25, -10.0, -0.7, 0.0, 0.7, 10.0, 10.25][i % 7]).collect();

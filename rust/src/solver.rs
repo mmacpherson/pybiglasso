@@ -861,9 +861,9 @@ impl<D: Design> Fit<'_, D> {
         -acc
     }
 
-    fn update_intercept(st: &mut State) -> f64 {
+    fn update_intercept(st: &mut State, sum_w: f64) -> f64 {
         let xwr = dot(&st.w, &st.r);
-        let shift = xwr / seqsum(&st.w);
+        let shift = xwr / sum_w;
         let intercept = shift + st.intercept;
         if shift != 0.0 {
             st.intercept = intercept;
@@ -880,11 +880,10 @@ impl<D: Design> Fit<'_, D> {
         intercept
     }
 
-    fn coordinate_sweep(&self, path: &Path, st: &mut State, lam: f64) -> Result<f64, String> {
+    fn coordinate_sweep(&self, path: &Path, st: &mut State, lam: f64, sum_w: f64) -> Result<f64, String> {
         let p = self.params;
         let n = self.x.nrow();
         let nrow = self.n_fit as f64;
-        let sum_w = seqsum(&st.w);
         let mut max_update: f64 = 0.0;
         let mut swr = st.sum_w_residuals;
         // A coordinate's shift waits for the next active column, so the two
@@ -1009,8 +1008,11 @@ impl<D: Design> Fit<'_, D> {
             if p.stop_on_saturation && path.deviance[il] / p.null_deviance < 0.01 {
                 return Ok(Status::Saturated);
             }
-            path.intercept[il] = Self::update_intercept(st);
-            let max_update = self.coordinate_sweep(path, st, lam)?;
+            // W stays fixed through the intercept and coordinate sweep. Both
+            // used to repeat this same sequential sum; reuse its exact bits.
+            let sum_w = seqsum(&st.w);
+            path.intercept[il] = Self::update_intercept(st, sum_w);
+            let max_update = self.coordinate_sweep(path, st, lam, sum_w)?;
             if max_update >= thresh {
                 continue;
             }
