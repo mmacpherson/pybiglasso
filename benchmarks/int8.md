@@ -34,6 +34,25 @@ open and reported system load declining from 9.5 to 5.7, not an idle-machine
 measurement. Sanitized raw JSONL, the run script and load records are pending
 transfer; these figures are reported evidence, not a local raw-record audit.
 
+These are **exploratory, shared-desktop** results. A subsequent quiet gate
+failed over thirty minutes: one-minute load had minimum 2.43, median 3.69 and
+maximum 7.17. There was no quiet rerun. The reported int8 regression persists
+under all three summaries of the six samples per build:
+
+| Summary | Baseline/candidate time ratio range |
+|---|---:|
+| Minima | 0.8497–0.9606 |
+| Medians | 0.847–0.952 |
+| Medians of the fastest three | 0.851–0.937 |
+
+The report finds no bimodality in single-thread int8 samples. Wide float64
+controls are near parity (0.993–1.004), while tall float64 binomial controls
+are bimodal, around 4.8 s and 7.3 s, with minima near parity. Hashes reportedly
+match across both builds, every repetition and all thread counts. These
+diagnostics support retaining the old ARM form, not a claim of controlled
+ARM performance or a universal slowdown magnitude. No summary replaces or
+discards the underlying repetitions; the complete lists remain pending here.
+
 Assembly probes cross-compiled with Rust 1.98 / LLVM 22.1.8 for
 `aarch64-apple-darwin` (`target-cpu=apple-m1`) and generic
 `aarch64-unknown-linux-gnu` show different lowering. These are not the measured
