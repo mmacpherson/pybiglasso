@@ -10,9 +10,10 @@ permissions:
   contents: read
 
 # a new push to a pull request cancels its earlier run; main and tags run
-# every commit
+# every commit, so each of their runs gets a group of its own (a shared group
+# would still drop a pending run when a third arrived)
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every uv command uses uv.lock as committed, and fails if it is stale
@@ -48,13 +49,19 @@ jobs:
     # The Rust build, from main's last run, when the Rust sources are
     # unchanged: the key hashes their contents, and only an exact hit restores.
     # A checkout dates every file now, so cargo would rebuild; dating the
-    # sources before the restored build lets it reuse that build.
+    # sources before the restored build lets it reuse that build. The key
+    # names the compiler too, so a runner's new rustc saves a fresh build.
+    - name: Name the Rust compiler
+      id: rustc
+      shell: bash
+      run: |
+        echo "commit=$(rustc -vV | sed -n 's/^commit-hash: //p' | tr -d '\r' | cut -c1-12)" >> "$GITHUB_OUTPUT"
     - name: Restore the Rust build, if its sources are unchanged
       id: rust-cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
       with:
         path: rust/target
-        key: rust-test-${{ matrix.os }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+        key: rust-test-${{ matrix.os }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
     - name: Date the Rust sources before the restored build
       if: steps.rust-cache.outputs.cache-hit == 'true'
       shell: bash
@@ -93,13 +100,19 @@ jobs:
     # The Rust build, from main's last run, when the Rust sources are
     # unchanged: the key hashes their contents, and only an exact hit restores.
     # A checkout dates every file now, so cargo would rebuild; dating the
-    # sources before the restored build lets it reuse that build.
+    # sources before the restored build lets it reuse that build. The key
+    # names the compiler too, so a runner's new rustc saves a fresh build.
+    - name: Name the Rust compiler
+      id: rustc
+      shell: bash
+      run: |
+        echo "commit=$(rustc -vV | sed -n 's/^commit-hash: //p' | tr -d '\r' | cut -c1-12)" >> "$GITHUB_OUTPUT"
     - name: Restore the Rust build, if its sources are unchanged
       id: rust-cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
       with:
         path: rust/target
-        key: rust-ext-${{ matrix.os }}-py${{ matrix.python }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+        key: rust-ext-${{ matrix.os }}-py${{ matrix.python }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
     - name: Date the Rust sources before the restored build
       if: steps.rust-cache.outputs.cache-hit == 'true'
       shell: bash
