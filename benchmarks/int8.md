@@ -32,6 +32,17 @@ validation and standardization, and exclude generation, warm-up and hashing.
 Paths use the default 100-lambda binomial grid, at alpha 1 or 0.5, and both
 builds use the clipping policy introduced for 0.4.0.
 
+The harness now rejects every warning except the optional numba control's
+deprecation, and requires all 100 requested lambdas, during both warm-up and
+timed fits. The warning filter is installed before the clock starts; the path
+length check follows it. The original measurements predate this guard. A
+[separate validation audit](results/int8-ryzen-validation.jsonl), using the
+guard in `e711368`, repeated each recorded setting and variant on the exact
+same extension files: all 70 validation fits completed 100 lambdas without
+disallowed warnings and reproduced their recorded path hashes. These are
+validation fits, not replacement timing measurements; all original times
+remain unchanged.
+
 There were ordinary background services on the machine: idle CPU was 86–93%
 in preflight samples and 85–94% in the final postflight samples. These are
 paired shared-machine results, not an otherwise idle-host measurement.
