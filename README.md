@@ -393,12 +393,12 @@ why). The solver takes exactly the same iterations as R's at every lambda; the R
 comparison checks this in every case.
 
 The solver is written twice, in the same steps. The one that runs is Rust
-(`rust/src/lib.rs`): one call from Python fits the whole path. The readable one,
+(`rust/src/solver.rs`): one call from Python fits the whole path. The readable one,
 [`tests/support/reference.py`](tests/support/reference.py), is plain numpy,
 step by step, and imports nothing from pybiglasso; the tests hold the Rust
 solver to it, and both to R.
 
-| pybiglasso (`rust/src/lib.rs`) | R biglasso (`src/`) |
+| pybiglasso (`rust/src/solver.rs`) | R biglasso (`src/`) |
 |---|---|
 | `center_scale`, `compute_z` | `standardize_and_get_residual` (utilities.cpp) |
 | `update_irls` | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
