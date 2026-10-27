@@ -4,7 +4,6 @@ import operator
 import pickle
 import warnings
 
-import numba
 import numpy as np
 import pytest
 import scipy.sparse as sps
@@ -339,10 +338,7 @@ def test_float32_matches_float64(data):
 
 @pytest.mark.parametrize("penalty", [None, "zeros"])
 def test_thread_count_does_not_change_results(penalty):
-    # numba refuses more threads than the machine has (3 on CI's macOS)
-    threads = min(4, numba.config.NUMBA_NUM_THREADS)
-    if threads < 2:
-        pytest.skip("needs at least two cores")
+    threads = 4
     d = bl.common.make_biglasso_dataset(nrow=150, ncol=400, seed=2)
     pf = None
     if penalty == "zeros":
@@ -399,8 +395,6 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
             n_reject=np.zeros(1, dtype=np.int64),
         )
 
-    # the correction runs on either backend's results
-    monkeypatch.setattr(bl.binomial, "fit_path", solver)
     monkeypatch.setattr(
         bl.binomial,
         "fit_path_rust",

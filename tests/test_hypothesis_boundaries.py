@@ -14,7 +14,6 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 from scipy.linalg import hadamard
-from scipy.special import expit
 from support.paths import assert_bitwise
 from test_hypothesis import (
     FIT_OPTIONS,
@@ -24,57 +23,12 @@ from test_hypothesis import (
 )
 
 import pybiglasso as bl
-from pybiglasso import binomial as solver
-
 
 # Boundary strategies are kept separate: they intentionally land ON strict
 # comparisons, where exact-real metamorphisms do not imply identical iterates.
-@st.composite
-def boundary_scores(draw):
-    direction = draw(st.sampled_from([-1, 0, 1]))
-    power = draw(st.integers(-5, -1))
-    threshold = 2.0**power
-    score = (
-        threshold
-        if direction == 0
-        else np.nextafter(threshold, -np.inf if direction < 0 else np.inf)
-    )
-    return threshold, draw(st.sampled_from([-1, 1])) * score, direction
-
-
-@given(case=boundary_scores())
-def test_kkt_scans_at_and_next_to_the_boundary(case):
-    # calls numba kernels directly, and they use numba.prange
-    pytest.importorskip("numba")
-    threshold, score, direction = case
-    # Exact dyadic products and n=8: score = X'second*s/n with no reduction
-    # ambiguity. The unused constant column exercises raw/used indexing.
-    x = np.tile([-1.0, 1.0], 4)
-    X = np.asfortranarray(np.column_stack([np.ones(8), x]))
-    s = score * x
-    for scan, initial_strong in [
-        (solver.check_strong_set, 1),
-        (solver.check_rest_set, 0),
-    ]:
-        active, strong = np.array([0]), np.array([initial_strong])
-        count = scan(
-            X,
-            None,
-            threshold,
-            1.0,
-            np.ones(2),
-            np.array([1]),
-            np.zeros(2),
-            np.ones(2),
-            active,
-            strong,
-            s,
-            np.zeros(1),
-            np.zeros(1),
-        )
-        assert count == int(direction > 0)
-        assert active[0] == int(direction > 0)
-        assert strong[0] == (initial_strong or direction > 0)
+# Exact KKT threshold neighbors are covered by Rust's kernel_tests.rs.
+# Those checks use the same independent dyadic construction as the removed
+# Python kernel probes, including raw/used indexing and both scans.
 
 
 @given(direction=st.sampled_from([-1, 0, 1]))
@@ -129,42 +83,8 @@ def test_both_kkt_reentry_branches_are_needed():
     assert path.coef[1, 0] < 0
 
 
-@pytest.mark.parametrize("scan", ["check_strong_set", "check_rest_set"])
-def test_independent_kkt_rejects_a_disabled_reentry_scan(monkeypatch, scan):
-    pytest.importorskip("numba")
-    X, y = reentry_problem()
-    monkeypatch.setattr(solver, scan, lambda *args: 0)
-    path = bl.biglasso(
-        X,
-        y,
-        penalty_factor=[1.0, 1 / 16],
-        lambdas=[3 / 16],
-        backend="numba",
-        family="binomial",
-        **FIT_OPTIONS,
-    )
-    with pytest.raises(AssertionError, match="KKT residual"):
-        theta_and_residuals(path, X, y)
-
-
-@given(side=st.sampled_from([-1.0, 1.0]), direction=st.sampled_from([-1, 0, 1]))
-def test_irls_clamp_is_strict_at_ten(side, direction):
-    edge = side * 10.0
-    eta = np.array([edge if direction == 0 else np.nextafter(edge, direction * np.inf)])
-    # The matching label keeps the loss finite even outside the clamp.
-    y = np.array([float(side > 0)])
-    p, w, s, r = (np.zeros(1) for _ in range(4))
-    solver.update_irls(y, None, eta, p, w, s, r, r_compatible=True)
-    if abs(eta[0]) > 10:
-        assert p[0] == y[0]
-        assert w[0] == 0.0001
-        assert s[0] == r[0] == 0
-    else:
-        expected = expit(eta[0])
-        # p=e^eta/(1+e^eta) vs expit: a few operations, not iterative error.
-        np.testing.assert_allclose(p, expected, rtol=8 * np.finfo(float).eps)
-        assert 0 < p[0] < 1
-        assert w[0] == p[0] * (1 - p[0])
+# Disabled-scan negative controls and strict IRLS clamp boundaries now live
+# beside the Rust kernels (kernel_tests.rs and tests.rs, respectively).
 
 
 def signal_arrays(n=8):
@@ -361,21 +281,6 @@ def test_saturation_can_return_an_empty_exportable_path(prefit):
     assert path.decision_function(X).shape == (8, 0)
     for kind in ("coef", "path"):
         assert len(path.to_pandas(kind)) == 0
-
-
-def test_numba_restores_threads_when_standardization_fails():
-    numba = pytest.importorskip("numba")
-    prior = numba.get_num_threads()
-    requested = 2 if prior == 1 and numba.config.NUMBA_NUM_THREADS >= 2 else 1
-    with pytest.raises(ValueError, match="no varying features"):
-        bl.biglasso(
-            np.ones((8, 2), order="F"),
-            np.tile([0.0, 1.0], 4),
-            n_threads=requested,
-            backend="numba",
-            family="binomial",
-        )
-    assert numba.get_num_threads() == prior
 
 
 @given(delta=st.sampled_from([-1, 0, 1]))
