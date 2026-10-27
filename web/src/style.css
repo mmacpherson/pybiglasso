@@ -17,7 +17,7 @@ main { max-width: 1440px; padding: 0 5%; margin: auto; }
 .intro { display: flex; align-items: center; justify-content: space-between; gap: 32px; padding: 44px 0 34px; }
 .eyebrow { font-size: 10px; letter-spacing: 1.6px; font-weight: 700; color: var(--muted); margin: 0 0 8px; }
 h1 { font: 400 clamp(28px, 3.6vw, 45px)/1.15 Georgia, serif; letter-spacing: -1.1px; margin: 0 0 14px; }
-.lead { color: var(--muted); font-size: 14px; max-width: 660px; margin: 0; }
+.lead { color: var(--muted); font-size: 14px; max-width: 780px; margin: 0; }
 .local-badge { display: flex; align-items: flex-start; gap: 9px; min-width: 210px; font-size: 11px; color: var(--muted); }
 .local-badge strong, .local-badge span:not(.status-dot) { display: block; }
 .local-badge strong { color: var(--green); font-weight: 650; margin-bottom: 2px; }
