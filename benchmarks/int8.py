@@ -3,8 +3,8 @@
 Use two actual Rust extensions with one Python wrapper and shared inputs.
 AB/BA ordering balances the two versions; hashes compare transformations of
 the same fit and are never expected solver values. An optional numba control
-uses every three-way order; it agrees to rounding rather than sharing Rust's
-bits, so its own repeat/thread identity is checked separately.
+uses every three-way order with separate repeat/thread identity checks,
+because numba and Rust reduce in different orders.
 """
 
 import argparse
