@@ -27,6 +27,7 @@ import json
 import os
 import pathlib
 import platform
+import signal
 import subprocess
 import sys
 import tempfile
@@ -55,13 +56,15 @@ SOLVERS = [
     "sklearn-saga",
     "statsmodels",
 ]
+# Optional heavy image; do not change the existing default benchmark matrix.
+OPTIONAL_SOLVERS = ["r-snpnet"]
 TIMING_START = "--timing-start--"
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
-LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
+LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive", "r-snpnet"}
 # R's elastic-net update; identical to pybiglasso's for the lasso
 ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
-R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
+R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet", "r-snpnet"}
 # these don't use more than one thread; running them at more is redundant
 SINGLE_THREADED = {"skglm", "sklearn-liblinear", "sklearn-saga", "r-glmnet"}
 GAUSSIAN_SOLVERS = ["pybiglasso", "r-biglasso-ssr", "r-glmnet"]
@@ -389,12 +392,19 @@ def fit_r_glmnet(
     )
 
 
+def fit_r_snpnet(X, Xs, y, lambdas, alpha, threads):
+    from snpnet import fit_r_snpnet as fit
+
+    return fit(X, Xs, y, lambdas, alpha, threads)
+
+
 FITTERS = {
     "pybiglasso": fit_pybiglasso,
     "pybiglasso-rcompat": fit_pybiglasso_rcompat,
     "r-biglasso-ssr": fit_r_ssr,
     "r-biglasso-adaptive": fit_r_adaptive,
     "r-glmnet": fit_r_glmnet,
+    "r-snpnet": fit_r_snpnet,
     "pybiglasso-tight": fit_pybiglasso_tight,
     "glum": fit_glum,
     "skglm": fit_skglm,
@@ -459,15 +469,43 @@ def run_one(args):
 def run_capped(cmd, env, cap):
     """Run a child; the cap counts from when it starts timing its fit, so data
     generation and imports are excluded. Returns False on timeout."""
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, text=True)
-    for line in proc.stdout:
-        if line.strip() == TIMING_START:
-            break
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    )
     try:
-        proc.wait(timeout=cap)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+        for line in proc.stdout:
+            if line.strip() == TIMING_START:
+                break
+        # Competitors such as snpnet log during fits: drain the pipe rather
+        # than waiting with a full stdout buffer and timing out a blocked fit.
+        proc.communicate(timeout=cap)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+        # Terminate the complete child group, including attached Docker's
+        # signal-forwarding client, not just Python while R keeps fitting.
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.terminate()
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.kill()
+            proc.communicate()
+        if isinstance(error, KeyboardInterrupt):
+            raise
         return False
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
@@ -545,7 +583,7 @@ def environment():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dataset", action="append", choices=list(DATASETS))
-    ap.add_argument("--solver", action="append", choices=SOLVERS)
+    ap.add_argument("--solver", action="append", choices=SOLVERS + OPTIONAL_SOLVERS)
     ap.add_argument("--family", choices=["binomial", "gaussian"], default="binomial")
     ap.add_argument("--alpha", type=float, action="append", help="L1/L2 mix (R's)")
     ap.add_argument("--threads", type=int, action="append")
@@ -635,8 +673,8 @@ def main():
                                 "--lambdas", f"{tmp}/lambdas.npy",
                                 res,
                             ]  # fmt: skip
-                            # R's clock covers container start and data
-                            # loading, which its reported time excludes
+                            # R's safety cap includes container start/data
+                            # loading, which its reported fit clock excludes.
                             cap = args.cap if solver in R_SOLVERS else run_cap
                             if not run_capped(cmd, env, cap):
                                 times.append(float("inf"))
@@ -735,7 +773,9 @@ def main():
                         **versions,
                     )
                     if solver in R_SOLVERS:
-                        record["r_thread_limits"] = r_thread_limits(t)
+                        record["r_thread_limits"] = r_thread_limits(
+                            1 if solver == "r-snpnet" else t
+                        )
                     fp.write(json.dumps(record) + "\n")
 
 

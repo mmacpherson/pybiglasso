@@ -48,6 +48,14 @@ R_ENV = CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:$(R_TAG)
 r-image:
 	$(CONTAINER) build --build-arg R_VERSION=$(R_VERSION) -t pybiglasso-r:$(R_TAG) -f docker/r-biglasso.Dockerfile docker
 
+# Optional benchmark packages have their own image; fixture dependencies stay lean.
+BENCH_R_VERSION ?= 4.6.1
+BENCH_R_TARGET ?= snpnet
+BENCH_BUILD_JOBS ?= 2
+.PHONY: r-bench-image
+r-bench-image:
+	$(CONTAINER) build --build-arg R_VERSION=$(BENCH_R_VERSION) --build-arg BUILD_JOBS=$(BENCH_BUILD_JOBS) --target $(BENCH_R_TARGET) -t pybiglasso-bench:r$(BENCH_R_VERSION)-$(BENCH_R_TARGET) -f docker/r-benchmarks.Dockerfile docker
+
 .PHONY: r-versions
 r-versions: r-image
 	$(CONTAINER) run --rm pybiglasso-r:$(R_TAG) Rscript -e 'cat(R.version.string, "/ biglasso", format(packageVersion("biglasso")), "\n")'
