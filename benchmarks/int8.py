@@ -16,6 +16,7 @@ import platform
 import statistics
 import subprocess
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,25 @@ PROBLEMS = {
     "wide-2k-20k": (2000, 20000),
     "wide-5k-50k": (5000, 50000),
 }
+
+
+def checked_fit(X, response, *, nlambda=100, **options):
+    """Time only a fit; reject warning-bearing or incomplete paths before use."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        # This optional control's deprecation is unrelated to convergence.
+        # All other warnings, including saturation and max_iter, are fatal.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"^The numba backend is deprecated and slated for removal in pybiglasso ",
+            category=FutureWarning,
+        )
+        start = time.perf_counter()
+        path = bl.biglasso(X, response, nlambda=nlambda, **options)
+        seconds = time.perf_counter() - start
+    if len(path) != nlambda:
+        raise ValueError(f"Incomplete benchmark path: {len(path)} of {nlambda} lambdas")
+    return path, seconds
 
 
 def path_hash(path):
@@ -146,9 +166,8 @@ def main():
                         for name, module in variants.items():
                             bl._rust = module
                             options["backend"] = "numba" if name == "numba" else "rust"
-                            hashes[name].add(
-                                path_hash(bl.biglasso(X, response, **options))
-                            )
+                            fit, _ = checked_fit(X, response, **options)
+                            hashes[name].add(path_hash(fit))
                         times = {name: [] for name in variants}
                         for repeat in range(args.repeats):
                             order = orders[repeat % len(orders)]
@@ -157,9 +176,8 @@ def main():
                                 options["backend"] = (
                                     "numba" if name == "numba" else "rust"
                                 )
-                                start = time.perf_counter()
-                                fit = bl.biglasso(X, response, **options)
-                                times[name].append(time.perf_counter() - start)
+                                fit, seconds = checked_fit(X, response, **options)
+                                times[name].append(seconds)
                                 hashes[name].add(path_hash(fit))
                                 trajectories[name] = dict(
                                     nlambda=len(fit),
