@@ -100,6 +100,63 @@ In total, the four files retain 34 records and 292 timed fits. Every median
 and ratio can be recomputed from the raw times. No README competitor table
 or out-of-core performance claim is updated by these measurements.
 
+## Zen 4 / AVX-512 follow-up
+
+A separate run uses an AMD Ryzen 5 7640U (6 physical cores/12 threads), on
+mains power with the performance governor and energy preference. Runtime
+dispatch was independently checked to select pulp V4 (AVX-512), rather than
+just checking the advertised CPU flags. Python is 3.15.0, NumPy 2.5.4 and Rust
+1.98.0; the compiler and Python differ from the Zen 3 set above, so this is
+not an isolated comparison of CPU generations.
+
+The candidate is the main-integrated `53b88b1`; the baseline extension's source
+is `378df63`, whose Rust sources are byte-identical to main `7cdd687` (including
+the clipping change). The latter additionally contains test-only changes.
+The same candidate Python wrapper calls both extensions. Each setting has
+six repetitions per extension: three complete AB/BA pairs, after warming
+both. The warning/full-path guard was active throughout these measurements.
+Every fit reaches 100 lambdas; all before/after and thread-count hashes agree,
+and agree with the corresponding Zen 3 records above. Extension fingerprints
+are recorded in every row.
+
+The [int8 targets](results/int8-zen4-binomial.jsonl) give these median seconds,
+baseline → candidate:
+
+| Problem | Alpha | 1 thread | 6 threads |
+|---|---:|---:|---:|
+| 2,000 × 20,000 | 1 | 1.129 → 0.841 | 0.657 → 0.493 |
+| 2,000 × 20,000 | 0.5 | 1.350 → 0.927 | 0.957 → 0.735 |
+| 5,000 × 50,000 | 1 | 8.003 → 5.865 | 4.185 → 3.085 |
+| 5,000 × 50,000 | 0.5 | 7.007 → 5.198 | 3.728 → 2.714 |
+
+The int8 gain spans 1.30–1.46x. Float64 controls use tall 5,000 × 1,000 and
+wide 2,000 × 20,000 problems at both thread counts:
+
+| Control | Baseline/candidate time range |
+|---|---:|
+| [Binomial](results/int8-zen4-controls.jsonl), alpha 1 and 0.5 | 0.998–1.047x |
+| [Gaussian](results/int8-zen4-gaussian.jsonl), alpha 0.5 | 1.006–1.028x |
+
+`Contig::block` is generic, so the expression change is also instantiated for
+float64. The earlier Zen 3 Gaussian median up to 2.5% slower remains in the
+record; this follow-up does not establish it was noise. Small differences can
+reflect code generation/layout as well as background load. The binomial
+control range is an observation, not a statistical bound on that variation.
+
+[Environment records](results/int8-zen4-environment.json) capture mains,
+governor, versions and source revisions before and after; all are unchanged.
+Java/CCH and ordinary desktop/agent services remained running. The two
+pybiglasso agents held builds and tests during the timing window. There was
+nevertheless elevated background I/O wait: preflight idle CPU was 55–66%
+with 25–32% iowait; postflight idle was 61–71% with 23–32% iowait. These are
+in-memory, paired shared-workstation measurements, not quiet-machine or
+out-of-core claims. No samples were dropped or rerun.
+
+The [load record](results/int8-zen4-load.csv) retains 692 continuous one-second
+samples, plus ten preflight and ten postflight samples. The bookend streams
+overlap the continuous stream; each omits its initial since-boot average.
+All 20 settings and 240 timed fits are retained in the three JSONL files.
+
 ## Reproduce
 
 Build `bfd527f` in a separate baseline checkout, then run from the candidate:
