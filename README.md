@@ -451,7 +451,8 @@ never loads or copies it; strong-rule screening skips most columns at most
 steps. Cross-validation folds are row indices into the same matrix on disk.
 
 By default, `n_threads="auto"` (also `None`) chooses one thread for a memmap
-or fewer than ten million fitted-row/column entries, otherwise physical cores.
+or fewer than ten million fitted-row/column entries, otherwise physical cores
+(performance cores on Apple silicon).
 Unknown topology falls back to one. `RAYON_NUM_THREADS` caps auto mode; an
 explicit positive `n_threads` overrides it. See the
 [rule and recorded evidence](benchmarks/threads.md). Results remain

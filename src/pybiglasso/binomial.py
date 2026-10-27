@@ -82,8 +82,9 @@ def biglasso(
 
     `n_threads="auto"` (or None) uses one thread for memory-mapped X or fewer
     than 10 million fitted-row/column entries, otherwise the available physical
-    cores. A positive RAYON_NUM_THREADS caps auto mode; an explicit positive
-    integer overrides the policy. Unknown core topology falls back to one.
+    cores (performance cores on Apple silicon). A positive RAYON_NUM_THREADS
+    caps auto mode; an explicit positive integer overrides the policy.
+    Unknown core topology falls back to one.
     Coordinate descent itself is sequential. Results do not depend on the
     thread count. See benchmarks/threads.md for the recorded evidence.
 

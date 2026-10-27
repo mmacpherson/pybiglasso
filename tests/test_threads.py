@@ -131,8 +131,52 @@ def test_mac_probe_is_bounded_and_cached(monkeypatch):
     try:
         assert _threads._mac_cores() == _threads._mac_cores() == 8
         assert calls == [
-            (["/usr/sbin/sysctl", "-n", "hw.physicalcpu"], {"text": True, "timeout": 1})
+            (
+                ["/usr/sbin/sysctl", "-n", "hw.perflevel0.physicalcpu"],
+                {"text": True, "timeout": 1, "stderr": subprocess.DEVNULL},
+            )
         ]
+    finally:
+        _threads._mac_cores.cache_clear()
+
+
+@pytest.mark.parametrize("primary", ["0", "-1", "invalid", "missing", "timeout"])
+def test_mac_performance_core_probe_falls_back_to_physical(monkeypatch, primary):
+    calls = []
+
+    def sysctl(command, **kwargs):
+        calls.append(command[-1])
+        assert kwargs == dict(text=True, timeout=1, stderr=subprocess.DEVNULL)
+        if command[-1] == "hw.physicalcpu":
+            return "10\n"
+        if primary == "missing":
+            raise subprocess.CalledProcessError(1, command)
+        if primary == "timeout":
+            raise subprocess.TimeoutExpired(command, 1)
+        return primary
+
+    _threads._mac_cores.cache_clear()
+    monkeypatch.setattr(_threads.subprocess, "check_output", sysctl)
+    try:
+        assert _threads._mac_cores() == _threads._mac_cores() == 10
+        assert calls == ["hw.perflevel0.physicalcpu", "hw.physicalcpu"]
+    finally:
+        _threads._mac_cores.cache_clear()
+
+
+def test_mac_both_probes_unavailable_fall_back_to_one(monkeypatch):
+    calls = []
+
+    def unavailable(command, **_):
+        calls.append(command[-1])
+        raise OSError("Unavailable")
+
+    _threads._mac_cores.cache_clear()
+    monkeypatch.setattr(_threads.sys, "platform", "darwin")
+    monkeypatch.setattr(_threads.subprocess, "check_output", unavailable)
+    try:
+        assert _threads.physical_cores() == 1
+        assert calls == ["hw.perflevel0.physicalcpu", "hw.physicalcpu"]
     finally:
         _threads._mac_cores.cache_clear()
 

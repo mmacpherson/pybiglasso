@@ -59,11 +59,23 @@ def _linux_cores(cpus, root=Path("/sys/devices/system/cpu")):
 
 @lru_cache(maxsize=1)
 def _mac_cores():
-    return int(
-        subprocess.check_output(
-            ["/usr/sbin/sysctl", "-n", "hw.physicalcpu"], text=True, timeout=1
-        ).strip()
-    )
+    # Apple silicon's measured worker count uses performance cores; Intel
+    # Macs and older kernels can expose only the all-physical-core key.
+    for key in ("hw.perflevel0.physicalcpu", "hw.physicalcpu"):
+        try:
+            count = int(
+                subprocess.check_output(
+                    ["/usr/sbin/sysctl", "-n", key],
+                    text=True,
+                    timeout=1,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            )
+            if count > 0:
+                return count
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+    raise ValueError("Physical core count unavailable")
 
 
 def _windows_cores():
@@ -111,7 +123,7 @@ def _windows_cores():
 
 
 def physical_cores():
-    """Physical cores available to this process, or one when unknown."""
+    """Available physical cores (performance cores on macOS), or one."""
     try:
         if sys.platform.startswith("linux"):
             return _linux_cores(os.sched_getaffinity(0))

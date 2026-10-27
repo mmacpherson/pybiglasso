@@ -2,7 +2,8 @@
 
 `n_threads="auto"` and `None` use one thread when X is memory mapped or
 fitted rows times input columns is below 10,000,000; otherwise they use
-available physical cores. A positive `RAYON_NUM_THREADS` caps auto mode.
+available physical cores (performance cores on Apple silicon).
+A positive `RAYON_NUM_THREADS` caps auto mode.
 Explicit positive integers override this policy, including for memmaps.
 Unknown topology falls back to one. There is no timing, calibration fit,
 scan or copy of X. This affects the Python API, not WASM.
@@ -17,30 +18,28 @@ of the fastest setting for every distribution.
 
 `python benchmarks/thread_policy.py` regenerates the comparison table and
 cutoff from `results/thread-policy-evidence.jsonl`. It only reads JSON and
-computes medians. The extract contains 93 baseline records with unchanged
+computes medians. The extract contains 37 baseline records with unchanged
 time samples and original commit, file, line and full-file SHA256 references.
 
 The source datasets are:
 
 - Ryzen 5 5600X: `irls-ryzen-irls.jsonl` and
-  `irls-ryzen-standard.jsonl`, using the merged IRLS/weight-sum build;
-  `int8-ryzen-binomial.jsonl`, `int8-ryzen-controls.jsonl` and
-  `int8-ryzen-gaussian.jsonl`, using the main-solver baseline.
-- Ryzen 5 7640U: `int8-zen4-binomial.jsonl`,
-  `int8-zen4-controls-followup.jsonl` and
-  `int8-zen4-gaussian-followup.jsonl`, using the main-solver baseline.
-- M1 Pro: all 20 baseline settings from
+  `irls-ryzen-standard.jsonl`, using the merged IRLS/weight-sum build.
+- M1 Pro: 16 baseline settings from
   `int8-m1-pro-quiet/{binomial-int8,binomial-float64,gaussian-float64}.jsonl`.
   The source bundle's thirteen manifest entries were verified against their
   byte counts and SHA256 hashes.
+
+The M1 experiment admits a run after at least 180 seconds with idle CPU
+at least 90% and one-minute load below 3. It uses all six permutations
+of three builds, measuring one and eight workers on the same inputs.
 
 For each CPU, build, problem, dtype and alpha, divide the one-worker median
 by the six-worker (Ryzen) or eight-worker (M1) median. Use a declared 10%
 material-gain margin: a workload is near-neutral when any of its ratios is
 below 1.1, and a sustained parallel win when all its ratios are at least 1.1.
-All baseline settings at these worker counts participate, including both
-tall-binomial alpha values. Twelve-worker SMT measurements are displayed
-separately.
+All retained baseline settings at these worker counts participate.
+Twelve-worker SMT measurements are displayed separately.
 
 The largest near-neutral workload is 5,000,000 entries. The smallest sustained
 parallel win is 20,000,000. Their logarithmic midpoint is
@@ -54,10 +53,6 @@ Representative within-build median ratios (one worker / multiple workers):
 | Ryzen 5 5600X | 50k × 100, IRLS-heavy | 6 | 1.063 |
 | Ryzen 5 5600X | 500k × 40, IRLS-heavy | 6 | 1.754 |
 | Ryzen 5 5600X | 500k × 40, IRLS-heavy | 12 | 1.768 |
-| Ryzen 5 7640U | 5k × 1k, f64 binomial | 6 | 0.976–1.034 |
-| Ryzen 5 7640U | 2k × 20k, f64 binomial | 6 | 1.400–1.439 |
-| Ryzen 5 7640U | 2k × 20k, f64 Gaussian | 6 | 1.211 |
-| M1 Pro | 5k × 1k, f64 binomial | 8 | 0.887–1.107 |
 | M1 Pro | 5k × 1k, f64 Gaussian | 8 | 1.011 |
 | M1 Pro | 2k × 20k, f64 binomial | 8 | 1.460–1.492 |
 | M1 Pro | 2k × 20k, f64 Gaussian | 8 | 1.291 |
@@ -65,7 +60,7 @@ Representative within-build median ratios (one worker / multiple workers):
 Physical cores avoid automatically allocating SMT workers: the Ryzen
 50k × 100 IRLS case has a ratio of 1.063 with six workers and 0.774 with
 twelve. The M1 measurements compare one and eight workers; the macOS
-implementation uses the physical-core count reported by the OS.
+implementation uses the performance-core count reported by the OS.
 
 For memory-mapped X, the [out-of-core results](../README.md#performance)
 support a conservative one-thread default under limited page-cache budgets.
@@ -81,8 +76,9 @@ and repeated core IDs across sockets without assuming two threads per core.
 It does not interpret cgroup CPU-time quotas: use explicit `n_threads` or the
 Rayon ceiling if a quota is smaller than CPU affinity.
 
-macOS queries `hw.physicalcpu` through a one-second bounded, success-cached
-sysctl call. It includes P/E physical cores, not a logical-CPU guess; see
+macOS queries `hw.perflevel0.physicalcpu`, falling back to `hw.physicalcpu`
+when the performance-core key is unavailable or invalid. Each sysctl call
+has a one-second timeout, and a successful result is cached. See
 [Apple's system-capability documentation](https://developer.apple.com/documentation/kernel/1387446-sysctlbyname/determining_system_capabilities).
 Windows uses standard-library ctypes with native
 [topology records](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_logical_processor_information)
