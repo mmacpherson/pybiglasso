@@ -1,7 +1,7 @@
 # Blockwise ingest (draft, post-0.4.0)
 
 Install `pybiglasso[arrow]` for CSV, Parquet and Feather/Arrow IPC files;
-`pybiglasso[excel]` includes Arrow and the optional `.xlsx` reader.
+`pybiglasso[ingest]` includes Arrow and the optional `.xlsx` reader.
 Importing pybiglasso does not import either reader dependency.
 
 ```python
@@ -36,7 +36,8 @@ every parsed value; signed floating zero is retained. A partial dtype mapping
 overrides selected feature columns, with the same exactness requirement:
 
 ```python
-data = ingest("data.csv", dtypes={"measurement": "float64"}, cache=True)
+data = ingest("data.csv", dtypes={"measurement": "float64"},
+              cache=True, cache_dir="converted-data")
 ```
 
 Unsupported exact types are not silently rounded: for example, an integer
@@ -71,13 +72,14 @@ both column staging and the final IPC file during conversion.
 Mappings are read-only. Files persist independently of the Python result, so
 retained designs and responses do not depend on a temporary-directory owner.
 
-With `out=None`, output lives in a fresh subdirectory of `cache_dir`, defaulting
-to the system temporary directory's `pybiglasso-ingest` directory. `cache=True`
+An explicit persistent `out` or `cache_dir` is required. With `out=None`,
+output lives in a fresh subdirectory of the supplied `cache_dir`. `cache=True`
 instead reuses an artifact keyed by resolved source path, byte size, nanosecond
 mtime and conversion options. It does not hash all source contents. Explicit
 output paths and their sidecars are never overwritten. The caller owns the IPC
 file, optional `.response` raw-float64 sidecar and `.json` metadata sidecar;
 remove them only after all mappings are no longer in use.
+There is no implicit temporary destination or automatic artifact deletion.
 
 Tests compare values and types against independent Arrow/openpyxl source
 reads, check row errors, selection and caching, and on Linux put the first

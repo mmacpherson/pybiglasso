@@ -2097,7 +2097,7 @@ all = [
 arrow = [
     { name = "pyarrow" },
 ]
-excel = [
+ingest = [
     { name = "openpyxl" },
     { name = "pyarrow" },
 ]
@@ -2136,17 +2136,17 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy" },
-    { name = "openpyxl", marker = "extra == 'excel'" },
+    { name = "openpyxl", marker = "extra == 'ingest'" },
     { name = "pandas", marker = "extra == 'pandas'" },
     { name = "polars", marker = "extra == 'polars'" },
     { name = "pyarrow", marker = "extra == 'arrow'" },
-    { name = "pybiglasso", extras = ["arrow"], marker = "extra == 'excel'" },
-    { name = "pybiglasso", extras = ["arrow", "excel", "polars", "pandas", "sklearn", "viz"], marker = "extra == 'all'" },
+    { name = "pybiglasso", extras = ["arrow"], marker = "extra == 'ingest'" },
+    { name = "pybiglasso", extras = ["arrow", "ingest", "polars", "pandas", "sklearn", "viz"], marker = "extra == 'all'" },
     { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.6" },
     { name = "scipy" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13" },
 ]
-provides-extras = ["all", "arrow", "excel", "pandas", "polars", "sklearn", "viz"]
+provides-extras = ["all", "arrow", "ingest", "pandas", "polars", "sklearn", "viz"]
 
 [package.metadata.requires-dev]
 bench = [

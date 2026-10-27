@@ -182,6 +182,49 @@ def test_cache_metadata_matches_design(tmp_path):
         ingest(source, cache=True, cache_dir=tmp_path / "cache")
 
 
+@pytest.mark.parametrize("cache", [False, True])
+def test_explicit_persistent_destination_required(tmp_path, cache):
+    source = tmp_path / "source.csv"
+    source.write_text("x\n1\n2\n")
+    with pytest.raises(ValueError, match="persistent out or cache_dir"):
+        ingest(source, cache=cache)
+
+
+def test_explicit_cache_directory_without_reuse_is_persistent(tmp_path):
+    source = tmp_path / "source.csv"
+    source.write_text("x\n1\n2\n")
+    directory = tmp_path / "artifacts"
+    first = ingest(source, cache_dir=directory)
+    second = ingest(source, cache_dir=directory)
+    assert first.path != second.path
+    assert first.path.is_absolute() and second.path.is_absolute()
+    assert first.path.is_relative_to(directory)
+    assert first.path.exists() and second.path.exists()
+
+
+@pytest.mark.parametrize("dtype", ["uint16", "int32", "uint32", "int64", "uint64"])
+def test_unsupported_explicit_storage_dtype_rejected(tmp_path, dtype):
+    source = tmp_path / "source.csv"
+    source.write_text("x\n1\n2\n")
+    with pytest.raises(ValueError, match="supported types"):
+        ingest(source, tmp_path / "X.arrow", dtypes={"x": dtype})
+
+
+@pytest.mark.parametrize(
+    "value, expected", [(65535, pa.float32()), (2**40 + 1, pa.float64())]
+)
+def test_wider_source_integer_uses_exact_supported_representation(
+    tmp_path, value, expected
+):
+    source = tmp_path / "source.parquet"
+    pq.write_table(pa.table({"x": pa.array([value], type=pa.uint64())}), source)
+    result = ingest(source, tmp_path / "X.arrow")
+    with pa.memory_map(str(result.path)) as mapping:
+        column = pa.ipc.open_file(mapping).get_batch(0).column(0)
+        assert column.type == expected
+        assert column[0].as_py() == value
+
+
 def test_csv_preserves_large_integer_and_signed_zero_spelling(tmp_path):
     source = tmp_path / "source.csv"
     source.write_text("x\n-0.0\n0.25\n")

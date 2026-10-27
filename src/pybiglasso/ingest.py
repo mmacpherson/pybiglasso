@@ -183,7 +183,7 @@ def _workbook(source):
         import openpyxl
     except ImportError as error:
         raise ImportError(
-            "Excel ingest needs pip install 'pybiglasso[excel]'"
+            "Excel ingest needs pip install 'pybiglasso[ingest]'"
         ) from error
     return openpyxl.load_workbook(source, read_only=True, data_only=True)
 
@@ -391,12 +391,14 @@ def ingest(
     Feather decoding is bounded by its largest existing record batch. Excel
     uses a read-only worksheet iterator. Other formats never assemble a table.
 
-    With no ``out``, files persist in ``cache_dir`` (the system temporary
-    directory's pybiglasso-ingest subdirectory by default). ``cache=True``
+    Specify an explicit persistent ``out`` or ``cache_dir``. There is no
+    implicit temporary destination or automatic deletion. ``cache=True``
     reuses matching source path/size/mtime/options; otherwise a fresh artifact
     is written. Explicit existing outputs are never overwritten. Callers own
     the returned output and its .response/.json sidecars.
     """
+    if out is None and cache_dir is None:
+        raise ValueError("Specify a persistent out or cache_dir for ingest.")
     pa = _arrow()
     source = Path(source).resolve(strict=True)
     if (
@@ -434,11 +436,7 @@ def ingest(
     )
     key = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
     if out is None:
-        root = (
-            Path(cache_dir)
-            if cache_dir is not None
-            else Path(tempfile.gettempdir()) / "pybiglasso-ingest"
-        )
+        root = Path(cache_dir).absolute()
         root.mkdir(parents=True, exist_ok=True)
         directory = (
             root / key if cache else Path(tempfile.mkdtemp(prefix="design-", dir=root))
