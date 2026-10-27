@@ -324,6 +324,12 @@ threads don't reliably help: they evict pages each other still need.
   benchmark fits without an intercept or standardization, which pybiglasso
   doesn't support yet.
 
+### Optional file-backed CV and genotype benchmarks
+
+The [bigstatsr/snpnet harness](benchmarks/bigstatsr.md) uses a separate R image
+and includes early-stopping controls. It has passed functional smoke checks;
+reportable measurements are pending and are not included in the tables above.
+
 ### Gaussian path benchmarks
 
 Gaussian timings are separate from the binomial results above. The runner
