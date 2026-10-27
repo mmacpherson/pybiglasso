@@ -22,7 +22,8 @@ pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="RLIMIT_DATA is enforced on Linux"
 )
 
-NROW, NCOL = 16_000, 2_500  # 40 MB as int8; 320 MB as float64
+# over 16,384 rows, where the solver turns row-parallel
+NROW, NCOL = 20_000, 2_000  # 40 MB as int8; 320 MB as float64
 
 CHILD = textwrap.dedent(
     """
