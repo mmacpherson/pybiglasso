@@ -6,6 +6,9 @@
 - `reference.py`: a plain numpy implementation of R's algorithm, checked
   against R output. Keep its arithmetic independent of the certificate module
   and the production kernels.
+- `reference_path.py`: the reference's fit in the attributes the certificates
+  read (`lambdas`, `intercept`, `coef`, ...), so they compare the solver with
+  the reference; it refuses a path cut short by saturation or `max_iter`.
 - `certificates.py`: first-principles standardization, mean-logistic objective,
   subgradient residuals, segment curvature, distance and support bounds. All
   coefficients in a certificate are on standardized columns, with an
