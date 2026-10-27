@@ -129,10 +129,10 @@ baseline → candidate:
 | 5,000 × 50,000 | 1 | 8.003 → 5.865 | 4.185 → 3.085 |
 | 5,000 × 50,000 | 0.5 | 7.007 → 5.198 | 3.728 → 2.714 |
 
-The int8 gain spans 1.30–1.46x. Float64 controls use tall 5,000 × 1,000 and
-wide 2,000 × 20,000 problems at both thread counts:
+The int8 gain spans 1.30–1.46x. The original float64 controls use tall
+5,000 × 1,000 and wide 2,000 × 20,000 problems at both thread counts:
 
-| Control | Baseline/candidate time range |
+| Original control (build-overlapped; see correction below) | Baseline/candidate time range |
 |---|---:|
 | [Binomial](results/int8-zen4-controls.jsonl), alpha 1 and 0.5 | 0.998–1.047x |
 | [Gaussian](results/int8-zen4-gaussian.jsonl), alpha 0.5 | 1.006–1.028x |
@@ -145,17 +145,45 @@ control range is an observation, not a statistical bound on that variation.
 
 [Environment records](results/int8-zen4-environment.json) capture mains,
 governor, versions and source revisions before and after; all are unchanged.
-Java/CCH and ordinary desktop/agent services remained running. The two
-pybiglasso agents held builds and tests during the timing window. There was
-nevertheless elevated background I/O wait: preflight idle CPU was 55–66%
+Java/CCH and ordinary desktop/agent services remained running. The original
+claim that both pybiglasso agents held all builds/tests was incorrect (see
+the independently recovered build history below). There was also elevated
+background I/O wait: preflight idle CPU was 55–66%
 with 25–32% iowait; postflight idle was 61–71% with 23–32% iowait. These are
 in-memory, paired shared-workstation measurements, not quiet-machine or
-out-of-core claims. No samples were dropped or rerun.
+out-of-core claims. All original samples remain unchanged.
 
 The [load record](results/int8-zen4-load.csv) retains 692 continuous one-second
 samples, plus ten preflight and ten postflight samples. The bookend streams
 overlap the continuous stream; each omits its initial since-boot average.
 All 20 settings and 240 timed fits are retained in the three JSONL files.
+
+### Build-overlap correction
+
+Docker BuildKit's retained history and logs subsequently established two
+overlaps, both after the last int8 target had finished at 21:01:06 UTC:
+
+| Build | UTC interval | Work observed in its logs |
+|---|---|---|
+| bigstatsr | 21:02:31–21:02:51 | Binary-package installation; no source compilation |
+| snpnet | 21:04:53–21:06:13 | Package installation including source compilation |
+
+These overlap the original float64 binomial and Gaussian controls, so their
+small differences above cannot establish an uncontaminated floating-control
+result. The int8 targets preceded both builds; they are not rerun on this
+evidence. The [overlap manifest](results/int8-zen4-overlap.json) preserves the
+precise Docker timestamps and original result endpoints.
+
+The [load annotations](results/int8-zen4-overlap.csv) conservatively mark
+continuous samples 441–464 for bigstatsr and 582–666 for snpnet. Original
+vmstat output has no timestamps: annotations use each log's creation time
+plus its sample index, with a two-second expansion for scheduling uncertainty.
+They do not claim exact per-fit attribution. Original JSONL also has no fit
+wall-clock bookends, so all twelve control settings are scheduled for one
+balanced follow-up, not selected individual fast/slow repetitions. The
+harness now records per-fit UTC epoch-nanosecond bookends outside the measured
+region, to allow direct attribution in the follow-up. Original times, hashes,
+and load samples are preserved, not replaced.
 
 ## Reproduce
 

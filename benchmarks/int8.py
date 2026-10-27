@@ -169,6 +169,7 @@ def main():
                             fit, _ = checked_fit(X, response, **options)
                             hashes[name].add(path_hash(fit))
                         times = {name: [] for name in variants}
+                        fit_intervals = []
                         for repeat in range(args.repeats):
                             order = orders[repeat % len(orders)]
                             for name, module in order:
@@ -176,7 +177,20 @@ def main():
                                 options["backend"] = (
                                     "numba" if name == "numba" else "rust"
                                 )
+                                # Wall-clock bookends are outside checked_fit's
+                                # measured region. They locate interference in
+                                # load/build logs without changing the clock.
+                                start_unix_ns = time.time_ns()
                                 fit, seconds = checked_fit(X, response, **options)
+                                end_unix_ns = time.time_ns()
+                                fit_intervals.append(
+                                    dict(
+                                        repeat=repeat,
+                                        variant=name,
+                                        start_unix_ns=start_unix_ns,
+                                        end_unix_ns=end_unix_ns,
+                                    )
+                                )
                                 times[name].append(seconds)
                                 hashes[name].add(path_hash(fit))
                                 trajectories[name] = dict(
@@ -202,6 +216,7 @@ def main():
                             alpha=alpha,
                             threads=threads,
                             times=times,
+                            fit_intervals=fit_intervals,
                             median_seconds=medians,
                             speedup=medians["baseline"] / medians["candidate"],
                             path_hash=next(iter(hashes["candidate"])),
