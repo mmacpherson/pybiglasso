@@ -28,7 +28,7 @@ def fit(monkeypatch):
             return path
 
         monkeypatch.setattr(_rust, "fit_path", recording)
-        result = bl.biglasso(X, y, backend="rust", **kwargs)
+        result = bl.biglasso(X, y, backend="rust", family="binomial", **kwargs)
         return result, ran.pop()
 
     return fit

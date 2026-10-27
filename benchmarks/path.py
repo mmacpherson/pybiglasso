@@ -85,7 +85,12 @@ def lambda_grid(X, y, alpha):
 
     nrow, ncol = X.shape
     path = bl.biglasso(
-        X, y, alpha=alpha, nlambda=100, lambda_min=0.001 if nrow > ncol else 0.05
+        X,
+        y,
+        alpha=alpha,
+        nlambda=100,
+        lambda_min=0.001 if nrow > ncol else 0.05,
+        family="binomial",
     )
     return path.lambdas
 
@@ -107,6 +112,7 @@ def fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, eps=1e-7, r_compatible=Fal
         n_threads=threads,
         eps=eps,
         r_compatible=r_compatible,
+        family="binomial",
     )
     coef = path.coef.toarray().T * path.scale
     intercept = path.intercept + path.coef.toarray().T @ path.center

@@ -37,7 +37,7 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            family: "binomial".into(),
+            family: "gaussian".into(),
             alpha: 1.0,
             nlambda: 100,
             eps: 1e-7,

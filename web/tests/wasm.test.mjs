@@ -55,6 +55,7 @@ test("Gaussian uses the analytic squared-loss elastic-net optimum and RSS", () =
     d.write_response(0, Float64Array.of(1, 1, 5, 5));
     const p = d.fit({ family: "gaussian", alpha: .5, lambdas: [.5], eps: 1e-14 });
     assert.equal(p.family, "gaussian");
+    assert.deepEqual(d.fit({ alpha: .5, lambdas: [.5], eps: 1e-14 }), p);
     assert.deepEqual(p.indices, [[0]]);
     assert(Math.abs(p.coefficients[0][0] - 1.4) <= 16 * Number.EPSILON);
     assert.equal(p.intercept[0], 3);
@@ -97,7 +98,7 @@ test("default elastic net satisfies independent one-feature logistic KKT", () =>
     d.write_column(0, 0, Float64Array.of(-1, -1, -1, -1, 1, 1, 1, 1));
     d.write_response(0, Float64Array.of(0, 0, 0, 1, 0, 1, 1, 1));
     const lam = 1 / 16, alpha = .5;
-    const fit = d.fit({ alpha, lambdas: [lam], eps: 1e-14 });
+    const fit = d.fit({ family: "binomial", alpha, lambdas: [lam], eps: 1e-14 });
     const a = fit.intercept[0], b = fit.coefficients[0][0];
     assert(b > 0);
     const p = (eta) => 1 / (1 + Math.exp(-eta));
@@ -147,6 +148,9 @@ for (const family of ["binomial", "gaussian"]) {
       try {
         const lambdas = dataset(data, all.filter((i) => i !== 1)).fit({ family, alpha: .8, nlambda: 20 }).lambdas;
         const fold = whole.fit({ family, alpha: .8, lambdas, train_rows: train, test_rows: test });
+        if (family === "gaussian") {
+          assert.deepEqual(whole.fit({ alpha: .8, lambdas, train_rows: train, test_rows: test }), fold);
+        }
         const alone = part.fit({ family, alpha: .8, lambdas });
         assert.deepEqual(fold.indices, alone.indices);
         assert.deepEqual(fold.iterations, alone.iterations);

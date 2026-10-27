@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Explore logistic lasso and elastic-net paths with pybiglasso's Rust solver running locally in WebAssembly.">
+  <meta name="description" content="Explore Gaussian and binomial lasso and elastic-net paths with cross-validation, using pybiglasso's Rust solver locally in WebAssembly.">
   <title>pybiglasso — Path playground</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231d4939'/%3E%3Cpath d='M12 46L26 43L38 26L52 14M12 46L26 44L38 41L52 23M12 46L26 45L38 43L52 48' stroke='%23e6c58f' fill='none' stroke-width='3'/%3E%3C/svg%3E">
 </head>
@@ -27,7 +27,7 @@
           <button id="load-example" class="button secondary">Load example <span aria-hidden="true">↗</span></button>
           <div class="or"><span>or bring your own</span></div>
           <label class="dropzone" id="dropzone" for="file"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose or drop a file</strong><span>CSV or Parquet · numeric features</span><input id="file" type="file" accept=".csv,.parquet"></label>
-          <label for="family">Response family</label><select id="family"><option value="binomial">Binomial · two classes</option><option value="gaussian">Gaussian · continuous</option></select>
+          <label for="family">Response family</label><select id="family"><option value="gaussian">Gaussian · continuous</option><option value="binomial">Binomial · two classes</option></select>
           <p class="hint small">Up to 128 MiB of decoded predictors; parsing and results need additional memory.</p>
           <div id="dataset-summary" class="dataset-summary" hidden></div>
         </section>

@@ -63,6 +63,7 @@ def fit_glmnet_grid(case, data, glmnet):
         penalty_factor=pf,
         eps=1e-14,
         stop_on_saturation=False,
+        family="binomial",
     )
     np.testing.assert_array_equal(fit.lambdas, lambdas)
     varying = X.std(axis=0) > 0

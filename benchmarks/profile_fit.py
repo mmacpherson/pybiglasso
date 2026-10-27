@@ -15,6 +15,8 @@ the kernels change it also shows numba compiling them, so run it twice.
 import pybiglasso as bl
 
 data = bl.common.make_biglasso_dataset(nrow=5_000, ncol=1_000, seed=1)
-bl.biglasso(data["X"], data["y"], alpha=0.5, nlambda=10, backend="numba")  # warm up
+bl.biglasso(
+    data["X"], data["y"], alpha=0.5, nlambda=10, backend="numba", family="binomial"
+)  # warm up
 for _ in range(3):
-    bl.biglasso(data["X"], data["y"], alpha=0.5, backend="numba")
+    bl.biglasso(data["X"], data["y"], alpha=0.5, backend="numba", family="binomial")
