@@ -10,7 +10,6 @@ These follow scikit-learn's naming, which differs from R biglasso's:
 
 import numbers
 import os
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -21,7 +20,6 @@ from sklearn.utils.multiclass import check_classification_targets, type_of_targe
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .binomial import biglasso
-from .config import settings
 from .path import METRICS, _expit, linear_predictor, score_logits
 
 __all__ = [
@@ -35,8 +33,8 @@ __all__ = [
 def _as_design(X):
     """X as the kernels read it: numeric dtypes and memmaps pass through uncopied.
 
-    Booleans become a uint8 view, and float16 becomes float32 (numba has no
-    float16 arithmetic); everything else numeric is used as is, so an int8
+    Booleans become a uint8 view, and float16 becomes float32 (the solver
+    accepts float32/64); everything else numeric is used as is, so an int8
     genotype memmap stays an int8 memmap. Finiteness is checked by `biglasso`
     and `linear_predictor` as they read X, not by a separate pass here.
     """
@@ -277,7 +275,7 @@ class BiglassoClassifier(_BiglassoBase):
     penalty_factor : array of shape (n_features,), optional
         Per-feature penalty multipliers; 0 leaves a feature unpenalized.
     tol, max_iter : convergence settings, as R biglasso's `eps` and `max.iter`.
-    backend : "numba" or "rust", optional; as in `biglasso`.
+    backend : "rust", optional; as in `biglasso`.
     """
 
     def __init__(
@@ -347,9 +345,7 @@ class BiglassoClassifierCV(_BiglassoBase):
     n_jobs : int, optional
         Folds to fit at once, in threads that share X (so a memmap is read
         through one page cache). Each fold is single-threaded; results do not
-        depend on n_jobs. None or -1 uses all cores. Needs numba's tbb or omp
-        threading layer; with workqueue, its fallback when neither is
-        installed (as on macOS by default), folds run one at a time.
+        depend on n_jobs. None or -1 uses all cores.
     early_stopping : int, optional
         Stop each fold's path after this many alphas in a row without a better
         held-out score (by `scoring`); None, the default, fits every fold to
@@ -470,18 +466,6 @@ class BiglassoClassifierCV(_BiglassoBase):
         n_jobs = self.n_jobs
         if n_jobs is None or n_jobs < 0:
             n_jobs = os.cpu_count() or 1
-        # numba's workqueue layer aborts the process if parallel kernels
-        # launch from two threads at once; the full fit above has chosen
-        # the layer
-        backend = settings.backend if self.backend is None else self.backend
-        if n_jobs > 1 and backend == "numba" and _numba_layer() == "workqueue":
-            if self.n_jobs is not None and self.n_jobs != 1:
-                warnings.warn(
-                    "numba's workqueue threading layer can't fit folds in "
-                    "parallel, so they run one at a time.",
-                    stacklevel=2,
-                )
-            n_jobs = 1
         with ThreadPoolExecutor(max_workers=min(n_jobs, len(folds))) as pool:
             for k, s in enumerate(pool.map(score_fold, folds)):
                 scores[k, : len(s)] = s
@@ -549,9 +533,3 @@ class _NoImprovement:
         )
         eta = linear_predictor(self.X, coef, np.array([intercept]), self.rows)
         return self.sign * score_logits(self.y, eta, self.metric)[0]
-
-
-def _numba_layer():
-    import numba  # only for backend="numba", an optional extra
-
-    return numba.threading_layer()
