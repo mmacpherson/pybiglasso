@@ -125,10 +125,6 @@ jobs:
       with:
         path: rust/target
         key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-    - name: Tests, numba backend (deprecated; goes in 0.4.0)
-      run: make test
-      env:
-        PYBIGLASSO_BACKEND: numba
     - name: Record fixed Rust fits for the cross-architecture check
       if: matrix.python == '3.14'
       shell: bash
