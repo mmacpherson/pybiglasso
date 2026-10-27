@@ -2071,9 +2071,6 @@ all = [
     { name = "scikit-learn" },
     { name = "seaborn" },
 ]
-numba = [
-    { name = "numba" },
-]
 pandas = [
     { name = "pandas" },
 ]
@@ -2099,7 +2096,7 @@ bench = [
 dev = [
     { name = "hypothesis" },
     { name = "pre-commit" },
-    { name = "pybiglasso", extra = ["all", "numba"] },
+    { name = "pybiglasso", extra = ["all"] },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
@@ -2108,7 +2105,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "numba", marker = "extra == 'numba'" },
     { name = "numpy" },
     { name = "pandas", marker = "extra == 'pandas'" },
     { name = "polars", marker = "extra == 'polars'" },
@@ -2117,7 +2113,7 @@ requires-dist = [
     { name = "scipy" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13" },
 ]
-provides-extras = ["all", "numba", "pandas", "polars", "sklearn", "viz"]
+provides-extras = ["all", "pandas", "polars", "sklearn", "viz"]
 
 [package.metadata.requires-dev]
 bench = [
@@ -2131,7 +2127,7 @@ bench = [
 dev = [
     { name = "hypothesis", specifier = ">=6.170.9" },
     { name = "pre-commit", specifier = ">=4.6.2" },
-    { name = "pybiglasso", extras = ["all", "numba"] },
+    { name = "pybiglasso", extras = ["all"] },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },

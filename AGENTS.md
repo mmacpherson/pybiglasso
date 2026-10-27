@@ -71,7 +71,6 @@ to observed output.
   examples each, where `make test` and CI run a fixed 20
 - `make fixtures` — regenerate the stored R output (see above)
 - `make run-hooks-all-files` — every pre-commit hook on every file
-- `make profile` — where a fit spends its time (Python 3.15's sampling profiler)
 - `benchmarks/run-path.sh`, `benchmarks/run-extra.sh` — the README's benchmarks
 
 ## Quality Gates

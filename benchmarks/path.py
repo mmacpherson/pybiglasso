@@ -418,8 +418,8 @@ def run_one(args):
     fitter = FITTERS[args.solver]
     if args.family == "gaussian":
         fitter = functools.partial(fitter, family=args.family)
-    if args.solver in ("pybiglasso", "pybiglasso-tight", "skglm"):
-        # numba-based solvers: compile (or load cached kernels) before timing
+    if args.solver == "skglm":
+        # This competitor still uses numba; pybiglasso has no JIT warm-up.
         fitter(X[:50, :20], Xs[:50, :20], y[:50], lambdas[:2], args.alpha, 1)
     print(TIMING_START, flush=True)  # the parent's time cap starts here
     t0 = time.perf_counter()

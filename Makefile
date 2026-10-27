@@ -72,14 +72,6 @@ fixtures:
 	$(MAKE) r-image R_VERSION=$(FIXTURES_R)
 	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:r$(FIXTURES_R) uv run python scripts/make_r_fixtures.py
 
-# where a fit spends its time, step by step, with Python 3.15's sampling
-# profiler on the numba backend; runs in an isolated environment so the
-# project's .venv keeps its Python
-.PHONY: profile
-profile:
-	uv run --python 3.15 --isolated --with-editable '.[numba]' python -m profiling.sampling \
-	  run --sort tottime -l 15 benchmarks/profile_fit.py
-
 # the README's benchmark plot, from the committed results; later files win,
 # and glmnet and skglm-enet come first so they only fill in glmnet and skglm's
 # elastic net; path-v020 is pybiglasso 0.2.0 (Rust)

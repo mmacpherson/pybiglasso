@@ -457,8 +457,9 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   Coordinate descent updates one coefficient at a time, and that sequential
   sweep is most of the work: profiling an elastic-net path on 5,000 x 1,000
   puts over 80% of the time in it, against 1-2% in the strong-rule and KKT
-  scans that run in parallel (`n_threads=`). `make profile` reproduces this
-  with Python 3.15's sampling profiler. Out of core, threads can help when memory to spare
+  scans that run in parallel (`n_threads=`). These measurements used the
+  former numba backend; its Python sampling-profiler recipe was removed with
+  that backend. Out of core, threads can help when memory to spare
   holds the page cache, by keeping more disk reads in flight. Under a tight
   memory limit they hurt (see [Performance](#performance)), so use
   `n_threads=1` there. Results are bit-identical at any thread count.
