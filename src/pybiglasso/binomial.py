@@ -188,7 +188,8 @@ def biglasso(
         )
     if backend == "numba":
         _use_numba()
-    if not np.isfortran(X):
+    # not np.isfortran, which is False for one column: both C and F order
+    if not X.flags.f_contiguous:
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
             "this algorithm performs best on Fortran-ordered arrays.",
@@ -943,6 +944,12 @@ def fit_path(
         else:
             path["lambda_"][:] = np.linspace(
                 lambda_max, params.lambda_min * lambda_max, params.nlambda
+            )
+        # Differs from R biglasso, which fits a grid that overflowed (at a
+        # tiny alpha, say) and returns its nonfinite penalties
+        if not np.isfinite(path["lambda_"]).all():
+            raise ValueError(
+                "The automatic lambda grid must be finite; increase alpha or supply a finite grid."
             )
 
         _record_coefs(path, state, 0)
