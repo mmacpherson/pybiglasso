@@ -462,6 +462,9 @@ const CHUNK: usize = 2048;
 /// Columns at least this tall share their chunks across threads; shorter
 /// ones take longer to hand out than to sum.
 const PAR_ROWS: usize = 16_384;
+/// IRLS has portable exp/log work per row; keep its dispatch threshold
+/// separate from the coordinate sweep's arithmetic-only passes.
+const PAR_IRLS_ROWS: usize = 16_384;
 /// row_indices naming at least this share of X's rows, each once, are fit as
 /// a 0/1 weight on every row, so the kernels read whole columns with vector
 /// loads; fewer rows, or repeated ones, are gathered. Part of the results:
@@ -680,7 +683,9 @@ pub(crate) struct Path {
 
 struct State {
     eta: Rows,
-    p: Rows,
+    // Scratch used only inside IRLS: probabilities on the serial path;
+    // log-likelihood terms on the parallel path. Neither escapes the step.
+    irls_work: Rows,
     w: Rows,
     s: Rows,
     r: Rows,
@@ -780,32 +785,78 @@ impl<D: Design> Fit<'_, D> {
         self.mask.is_none_or(|m| m[i] != 0.0)
     }
 
-    /// p, w, s, r from eta; returns -log-likelihood with probabilities clipped
-    /// as R does.
+    /// w, s, r from eta; returns -log-likelihood with probabilities clipped
+    /// as R does. Rows can run independently, but the loss sum stays serial.
     fn update_irls(&self, st: &mut State) -> f64 {
+        if st.eta.len() >= PAR_IRLS_ROWS && rayon::current_num_threads() > 1 {
+            return self.update_irls_parallel(st);
+        }
         for i in 0..st.eta.len() {
             if !self.fits(i) {
-                (st.p[i], st.w[i], st.s[i], st.r[i]) = (0.0, 0.0, 0.0, 0.0);
+                (st.irls_work[i], st.w[i], st.s[i], st.r[i]) = (0.0, 0.0, 0.0, 0.0);
                 continue;
             }
             let e = st.eta[i];
             if e > ETA_MAX {
-                st.p[i] = 1.0;
+                st.irls_work[i] = 1.0;
                 st.w[i] = W_MIN;
             } else if e < -ETA_MAX {
-                st.p[i] = 0.0;
+                st.irls_work[i] = 0.0;
                 st.w[i] = W_MIN;
             } else {
                 let ee = exp(e);
-                st.p[i] = ee / (1.0 + ee);
-                st.w[i] = st.p[i] * (1.0 - st.p[i]);
+                st.irls_work[i] = ee / (1.0 + ee);
+                st.w[i] = st.irls_work[i] * (1.0 - st.irls_work[i]);
             }
-            st.s[i] = self.y_at(i) - st.p[i];
+            st.s[i] = self.y_at(i) - st.irls_work[i];
             st.r[i] = st.s[i] / st.w[i];
         }
         let mut acc = 0.0;
         for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
-            acc += if self.y_at(i) == 1.0 { log(st.p[i]) } else { log(1.0 - st.p[i]) };
+            acc += if self.y_at(i) == 1.0 { log(st.irls_work[i]) } else { log(1.0 - st.irls_work[i]) };
+        }
+        -acc
+    }
+
+    // Keep the Rayon plumbing out of the original serial loop's optimizer
+    // scope; both the fused serial loop and a combined function regressed
+    // single-thread fits in the before/after measurements.
+    #[inline(never)]
+    fn update_irls_parallel(&self, st: &mut State) -> f64 {
+        let update = |i: usize, (((w, s), r), loss): (((&mut f64, &mut f64), &mut f64), &mut f64)| {
+            if !self.fits(i) {
+                (*w, *s, *r, *loss) = (0.0, 0.0, 0.0, 0.0);
+                return;
+            }
+            let e = st.eta[i];
+            let probability = if e > ETA_MAX {
+                *w = W_MIN;
+                1.0
+            } else if e < -ETA_MAX {
+                *w = W_MIN;
+                0.0
+            } else {
+                let ee = exp(e);
+                let probability = ee / (1.0 + ee);
+                *w = probability * (1.0 - probability);
+                probability
+            };
+            *s = self.y_at(i) - probability;
+            *r = *s / *w;
+            *loss = if self.y_at(i) == 1.0 { log(probability) } else { log(1.0 - probability) };
+        };
+        st.w.par_iter_mut()
+            .zip(st.s.par_iter_mut())
+            .zip(st.r.par_iter_mut())
+            .zip(st.irls_work.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, row)| update(i, row));
+        // Only the independent row work is parallel. Keep the original
+        // sequential loss sum, including its masked-row omissions: chunk
+        // subtotals would change its rounding and could tip saturation.
+        let mut acc = 0.0;
+        for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
+            acc += st.irls_work[i];
         }
         -acc
     }
@@ -1061,7 +1112,7 @@ impl<D: Design> Fit<'_, D> {
 
         let mut st = State {
             eta: Rows::new(nrow, null_intercept),
-            p: Rows::new(nrow, 0.0),
+            irls_work: Rows::new(nrow, 0.0),
             w: Rows::new(nrow, 0.0),
             s: Rows::new(nrow, 0.0),
             r: Rows::new(nrow, 0.0),
