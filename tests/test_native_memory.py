@@ -3,9 +3,10 @@
 tracemalloc (test_out_of_core.py) sees numpy's allocations but not the Rust
 extension's, which go straight to malloc. Here each fit runs in a child
 process whose private writable memory is capped (RLIMIT_DATA) at what it
-holds after a warm-up fit on a small, different X, plus half of X's own
-size; the target X's first fit runs under the cap. A copy of X in
-any dtype, by numpy or by Rust, can't be allocated: numpy raises MemoryError,
+holds after a warm-up fit on a small, different X, plus half the size of
+the rows the fit selects; the target X's first fit runs under the cap. A
+copy of X, or of just those rows, in any dtype, by numpy or by Rust, can't
+be allocated: numpy raises MemoryError,
 and Rust aborts the child. The memmap itself is a read-only file mapping,
 which the limit doesn't count. Linux only: other systems don't enforce
 RLIMIT_DATA this way.
@@ -50,6 +51,10 @@ CHILD = textwrap.dedent(
         elif case == "few rows":  # read through the row indices
             rows = np.arange(0, nrow, 5)
             bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, row_indices=rows)
+        elif case == "copy the rows":  # a control: the selected rows, copied
+            rows = np.arange(0, nrow, 5)
+            keep.append(np.array(X[rows], order="F"))
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, row_indices=rows)
         elif case == "cross-validation":
             from pybiglasso.sklearn import BiglassoClassifierCV
             BiglassoClassifierCV(n_alphas=6, alpha_min_ratio=0.2, cv=3, n_jobs=1).fit(X, y)
@@ -77,7 +82,10 @@ CHILD = textwrap.dedent(
     small = np.asfortranarray(rng.integers(0, 3, size=(2_000, 200), dtype=np.int8))
     run(small, (rng.random(2_000) < 0.5).astype(np.float64))
     del small, keep[:]
-    budget = target_X.nbytes // 2
+    # half of the rows the fit selects (a fold's training rows, for CV), so a
+    # copy of just those rows can't be allocated either
+    selected = {"most rows": 4 / 5, "few rows": 1 / 5, "copy the rows": 1 / 5, "cross-validation": 2 / 3}
+    budget = int(target_X.nbytes * selected.get(case, 1)) // 2
     limit = private_bytes() + budget
     resource.setrlimit(resource.RLIMIT_DATA, (limit, resource.RLIM_INFINITY))
     try:
@@ -135,9 +143,10 @@ def test_fits_within_half_of_x(memmap, case):
     assert json.loads(result.stdout.splitlines()[-1]) == {"fits": True}
 
 
-@pytest.mark.parametrize("case", ["copy X", "malloc X"])
+@pytest.mark.parametrize("case", ["copy X", "malloc X", "copy the rows"])
 def test_a_copy_of_x_cannot_be_allocated(memmap, case):
-    """The negative controls: a numpy copy, and a bare malloc as Rust's would be."""
+    """The negative controls: a numpy copy of X or of the selected rows, and a
+    bare malloc of X's size, as Rust's would be."""
     result = run_child(memmap, case)
     assert result.returncode == 0, result.stderr[-2000:]
     assert json.loads(result.stdout.splitlines()[-1]) == {"fits": False}
