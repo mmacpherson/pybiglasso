@@ -74,3 +74,75 @@ from pybiglasso.
 Native Python and WASM bindings should share the same Rust solver core.
 Gaussian belongs in that core, so both bindings can use the same algorithm,
 fixed-order arithmetic and path representation.
+
+## Exact residual-sum reuse
+
+The coordinate sweep caches `seqsum(residual)`. After a nonzero coefficient
+shift, it adds the updated residual values left to right in the existing
+update loop, including masked zeros. Thus the cache has exactly the bits of
+a separate `seqsum` pass. A zero shift leaves both residual and cache unchanged;
+KKT scans can use the same cache. This is not an algebraic update such as
+subtracting the shift times a column sum, which would round differently.
+Only one scalar is added to the state; neither X nor a row buffer is copied.
+
+The cache invariant has a Rust regression covering masked rows, chunk/tail
+sizes and large column offsets. Existing R trajectories and independent
+optimality checks remain unchanged. Additional before/after checks compare
+complete path bytes, including coefficients, intercepts, centering/scaling,
+grids, losses, iterations and rejection counts, rather than an optimum alone.
+
+### Before/after measurements
+
+[`benchmarks/gaussian-sum.py`](../benchmarks/gaussian-sum.py) alternates actual
+baseline and candidate Rust extensions in one Python process, using identical
+arrays. Each library/pool is warmed before timing. Timers cover the whole fit,
+including validation and standardization, but exclude data generation, page
+eviction and result hashing. Hashes check transformations of the same fit;
+they are not stored expected solver values.
+
+The committed [in-memory results](../benchmarks/results/gaussian-sum-memory.jsonl)
+compare baseline numerical core `9ed067e` with candidate source `d06812f` on an
+AMD Ryzen 5 7640U (6 cores, 12 threads), Python 3.15.0 and NumPy 2.5.4. These
+are local desktop before/after measurements, not the dedicated Ryzen 5 5600X
+R/glmnet comparisons in the README. No competing compiler was observed in the
+retained runs; ordinary desktop activity and CPU-clock variation remain.
+The table spans lasso/elastic net and 1, 6 and 12 threads, using medians of five
+repetitions per version on a 30-lambda path. Ratios above 1 favor the candidate.
+
+| Storage | 100,000 x 100: baseline/candidate time | 2,000 x 20,000: baseline/candidate time |
+|---|---|---|
+| float64 | 1.17–1.31x | 0.97–1.00x |
+| float32 | 1.20–1.36x | 0.99–1.03x |
+| int8 | 1.22–1.48x | 0.97–1.01x |
+
+The gain is on tall data, not every shape. Wide changes are about ±3%.
+The [initial out-of-core run](../benchmarks/results/gaussian-sum-out-of-core.jsonl)
+uses a 1.6 GB read-only float64 memmap under a real 1 GiB cgroup cap, eight
+lambdas, both penalties, 1/6 threads and three repetitions per version. Every
+timed fit rereads multiple matrix sizes from disk, with refaults and scope
+peak memory recorded. Pages are evicted before each timed fit.
+
+Those six-thread medians were about 5% slower. A single
+[balanced six-pair follow-up](../benchmarks/results/gaussian-sum-out-of-core-balanced.jsonl)
+tested ordering/page-cache effects and was 1–2.3% slower. Both sets are retained;
+there is no out-of-core speedup claim. All reported paths are bit-identical
+between builds and thread counts. Earlier compiler-overlapped exploratory
+timings are excluded.
+
+Build the baseline extension in a separate worktree, then run from the candidate:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run python benchmarks/gaussian-sum.py \
+  --baseline-extension ../baseline/src/pybiglasso/_rust.abi3.so
+
+systemd-run --user --scope -p MemoryMax=1G -p MemorySwapMax=0 \
+  env OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 UV_NO_SYNC=1 \
+  uv run python benchmarks/gaussian-sum.py \
+  --baseline-extension ../baseline/src/pybiglasso/_rust.abi3.so \
+  --case out-of-core --threads 1 6 --repeats 3 --nlambda 8 \
+  --scratch-dir benchmarks/results
+```
+
+Use `--dtype`, `--selection` and `--out` for storage/subset cases and raw JSONL.
+Output appends, so choose a fresh destination. Out-of-core scratch must be on
+real disk, not tmpfs; the runner rejects a missing or insufficient memory cap.
