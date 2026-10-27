@@ -79,21 +79,18 @@ def test_recorded_work_cutoff():
     rows = list(report.comparisons())
     small, large, midpoint = report.cutoff(rows)
     assert (small, large, midpoint) == (5_000_000, 20_000_000, _threads.PARALLEL_WORK)
-    # Banded tall controls remain visible but must not move the cutoff.
-    banded = dict(
-        quality="start-gated-banded", threads=8, work=200_000_000, speedup=0.5
-    )
-    assert report.cutoff([*rows, banded]) == (small, large, midpoint)
-    # The eligible M1 worker-count evidence really participates, rather than
-    # being silently omitted with the old exploratory classification.
+    # Supplemental SMT worker counts do not set the physical-core cutoff.
+    smt = dict(threads=12, work=200_000_000, speedup=0.5)
+    assert report.cutoff([*rows, smt]) == (small, large, midpoint)
+    # Eight-worker measurements participate in the same size rule.
     arm = [
-        dict(quality="retained", threads=6, work=5_000_000, speedup=1.0),
-        dict(quality="start-gated", threads=8, work=20_000_000, speedup=1.2),
+        dict(threads=6, work=5_000_000, speedup=1.0),
+        dict(threads=8, work=20_000_000, speedup=1.2),
     ]
     assert report.cutoff(arm) == (small, large, midpoint)
     contradictory = [
-        dict(quality="retained", threads=6, work=1_000_000, speedup=1.2),
-        dict(quality="retained", threads=6, work=5_000_000, speedup=1.0),
+        dict(threads=6, work=1_000_000, speedup=1.2),
+        dict(threads=6, work=5_000_000, speedup=1.0),
     ]
     with pytest.raises(ValueError, match="do not separate"):
         report.cutoff(contradictory)

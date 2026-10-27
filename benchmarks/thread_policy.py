@@ -22,7 +22,6 @@ def comparisons(path=EVIDENCE):
                 "source_commit",
                 "source_file",
                 "cpu",
-                "quality",
                 "problem",
                 "family",
                 "dtype",
@@ -41,25 +40,22 @@ def comparisons(path=EVIDENCE):
             if threads > 1:
                 yield dict(
                     cpu=key[2],
-                    quality=key[3],
-                    problem=key[4],
-                    family=key[5],
-                    dtype=key[6],
-                    alpha=key[7],
-                    work=key[8] * key[9],
+                    problem=key[3],
+                    family=key[4],
+                    dtype=key[5],
+                    alpha=key[6],
+                    work=key[7] * key[8],
                     threads=threads,
                     speedup=times[1] / seconds,
                 )
 
 
 def cutoff(rows):
-    # Declared 10% material-gain margin. Keep banded M1 tall-binomial and
-    # SMT counts in the report, but neither calibrates the cutoff.
+    # Compare one worker with the measured six/eight-worker configurations.
+    # Supplemental twelve-worker SMT records remain in the table.
     by_work = collections.defaultdict(list)
     for row in rows:
-        if (row["quality"] == "retained" and row["threads"] == 6) or (
-            row["quality"] == "start-gated" and row["threads"] == 8
-        ):
+        if row["threads"] in (6, 8):
             by_work[row["work"]].append(row["speedup"])
     small = max(work for work, ratios in by_work.items() if min(ratios) < 1.1)
     large = min(work for work, ratios in by_work.items() if min(ratios) >= 1.1)

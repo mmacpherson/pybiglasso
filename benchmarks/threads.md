@@ -13,29 +13,43 @@ Input columns are counted before constant-column filtering or screening.
 The proxy cannot know the active set without fitting; it is not a promise
 of the fastest setting for every distribution.
 
-## Derivation from retained records
+## Recorded baseline measurements
 
-`python benchmarks/thread_policy.py` regenerates a table and cutoff from
-`results/thread-policy-evidence.jsonl`. It only reads JSON and computes
-medians, never imports/runs pybiglasso. Every baseline time is unchanged,
-with its original commit/file/line and full-file SHA256. All baseline records
-in the named files are included, not just favorable cases. These are #49's
-**baseline** times, not its unmerged conversion optimization. Existing Ryzen
-IRLS files use the merged post-IRLS/weight-sum build.
+`python benchmarks/thread_policy.py` regenerates the comparison table and
+cutoff from `results/thread-policy-evidence.jsonl`. It only reads JSON and
+computes medians. The extract contains 93 baseline records with unchanged
+time samples and original commit, file, line and full-file SHA256 references.
 
-For retained six-thread x86 and start-gated eight-thread M1 records, excluding
-the banded M1 tall-binomial controls, a gain below 10% is insufficient to
-automatically use more cores. This declared material-gain margin avoids
-interpreting near-neutral changes as general parallel wins. The largest
-workload with any gain below the margin is 5,000,000 entries. The smallest
-workload whose recorded gains all clear it is 20,000,000. The logarithmic
-midpoint is `sqrt(5,000,000 * 20,000,000) = 10,000,000`. The intervening range
-is unmeasured: this is a coarse initial policy, **not a measured crossover**.
-No new timing or threshold search was performed.
+The source datasets are:
 
-Representative within-build median ratios (one thread / multiple threads):
+- Ryzen 5 5600X: `irls-ryzen-irls.jsonl` and
+  `irls-ryzen-standard.jsonl`, using the merged IRLS/weight-sum build;
+  `int8-ryzen-binomial.jsonl`, `int8-ryzen-controls.jsonl` and
+  `int8-ryzen-gaussian.jsonl`, using the main-solver baseline.
+- Ryzen 5 7640U: `int8-zen4-binomial.jsonl`,
+  `int8-zen4-controls-followup.jsonl` and
+  `int8-zen4-gaussian-followup.jsonl`, using the main-solver baseline.
+- M1 Pro: all 20 baseline settings from
+  `int8-m1-pro-quiet/{binomial-int8,binomial-float64,gaussian-float64}.jsonl`.
+  The source bundle's thirteen manifest entries were verified against their
+  byte counts and SHA256 hashes.
 
-| CPU | Workload | Threads | Ratio |
+For each CPU, build, problem, dtype and alpha, divide the one-worker median
+by the six-worker (Ryzen) or eight-worker (M1) median. Use a declared 10%
+material-gain margin: a workload is near-neutral when any of its ratios is
+below 1.1, and a sustained parallel win when all its ratios are at least 1.1.
+All baseline settings at these worker counts participate, including both
+tall-binomial alpha values. Twelve-worker SMT measurements are displayed
+separately.
+
+The largest near-neutral workload is 5,000,000 entries. The smallest sustained
+parallel win is 20,000,000. Their logarithmic midpoint is
+`sqrt(5,000,000 * 20,000,000) = 10,000,000`. This gives a coarse size rule
+between the measured workloads, not an exact crossover fitted to clocks.
+
+Representative within-build median ratios (one worker / multiple workers):
+
+| CPU | Workload | Workers | Ratio |
 | --- | --- | ---: | ---: |
 | Ryzen 5 5600X | 50k × 100, IRLS-heavy | 6 | 1.063 |
 | Ryzen 5 5600X | 500k × 40, IRLS-heavy | 6 | 1.754 |
@@ -43,45 +57,20 @@ Representative within-build median ratios (one thread / multiple threads):
 | Ryzen 5 7640U | 5k × 1k, f64 binomial | 6 | 0.976–1.034 |
 | Ryzen 5 7640U | 2k × 20k, f64 binomial | 6 | 1.400–1.439 |
 | Ryzen 5 7640U | 2k × 20k, f64 Gaussian | 6 | 1.211 |
-| M1 Pro (start-gated, banded) | 5k × 1k, f64 binomial | 8 | 0.887–1.107 |
-| M1 Pro (start-gated) | 5k × 1k, f64 Gaussian | 8 | 1.011 |
-| M1 Pro (start-gated) | 2k × 20k, f64 binomial | 8 | 1.460–1.492 |
-| M1 Pro (start-gated) | 2k × 20k, f64 Gaussian | 8 | 1.291 |
+| M1 Pro | 5k × 1k, f64 binomial | 8 | 0.887–1.107 |
+| M1 Pro | 5k × 1k, f64 Gaussian | 8 | 1.011 |
+| M1 Pro | 2k × 20k, f64 binomial | 8 | 1.460–1.492 |
+| M1 Pro | 2k × 20k, f64 Gaussian | 8 | 1.291 |
 
-SMT has no general advantage: the Ryzen 50k × 100 IRLS case is 1.063 at six
-threads but 0.774 at twelve. Hence physical cores, not logical CPUs. M1 data
-uses one/eight workers; its provenance reports eight performance cores, not
-a total physical-core census including efficiency cores. Worker residency was
-not pinned. It supports the direction of the size rule, not an unmeasured
-total-core count or a P/E-core policy. The generic macOS default still counts
-all physical cores, so exact performance at that count is not established here.
+Physical cores avoid automatically allocating SMT workers: the Ryzen
+50k × 100 IRLS case has a ratio of 1.063 with six workers and 0.774 with
+twelve. The M1 measurements compare one and eight workers; the macOS
+implementation uses the physical-core count reported by the OS.
 
-Qualifications:
-
-- Ryzen 5 5600X: existing IRLS files and #49's retained shared-host baseline
-  matrix with its disclosed background services. Compare ratios within the
-  same build/problem/file, not absolute times across runs.
-- Zen 4: int8 targets finished before overlapping builds. Float64 evidence
-  uses **only** the completed timestamped `controls-followup` and
-  `gaussian-followup` files. Original overlapped controls and the aborted
-  follow-up are excluded, not reclassified as clean. The completed follow-up
-  still had persistent 22–32% pre/post I/O wait and Java/desktop activity:
-  no recorded build overlap does **not** make it a quiet-machine run.
-- M1 Pro: the start-gated three-build bundle replaces the earlier exploratory
-  extract. All 20 baseline settings and six samples per setting are retained;
-  the source bundle's thirteen manifest entries were checked for exact byte
-  counts and SHA256. Only baseline samples enter this report. The idle/load
-  gate admitted the run **before** timing, not during fits. Core residency and
-  QoS were unmeasured. Tall float64 binomial still has distinct timing bands:
-  both alpha settings are reported, but neither calibrates the cutoff. The
-  Gaussian tall control remains near-neutral and wide cases favor threads,
-  supporting the same coarse cutoff without changing it. This is not a
-  noise-free or universally fastest ARM claim.
-- Mapped X: [out-of-core results](../README.md#performance) show that more
-  threads need not help and can hurt with a tight page-cache budget. A memmap
-  may fit RAM, but guessing its residency/available memory makes defaults
-  fragile. Auto always uses one; users can override it. ndarray views backed
-  by a mapping also count.
+For memory-mapped X, the [out-of-core results](../README.md#performance)
+support a conservative one-thread default under limited page-cache budgets.
+The selector does not estimate RAM residency. Users can request an explicit
+worker count for their storage configuration.
 
 ## Portable topology without new dependencies
 
