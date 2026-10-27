@@ -129,6 +129,8 @@ def gaussian_path(
         if automatic
         else np.asarray(lambdas, dtype=np.float64)
     )
+    if automatic and not np.isfinite(grid).all():
+        raise ValueError("The automatic lambda grid must be finite.")
     path = dict(lambda_=[], loss=[], iter=[], rejections=[], beta=[])
 
     def record(lam, loss, iterations, rejected):
