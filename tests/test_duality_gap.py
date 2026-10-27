@@ -254,7 +254,13 @@ def fit_wide(design, alpha, backend):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         path = bl.biglasso(
-            X, y, alpha=alpha, penalty_factor=pf, backend=backend, **FIT_OPTIONS
+            X,
+            y,
+            alpha=alpha,
+            penalty_factor=pf,
+            backend=backend,
+            family="binomial",
+            **FIT_OPTIONS,
         )
     assert len(path) == len(FIT_OPTIONS["lambdas"])
     np.testing.assert_array_equal(path.lambdas, FIT_OPTIONS["lambdas"])
@@ -322,6 +328,7 @@ def test_global_gap_rejects_nonconverged_wide_iterate(backend):
             alpha=0.5,
             penalty_factor=pf,
             backend=backend,
+            family="binomial",
             **dict(FIT_OPTIONS, max_iter=1),
         )
     Xs, center, scale = standardize(X)

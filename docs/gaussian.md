@@ -1,8 +1,8 @@
-# Gaussian endpoint contract (proposal)
+# Gaussian endpoint contract
 
 Explicit Gaussian fitting is implemented in the shared Rust solver, Python
-and WASM bindings, and sklearn regression estimators. The default-family
-switch below is reserved for a separate final 0.3.0 release PR.
+and WASM bindings, and sklearn regression estimators. Version 0.3.0 makes
+Gaussian the public default; logistic callers explicitly select binomial.
 
 Version 0.3.0 adds Gaussian support and makes it the default family, matching
 R biglasso. The deprecated numba backend remains available for binomial fits

@@ -44,7 +44,7 @@ def data():
 @pytest.fixture(scope="module")
 def path(data):
     X, y = data
-    return bl.biglasso(X, y, alpha=1.0, nlambda=15)
+    return bl.biglasso(X, y, alpha=1.0, nlambda=15, family="binomial")
 
 
 # the path object ------------------------------------------------------
@@ -67,7 +67,7 @@ def test_feature_names_from_dataframe(data):
     pd = pytest.importorskip("pandas")
     X, y = data
     df = pd.DataFrame(X, columns=[f"snp{j}" for j in range(X.shape[1])])
-    p = bl.biglasso(df, y, nlambda=3)
+    p = bl.biglasso(df, y, nlambda=3, family="binomial")
     assert p.feature_names[0] == "snp0"
 
 
@@ -86,7 +86,9 @@ def test_lasso_matches_independent_solver(data):
     """At alpha=1 the objective is unambiguous; compare against sklearn's saga."""
     sklm = pytest.importorskip("sklearn.linear_model")
     X, y = data
-    p = bl.biglasso(X, y, alpha=1.0, nlambda=8, lambda_min=0.02, eps=1e-14)
+    p = bl.biglasso(
+        X, y, alpha=1.0, nlambda=8, lambda_min=0.02, eps=1e-14, family="binomial"
+    )
     for k in (2, 4, 7):
         assert_matches_saga(sklm, p, k, X, y, 1.0)
 
@@ -96,8 +98,18 @@ def test_elastic_net_matches_independent_solver(data, alpha):
     """The default elastic net minimizes the documented (glmnet) objective."""
     sklm = pytest.importorskip("sklearn.linear_model")
     X, y = data
-    p = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-14)
-    r = bl.biglasso(X, y, alpha=alpha, lambdas=p.lambdas, eps=1e-14, r_compatible=True)
+    p = bl.biglasso(
+        X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-14, family="binomial"
+    )
+    r = bl.biglasso(
+        X,
+        y,
+        alpha=alpha,
+        lambdas=p.lambdas,
+        eps=1e-14,
+        r_compatible=True,
+        family="binomial",
+    )
     for k in (2, 4, 7):
         assert_matches_saga(sklm, p, k, X, y, alpha)
         # R's update solves a different problem: its fit, as converged, fails
@@ -186,30 +198,30 @@ def test_plots(path):
 def test_rejects_degenerate_response(data, make_y, rows, match):
     X, y = data
     with pytest.raises(ValueError, match=match):
-        bl.biglasso(X, make_y(y), row_indices=rows)
+        bl.biglasso(X, make_y(y), row_indices=rows, family="binomial")
 
 
 def test_rejects_bad_inputs(data):
     X, y = data
     with pytest.raises(ValueError, match="Alpha"):
-        bl.biglasso(X, y, alpha=1.5)
+        bl.biglasso(X, y, alpha=1.5, family="binomial")
     with pytest.raises(ValueError, match="one entry per column"):
-        bl.biglasso(X, y, penalty_factor=np.ones(3))
+        bl.biglasso(X, y, penalty_factor=np.ones(3), family="binomial")
     with pytest.raises(ValueError, match="at least one positive"):
-        bl.biglasso(X, y, penalty_factor=np.zeros(X.shape[1]))
+        bl.biglasso(X, y, penalty_factor=np.zeros(X.shape[1]), family="binomial")
     with pytest.raises(ValueError, match="decreasing"):
-        bl.biglasso(X, y, lambdas=[0.01, 0.1])
+        bl.biglasso(X, y, lambdas=[0.01, 0.1], family="binomial")
     with pytest.raises(ValueError, match="outside valid range"):
-        bl.biglasso(X, y, row_indices=np.array([0, X.shape[0]]))
+        bl.biglasso(X, y, row_indices=np.array([0, X.shape[0]]), family="binomial")
     with pytest.warns(UserWarning, match="Fortran"):
-        bl.biglasso(np.ascontiguousarray(X), y, nlambda=3)
+        bl.biglasso(np.ascontiguousarray(X), y, nlambda=3, family="binomial")
 
 
 def test_row_indices_match_subset(data):
     X, y = data
     rows = np.flip(np.arange(X.shape[0])[::2])
-    a = bl.biglasso(np.asfortranarray(X[rows]), y[rows], nlambda=10)
-    b = bl.biglasso(X, y, row_indices=rows, nlambda=10)
+    a = bl.biglasso(np.asfortranarray(X[rows]), y[rows], nlambda=10, family="binomial")
+    b = bl.biglasso(X, y, row_indices=rows, nlambda=10, family="binomial")
     np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray())
     np.testing.assert_allclose(a.intercept, b.intercept)
     np.testing.assert_array_equal(a.iterations, b.iterations)
@@ -222,8 +234,10 @@ def test_memmap_matches_in_memory(data, tmp_path):
     )
     mm[:] = X
     mm.flush()
-    a = bl.biglasso(X, y, nlambda=10)
-    b = bl.biglasso(np.load(tmp_path / "X.npy", mmap_mode="r"), y, nlambda=10)
+    a = bl.biglasso(X, y, nlambda=10, family="binomial")
+    b = bl.biglasso(
+        np.load(tmp_path / "X.npy", mmap_mode="r"), y, nlambda=10, family="binomial"
+    )
     np.testing.assert_array_equal(a.coef.toarray(), b.coef.toarray())
 
 
@@ -239,8 +253,10 @@ def test_default_grid_matches_same_grid_as_user_lambdas(data, penalty):
         pf[:2] = 0
     else:
         pf = np.random.default_rng(0).uniform(0.5, 2, X.shape[1])
-    a = bl.biglasso(X, y, penalty_factor=pf, nlambda=10, eps=1e-14)
-    b = bl.biglasso(X, y, penalty_factor=pf, lambdas=a.lambdas, eps=1e-14)
+    a = bl.biglasso(X, y, penalty_factor=pf, nlambda=10, eps=1e-14, family="binomial")
+    b = bl.biglasso(
+        X, y, penalty_factor=pf, lambdas=a.lambdas, eps=1e-14, family="binomial"
+    )
     np.testing.assert_array_equal(b.lambdas, a.lambdas)
     # two routes to each optimum (alpha 1, the default): both pass KKT at the
     # lambda b was given, and convexity bounds the gap
@@ -261,7 +277,7 @@ def test_unpenalized_columns_enter_at_lambda_max(data):
     X, y = data
     pf = np.ones(X.shape[1])
     pf[:2] = 0
-    p = bl.biglasso(X, y, penalty_factor=pf, nlambda=10)
+    p = bl.biglasso(X, y, penalty_factor=pf, nlambda=10, family="binomial")
     first = p.coef[:, [0]].toarray().ravel()
     assert np.all(first[:2] != 0), "unpenalized columns should be fit at lambda_max"
     assert np.all(first[2:] == 0), "penalized columns should be zero at lambda_max"
@@ -272,7 +288,7 @@ def test_unpenalized_columns_enter_at_lambda_max(data):
 def test_dfmax_truncates_path(data):
     X, y = data
     with pytest.warns(UserWarning, match="dfmax"):
-        p = bl.biglasso(X, y, dfmax=3, nlambda=30)
+        p = bl.biglasso(X, y, dfmax=3, nlambda=30, family="binomial")
     assert len(p) < 30
     assert p.n_nonzero[:-1].max() <= 3
 
@@ -281,19 +297,28 @@ def test_saturation(data):
     X, _ = data
     y = (X[:, 0] > 0).astype(float)  # perfectly separable
     with pytest.warns(UserWarning, match="saturated"):
-        p = bl.biglasso(X, y, nlambda=50, lambda_min=1e-4)
+        p = bl.biglasso(X, y, nlambda=50, lambda_min=1e-4, family="binomial")
     assert len(p) < 50
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        full = bl.biglasso(X, y, nlambda=50, lambda_min=1e-4, stop_on_saturation=False)
+        full = bl.biglasso(
+            X,
+            y,
+            nlambda=50,
+            lambda_min=1e-4,
+            stop_on_saturation=False,
+            family="binomial",
+        )
     assert len(full) == 50
 
 
 def test_float32_matches_float64(data):
     X, y = data
     X32 = np.asfortranarray(X.astype(np.float32))
-    a = bl.biglasso(X32, y, nlambda=10)
-    b = bl.biglasso(np.asfortranarray(X32.astype(np.float64)), y, nlambda=10)
+    a = bl.biglasso(X32, y, nlambda=10, family="binomial")
+    b = bl.biglasso(
+        np.asfortranarray(X32.astype(np.float64)), y, nlambda=10, family="binomial"
+    )
     np.testing.assert_allclose(a.coef.toarray(), b.coef.toarray())
 
 
@@ -308,8 +333,17 @@ def test_thread_count_does_not_change_results(penalty):
     if penalty == "zeros":
         pf = np.ones(400)
         pf[:3] = 0
-    one = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=1)
-    many = bl.biglasso(d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=threads)
+    one = bl.biglasso(
+        d["X"], d["y"], alpha=0.7, penalty_factor=pf, n_threads=1, family="binomial"
+    )
+    many = bl.biglasso(
+        d["X"],
+        d["y"],
+        alpha=0.7,
+        penalty_factor=pf,
+        n_threads=threads,
+        family="binomial",
+    )
     assert_bitwise(one, many)
 
 
@@ -360,5 +394,5 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
         ),
     )
     X = np.zeros((4, ncol), order="F")
-    fit = bl.biglasso(X, np.array([0, 1, 0, 1]), lambdas=[0.1])
+    fit = bl.biglasso(X, np.array([0, 1, 0, 1]), lambdas=[0.1], family="binomial")
     assert fit.intercept[0] == -exact

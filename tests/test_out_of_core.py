@@ -30,8 +30,15 @@ def genotypes(tmp_path_factory):
     del X
     X, y = np.load(file, mmap_mode="r"), data["y"].astype(np.float64)
     # compile the kernels for read-only int8 input outside the measurements
-    bl.biglasso(X, y, nlambda=2)
-    bl.biglasso(X, y, nlambda=2, row_indices=np.arange(0, NROW, 2), n_threads=1)
+    bl.biglasso(X, y, nlambda=2, family="binomial")
+    bl.biglasso(
+        X,
+        y,
+        nlambda=2,
+        row_indices=np.arange(0, NROW, 2),
+        n_threads=1,
+        family="binomial",
+    )
     return X, y
 
 
@@ -80,7 +87,7 @@ def test_scoring_is_bounded_and_exact(genotypes, small_chunks, subset):
     X, y = genotypes
     rng = np.random.default_rng(0)
     rows = np.sort(rng.choice(NROW, NROW // 2, replace=False)) if subset else None
-    path = bl.biglasso(X, y, alpha=0.5, nlambda=20, lambda_min=0.05)
+    path = bl.biglasso(X, y, alpha=0.5, nlambda=20, lambda_min=0.05, family="binomial")
     assert path.n_nonzero[-1] > 100  # enough active columns to matter
 
     eta = []
@@ -96,7 +103,7 @@ def test_scoring_is_bounded_and_exact(genotypes, small_chunks, subset):
 
 def test_prediction_rejects_nonfinite_values(genotypes):
     X, y = genotypes
-    path = bl.biglasso(X, y, nlambda=5)
+    path = bl.biglasso(X, y, nlambda=5, family="binomial")
     bad = np.asfortranarray(X[:50], dtype=np.float64)
     bad[3, path.coef.indices[0]] = np.nan
     with pytest.raises(ValueError, match="NaN or infinity"):

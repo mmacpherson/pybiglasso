@@ -7,9 +7,11 @@ import sys
 import pybiglasso as bl
 
 d = bl.common.generate_test_data(100, 5)
-print(bl.biglasso(d["X"], d["y"], nlambda=5))
+print(bl.biglasso(d["X"], d["y"], nlambda=5, family="binomial"))
+default = bl.biglasso(d["X"], d["X"][:, 0] + 1.25, nlambda=5)
+assert default.family == "gaussian"
 try:
-    bl.biglasso(d["X"], d["y"], nlambda=5, backend="numba")
+    bl.biglasso(d["X"], d["y"], nlambda=5, backend="numba", family="binomial")
 except ImportError as e:
     assert "pybiglasso[numba]" in str(e), e
 else:

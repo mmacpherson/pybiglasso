@@ -35,10 +35,10 @@ def test_automatic_singleton_rejected_but_explicit_singleton_fits(
     pf = np.array([0, 1, 1]) if unpenalized else None
     kwargs = dict(penalty_factor=pf, lambda_log_scale=not linear, eps=1e-14)
     with pytest.raises(ValueError, match=r"at least 2.*lambdas=\[value\]"):
-        biglasso(X, y, nlambda=1, **kwargs)
-    full = biglasso(X, y, nlambda=5, **kwargs)
+        biglasso(X, y, nlambda=1, family="binomial", **kwargs)
+    full = biglasso(X, y, nlambda=5, family="binomial", **kwargs)
     lam = full.lambdas[-1]
-    explicit = biglasso(X, y, nlambda=1, lambdas=[lam], **kwargs)
+    explicit = biglasso(X, y, nlambda=1, lambdas=[lam], family="binomial", **kwargs)
     assert explicit.n_nonzero[0] > 0
     # two routes to the optimum at lam (alpha 1, the default): each passes
     # its KKT conditions, and convexity bounds the gap
@@ -66,8 +66,8 @@ def test_translation_preserves_solution_and_kkt(data, r_compatible, subset):
     shifted = np.asfortranarray(X + 1e8)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        base = biglasso(X, y, **kwargs)
-        fit = biglasso(shifted, y, **kwargs)
+        base = biglasso(X, y, family="binomial", **kwargs)
+        fit = biglasso(shifted, y, family="binomial", **kwargs)
     B, A, yy = (X, shifted, y) if rows is None else (X[rows], shifted[rows], y[rows])
     eta = fit.intercept + A @ fit.coef.toarray()
     Xs, center, scale = standardize(A)
@@ -125,16 +125,16 @@ def test_nonfinite_memmap_rejected_in_standardization(data, tmp_path, value, sub
     mm[0, 1] = value
     rows = np.arange(0, len(y), 2) if subset else None
     with pytest.raises(ValueError, match="finite"):
-        biglasso(mm, y, row_indices=rows)
+        biglasso(mm, y, row_indices=rows, family="binomial")
 
 
 @pytest.mark.parametrize("value", [np.nan, np.inf, 1e300], ids=str)
 def test_unused_rows_do_not_change_fit(data, value):
     X, y = data
     rows = np.arange(0, len(y), 2)
-    copy = biglasso(np.asfortranarray(X[rows]), y[rows], nlambda=3)
+    copy = biglasso(np.asfortranarray(X[rows]), y[rows], nlambda=3, family="binomial")
     X[1, :] = value
-    fit = biglasso(X, y, row_indices=rows, nlambda=3)
+    fit = biglasso(X, y, row_indices=rows, nlambda=3, family="binomial")
     np.testing.assert_array_equal(fit.iterations, copy.iterations)
     # the same arithmetic in another grouping: rounding, far below eps
     np.testing.assert_allclose(
@@ -175,40 +175,47 @@ def test_unused_rows_do_not_change_fit(data, value):
 )
 def test_invalid_parameters_rejected(data, kwargs, match):
     with pytest.raises(ValueError, match=match):
-        biglasso(*data, **kwargs)
+        biglasso(*data, family="binomial", **kwargs)
 
 
 @pytest.mark.parametrize("shape", [(100,), (100, 0), (0, 3), (100, 3, 1)])
 def test_invalid_design_shape(data, shape):
     with pytest.raises(ValueError, match="two-dimensional"):
-        biglasso(np.empty(shape), data[1])
+        biglasso(np.empty(shape), data[1], family="binomial")
 
 
 def test_response_must_be_vector(data):
     X, y = data
     with pytest.raises(ValueError, match="one-dimensional"):
-        biglasso(X, y[:, None])
+        biglasso(X, y[:, None], family="binomial")
 
 
 @pytest.mark.parametrize("dtype", [object, np.complex128, np.float16])
 def test_unsupported_design_dtype(data, dtype):
     X, y = data
     with pytest.raises(ValueError, match="dtype"):
-        biglasso(X.astype(dtype), y)
+        biglasso(X.astype(dtype), y, family="binomial")
 
 
 def test_constant_design_has_clear_error(data):
     X, y = data
     with pytest.raises(ValueError, match="no varying features"):
-        biglasso(np.ones_like(X), y)
+        biglasso(np.ones_like(X), y, family="binomial")
 
 
 def test_only_unpenalized_features_vary(data):
     X, y = data
     X[:, 2] = 1
     with pytest.raises(ValueError, match="varying penalized feature"):
-        biglasso(X, y, penalty_factor=[0, 0, 1])
-    explicit = biglasso(X, y, penalty_factor=[0, 0, 1], lambdas=[0.1, 0.01], eps=1e-14)
+        biglasso(X, y, penalty_factor=[0, 0, 1], family="binomial")
+    explicit = biglasso(
+        X,
+        y,
+        penalty_factor=[0, 0, 1],
+        lambdas=[0.1, 0.01],
+        eps=1e-14,
+        family="binomial",
+    )
     # with column 2 constant, both lambdas pose one problem, the unpenalized
     # fit of columns 0 and 1: each passes KKT, and convexity bounds the gap
     coef = explicit.coef.toarray()
@@ -226,7 +233,7 @@ def test_only_unpenalized_features_vary(data):
 def test_zero_scores_produce_finite_null_path(linear):
     X = np.asfortranarray(np.column_stack([np.tile([-1.0, 1.0], 50), np.ones(100)]))
     y = np.tile([0, 0, 1, 1], 25)
-    fit = biglasso(X, y, nlambda=5, lambda_log_scale=not linear)
+    fit = biglasso(X, y, nlambda=5, lambda_log_scale=not linear, family="binomial")
     np.testing.assert_array_equal(fit.lambdas, np.zeros(5))
     assert fit.coef.nnz == 0
     np.testing.assert_allclose(fit.deviance, 200 * np.log(2))
@@ -234,7 +241,9 @@ def test_zero_scores_produce_finite_null_path(linear):
 
 def test_unconverged_prefit_rejected(data):
     with pytest.raises(ValueError, match="Unpenalized prefit failed to converge"):
-        biglasso(*data, penalty_factor=[0, 1, 1], max_iter=1, nlambda=2)
+        biglasso(
+            *data, penalty_factor=[0, 1, 1], max_iter=1, nlambda=2, family="binomial"
+        )
 
 
 @pytest.mark.parametrize("subset", [False, True])
@@ -244,7 +253,7 @@ def test_final_deviance_stable_for_extreme_misclassified_logit(subset):
     y = rng.binomial(1, expit(3 * X[:, 0]))
     X[0, 0], y[0] = 20, 0
     rows = np.arange(0, 1000, 2) if subset else None
-    fit = biglasso(X, y, lambdas=[0.01], eps=1e-12, row_indices=rows)
+    fit = biglasso(X, y, lambdas=[0.01], eps=1e-12, row_indices=rows, family="binomial")
     eta = fit.decision_function(X, row_indices=rows)[:, 0]
     yy = y if rows is None else y[rows]
     reference = 2 * np.logaddexp(0, np.where(yy == 1, -eta, eta)).sum()
@@ -256,7 +265,7 @@ def test_final_deviance_stable_for_extreme_misclassified_logit(subset):
 def test_nonconverged_fit_reports_final_not_previous_loss(data):
     X, y = data
     with pytest.warns(UserWarning, match="Failed to converge"):
-        fit = biglasso(X, y, lambdas=[0.01], max_iter=2)
+        fit = biglasso(X, y, lambdas=[0.01], max_iter=2, family="binomial")
     np.testing.assert_allclose(fit.deviance, fit.score(X, y), rtol=1e-12)
 
 
@@ -279,8 +288,8 @@ def test_default_lambda_min_counts_the_rows_fit(shape, rows, ratio):
     y = rng.binomial(1, expit(X[:, :3].sum(axis=1))).astype(np.float64)
     # the whole grid, past saturation, so its last lambda is the end
     options = dict(row_indices=rows, nlambda=5, stop_on_saturation=False)
-    auto = biglasso(X, y, **options)
-    explicit = biglasso(X, y, lambda_min=ratio, **options)
+    auto = biglasso(X, y, family="binomial", **options)
+    explicit = biglasso(X, y, lambda_min=ratio, family="binomial", **options)
     # log and exp of the grid's ends, and a division: a few roundings
     np.testing.assert_allclose(
         auto.lambdas[-1] / auto.lambdas[0], ratio, rtol=16 * np.finfo(float).eps

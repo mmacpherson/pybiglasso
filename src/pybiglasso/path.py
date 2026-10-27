@@ -41,7 +41,7 @@ class BiglassoPath:
     penalty_factor: np.ndarray
     feature_names: tuple
     alpha: float
-    family: str = "binomial"
+    family: str = "gaussian"
 
     def __len__(self):
         return len(self.lambdas)

@@ -103,7 +103,7 @@ class SmoothProblem:
             warnings.filterwarnings(
                 "ignore", message="The design matrix is not in Fortran"
             )
-            path = bl.biglasso(X, y, **options)
+            path = bl.biglasso(X, y, family="binomial", **options)
         # Check metadata against inputs, so optimality cannot pass by silently
         # solving a problem with a different alpha, penalty or lambda grid.
         assert path.alpha == options["alpha"]
@@ -280,6 +280,7 @@ def test_penalty_rescaling_and_constant_insertion(problem, exponent, insert, bac
             penalty_factor=pf,
             lambdas=problem.grid,
             backend=backend,
+            family="binomial",
             **FIT_OPTIONS,
         )
     keep = np.delete(np.arange(padded.shape[1]), at)

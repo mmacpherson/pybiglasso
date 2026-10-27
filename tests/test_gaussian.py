@@ -22,6 +22,17 @@ def fixtures():
     return rcompare.load_fixtures()
 
 
+def test_gaussian_is_the_default_family():
+    X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
+    y = 3 + 2 * X[:, 0]
+    implicit = bl.biglasso(X, y, lambdas=[0.5], alpha=0.5, backend="rust")
+    explicit = bl.biglasso(
+        X, y, lambdas=[0.5], alpha=0.5, family="gaussian", backend="rust"
+    )
+    assert implicit.family == "gaussian"
+    assert_bitwise(implicit, explicit)
+
+
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("case", rcompare.gaussian_grid(), ids=lambda c: c.name)
 def test_gaussian_matches_stored_r(case, fixtures, tmp_path):

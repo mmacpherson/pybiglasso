@@ -59,7 +59,7 @@ results = {}
 for backend in backends:
     for name, (Xc, row_indices, alpha) in cases.items():
         p = bl.biglasso(
-            Xc, y, alpha=alpha, nlambda=30, row_indices=row_indices, backend=backend
+            Xc, y, family="binomial", alpha=alpha, nlambda=30, row_indices=row_indices, backend=backend
         )
         key = f"{backend}/{name}"
         results[f"{key}/lambdas"] = p.lambdas

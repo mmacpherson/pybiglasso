@@ -5,7 +5,8 @@ import { gzipSync, zstdCompressSync } from "node:zlib";
 const rows = Array.from({ length: 48 }, (_, i) => [Number((i % 3 === 2 && i % 7 !== 0) || (i % 3 === 1 && i % 2 === 0) || i % 11 === 0), i % 3 - 1, Math.floor(i / 3) % 3 - 1]);
 const csv = "response,x,z\n" + rows.map((r) => r.join(",")).join("\n");
 
-async function upload(page, name, buffer) {
+async function upload(page, name, buffer, family = "binomial") {
+  await page.locator("#family").selectOption(family);
   await page.locator("#file").setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from(buffer) });
   await expect(page.locator("#import-panel")).toBeVisible();
   await page.locator("#import").click();
@@ -73,6 +74,7 @@ test("CSV and multi-row-group Parquet produce identical paths, with no data requ
 
 test("missing values after the preview and continuous responses give clear errors", async ({ page }) => {
   await page.goto("/");
+  await page.locator("#family").selectOption("binomial");
   const bad = rows.map((r) => [...r]); bad[30][1] = "";
   await page.locator("#file").setInputFiles({ name: "missing.csv", mimeType: "text/csv", buffer: Buffer.from("response,x,z\n" + bad.map((r) => r.join(",")).join("\n")) });
   await expect(page.locator("#import-panel")).toBeVisible(); await page.locator("#import").click();
@@ -97,7 +99,7 @@ test("Gaussian imports CSV and Parquet, reports RSS, and exports the fitted fami
   await page.goto("/");
   await page.locator("#family").selectOption("gaussian");
   const data = Array.from({ length: 48 }, (_, i) => [3 + 2 * (i % 3 - 1) + i % 5 / 10, i % 3 - 1, Math.floor(i / 3) % 3 - 1]);
-  await upload(page, "regression.csv", "response,x,z\n" + data.map((r) => r.join(",")).join("\n"));
+  await upload(page, "regression.csv", "response,x,z\n" + data.map((r) => r.join(",")).join("\n"), "gaussian");
   await expect(page.locator("#loss-label")).toHaveText("Training RSS");
   const a = await pathDownload(page);
   expect(a.family).toBe("gaussian");
@@ -109,7 +111,7 @@ test("Gaussian imports CSV and Parquet, reports RSS, and exports the fitted fami
     { name: "x", data: data.map((r) => r[1]), type: "DOUBLE" },
     { name: "z", data: data.map((r) => r[2]), type: "DOUBLE" },
   ], rowGroupSize: 7 });
-  await upload(page, "regression.parquet", new Uint8Array(buffer));
+  await upload(page, "regression.parquet", new Uint8Array(buffer), "gaussian");
   const b = await pathDownload(page);
   for (const field of ["lambdas", "intercept", "coefficients", "deviance", "iterations", "n_rejected"]) expect(a[field]).toEqual(b[field]);
   await page.locator("#example").selectOption("gaussian");

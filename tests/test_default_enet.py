@@ -116,6 +116,7 @@ def test_kkt_conditions_hold_along_the_path(design, alpha):
             nlambda=30,
             eps=1e-14,
             max_iter=MAX_ITER.get(design, 1000),
+            family="binomial",
         )
     assert len(path) >= 10
     assert path.n_nonzero[-1] > 0
@@ -129,7 +130,13 @@ def test_kkt_check_detects_r_compatible_update():
     rng = np.random.default_rng(5)
     X, y, _ = correlated(rng)
     path = bl.biglasso(
-        np.asfortranarray(X), y, alpha=0.5, nlambda=20, eps=1e-12, r_compatible=True
+        np.asfortranarray(X),
+        y,
+        alpha=0.5,
+        nlambda=20,
+        eps=1e-12,
+        r_compatible=True,
+        family="binomial",
     )
     worst = max(kkt_residual(path, X, y, k) for k in range(len(path)))
     assert worst > 100 * KKT_TOL
@@ -143,7 +150,13 @@ def test_no_nearby_point_does_better(design):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         path = bl.biglasso(
-            np.asfortranarray(X), y, alpha=0.5, penalty_factor=pf, nlambda=15, eps=1e-12
+            np.asfortranarray(X),
+            y,
+            alpha=0.5,
+            penalty_factor=pf,
+            nlambda=15,
+            eps=1e-12,
+            family="binomial",
         )
     k = len(path) - 1
     best = objective(path, X, y, k)
