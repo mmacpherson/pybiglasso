@@ -436,7 +436,6 @@ def test_one_active_sweep_uses_the_documented_enet_denominator(
     X = np.tile([[-1.0], [1.0]], (4, 1))
     y = (X[:, 0] > 0).astype(float)
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="The design matrix is not in Fortran")
         with pytest.warns(UserWarning, match="Failed to converge"):
             path = bl.biglasso(
                 X,
@@ -481,11 +480,6 @@ def test_supplied_grids_keep_duplicates_and_singleton_zero(problem, grid, backen
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="An automatic grid at tiny positive alpha overflows lambda_max and returns [inf, nan] (both backends).",
-)
 def test_tiny_positive_alpha_fits_finitely_or_raises_value_error(backend):
     """alpha>0 is accepted, but an unrepresentable grid must fail cleanly.
 
@@ -496,7 +490,6 @@ def test_tiny_positive_alpha_fits_finitely_or_raises_value_error(backend):
     y = np.tile([0.0, 0.0, 0.0, 1.0], 2)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        warnings.filterwarnings("ignore", message="The design matrix is not in Fortran")
         try:
             path = bl.biglasso(
                 X,
