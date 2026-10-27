@@ -23,6 +23,12 @@ Save the matrix as a numpy memmap and pybiglasso fits the whole regularization
 path, with cross-validation to choose the penalty, without loading it into
 memory.
 
+To try it without installing anything, open the
+[playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
+solver, compiled to WebAssembly, in your browser, on example datasets or your
+own CSV or Parquet file, which never leaves your machine. It fits lasso and
+elastic-net paths for Gaussian or binomial responses, and can cross-validate them.
+
 It's also fast when the data does fit in memory. The benchmarks use binomial
 (logistic) fits. On a full 100-step lasso path
 over 5,000 samples by 50,000 features, it is 2.4x faster than R's glmnet, 2.5x
@@ -48,7 +54,7 @@ wheel. Extras add optional integrations:
 |---|---|
 | `pybiglasso[polars]` | `BiglassoPath.to_polars()` |
 | `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
-| `pybiglasso[sklearn]` | Classifier and regressor wrappers, with and without cross-validation |
+| `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV`, `BiglassoRegressor`, `BiglassoRegressorCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
 | `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.4.0 |
@@ -125,14 +131,14 @@ available for explicit binomial fits through 0.3.x and is removed in 0.4.0.
 
 pybiglasso also offers a scikit-learn interface: `BiglassoClassifier` fits at
 one penalty strength, and `BiglassoClassifierCV` chooses it by cross-validation.
-Both pass scikit-learn's estimator checks, so they work in pipelines, grid
-searches, and anywhere else a scikit-learn classifier does (install
-`pybiglasso[sklearn]`).
+`BiglassoRegressor` and `BiglassoRegressorCV` provide the corresponding Gaussian
+estimators. All four pass scikit-learn's estimator checks and work in pipelines
+and grid searches (install `pybiglasso[sklearn]`).
 
 ```python
 from pybiglasso import BiglassoClassifierCV
 
-clf = BiglassoClassifierCV(l1_ratio=1.0, cv=5, rule="1se").fit(X, y)
+clf = BiglassoClassifierCV(l1_ratio=1.0, cv=5, rule="1se").fit(X, y_binary)
 clf.alpha_, clf.coef_
 ```
 
@@ -359,6 +365,10 @@ with a comment beginning "Differs from R biglasso".
 - **Gaussian zero maximum penalty.** R's logarithmic grid calculation can
   produce non-finite values when the maximum penalty is zero. pybiglasso
   returns a finite all-zero grid, whose fits solve the unpenalized problem.
+- **Gaussian unrepresentable grids.** If an automatic grid overflows (for
+  example, with extremely small positive `alpha`), pybiglasso raises
+  `ValueError` rather than returning non-finite penalties. Finite supplied
+  grids remain supported, including in compatibility mode.
 - **Gaussian loss after an iteration limit.** R can leave `loss` at zero when
   the budget ends with outstanding KKT violations. pybiglasso reports the
   returned model's residual sum of squares; `r_compatible=True` retains R's

@@ -114,18 +114,23 @@ def gaussian_path(
         # starts where the penalized coefficients can all be zero.
         active[pf == 0] = True
         for _ in range(max_iter):
-            if sweep(0.0) < tolerance:
+            change = sweep(0.0)
+            if change < tolerance or change == 0:
                 break
         else:
             raise ValueError("Unpenalized prefit failed to converge.")
         scores = compute_z(Xs, residual)
         lambda_max = largest_lambda(scores, pf, alpha)
 
+    if automatic and not np.isfinite(lambda_max):
+        raise ValueError("The automatic lambda grid must be finite.")
     grid = (
         lambda_grid(lambda_max, max(lambda_min, 1e-6), nlambda, lambda_log_scale)
         if automatic
         else np.asarray(lambdas, dtype=np.float64)
     )
+    if automatic and not np.isfinite(grid).all():
+        raise ValueError("The automatic lambda grid must be finite.")
     path = dict(lambda_=[], loss=[], iter=[], rejections=[], beta=[])
 
     def record(lam, loss, iterations, rejected):
@@ -152,7 +157,10 @@ def gaussian_path(
             while iterations < max_iter:
                 while iterations < max_iter:
                     iterations += 1
-                    if sweep(lam) < tolerance:
+                    change = sweep(lam)
+                    # Differs from R biglasso: with zero null RSS, strict
+                    # comparison never succeeds; default mode accepts no change.
+                    if change < tolerance or (not r_compatible and change == 0):
                         break
                 if not scan(np.flatnonzero(strong & ~active), lam):
                     break

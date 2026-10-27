@@ -14,6 +14,37 @@ from support.certificates import (
 CASES = rcompare.gaussian_grid()
 
 
+def test_gaussian_reference_rejects_underflowed_automatic_grid():
+    X = np.array([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
+    # The score is the smallest subnormal: positive, but its grid endpoint
+    # rounds to zero. log(0) must not yield a successful path containing NaN.
+    y = X[:, 0] * np.nextafter(0.0, 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        with pytest.raises(ValueError, match="automatic.*finite"):
+            reference.gaussian_path(X, y, nlambda=3)
+    supplied = reference.gaussian_path(X, y, lambdas=[1.0, 0.5])
+    np.testing.assert_array_equal(supplied["lambda_"], [1.0, 0.5])
+    np.testing.assert_array_equal(supplied["beta"], 0)
+
+
+@pytest.mark.parametrize("compatible", [False, True])
+@pytest.mark.parametrize("penalty_factor", [None, [0.0, 1.0]])
+def test_gaussian_reference_constant_response(compatible, penalty_factor):
+    X = np.tile([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]], (2, 1))
+    fit = reference.gaussian_path(
+        X,
+        np.full(8, 3.0),
+        nlambda=3,
+        max_iter=4,
+        r_compatible=compatible,
+        penalty_factor=penalty_factor,
+    )
+    np.testing.assert_array_equal(fit["iter"], [0, 4, 4] if compatible else [0, 1, 1])
+    np.testing.assert_array_equal(fit["lambda_"], 0)
+    np.testing.assert_array_equal(fit["loss"], 0)
+    np.testing.assert_array_equal(fit["beta"], [[3, 3, 3], [0, 0, 0], [0, 0, 0]])
+
+
 @pytest.fixture(scope="session")
 def fixtures():
     return rcompare.load_fixtures()

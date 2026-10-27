@@ -97,7 +97,7 @@ test("phone layout fits the viewport and a new dataset replaces the old model", 
 
 test("Gaussian imports CSV and Parquet, reports RSS, and exports the fitted family", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#family").selectOption("gaussian");
+  await expect(page.locator("#family")).toHaveValue("gaussian");
   const data = Array.from({ length: 48 }, (_, i) => [3 + 2 * (i % 3 - 1) + i % 5 / 10, i % 3 - 1, Math.floor(i / 3) % 3 - 1]);
   await upload(page, "regression.csv", "response,x,z\n" + data.map((r) => r.join(",")).join("\n"), "gaussian");
   await expect(page.locator("#loss-label")).toHaveText("Training RSS");
@@ -135,4 +135,32 @@ test("cancelling an example download cannot restart a fit when the response arri
   await page.locator("#example").selectOption("synthetic"); await page.locator("#load-example").click();
   await expect(page.locator("#dataset-summary")).toContainText("160 rows × 48 predictors");
   await expect(page.locator("#model-results")).toBeVisible();
+});
+
+test("cross-validation chooses λ on held-out rows for both families", async ({ page }) => {
+  const errors = []; page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  for (const example of ["breast", "gaussian"]) {
+    await page.locator("#example").selectOption(example);
+    await page.locator("#folds").selectOption("5");
+    await page.locator("#load-example").click();
+    await expect(page.locator("#model-results")).toBeVisible();
+    await expect(page.locator("#cancel")).toBeHidden();
+    await expect(page.locator("#cv-panel")).toBeVisible();
+    const result = await pathDownload(page);
+    const cv = result.cross_validation;
+    expect(cv.folds).toBe(5);
+    expect(cv.mean.length).toBeGreaterThan(1);
+    expect(cv.best).toBeGreaterThanOrEqual(cv.oneSe);
+    // λ1se is the largest penalty within one standard error of the lowest loss
+    expect(cv.mean[cv.oneSe]).toBeLessThanOrEqual(cv.mean[cv.best] + cv.se[cv.best]);
+    expect(cv.mean.slice(0, cv.oneSe).every((m) => m > cv.mean[cv.best] + cv.se[cv.best])).toBe(true);
+    expect(result.selected_index).toBe(cv.oneSe);
+    await page.locator("#go-best").click();
+    await expect(page.locator("#active-count")).toHaveText(String(result.indices[cv.best].length));
+    await expect(page.locator("#cv-note")).toContainText(example === "gaussian" ? "squared error" : "deviance");
+  }
+  await page.locator("#folds").selectOption("0"); await page.locator("#fit").click();
+  await expect(page.locator("#cv-panel")).toBeHidden();
+  expect(errors).toEqual([]);
 });

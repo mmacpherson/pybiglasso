@@ -33,6 +33,28 @@ def test_gaussian_is_the_default_family():
     assert_bitwise(implicit, explicit)
 
 
+@pytest.mark.parametrize("compatible", [False, True])
+@pytest.mark.parametrize("log_scale", [False, True])
+def test_gaussian_unrepresentable_automatic_grid_rejected(compatible, log_scale):
+    X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
+    y = 1 + X[:, 0]
+    options = dict(
+        family="gaussian",
+        alpha=np.nextafter(0.0, 1.0),
+        r_compatible=compatible,
+        lambda_log_scale=log_scale,
+        eps=1e-14,
+    )
+    with pytest.raises(ValueError, match="automatic.*finite"):
+        _fit(X, y, nlambda=3, **options)
+    # The unrepresentable automatic maximum must not invalidate supplied grids.
+    fit = _fit(X, y, lambdas=[1.0, 0.5], **options)
+    np.testing.assert_array_equal(fit.lambdas, [1.0, 0.5])
+    np.testing.assert_allclose(fit.coef.toarray(), [[0.5, 2 / 3], [0, 0]])
+    np.testing.assert_array_equal(fit.intercept, 1)
+    assert np.isfinite(fit.deviance).all()
+
+
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("case", rcompare.gaussian_grid(), ids=lambda c: c.name)
 def test_gaussian_matches_stored_r(case, fixtures, tmp_path):
@@ -116,16 +138,27 @@ def test_gaussian_default_matches_reference_and_kkt(penalty, tmp_path):
     )
 
 
-@pytest.mark.parametrize("rows", [None, [0, 2, 4, 6], [0, 0, 2, 4, 6], [6, 4]])
-def test_gaussian_threads_rows_and_memmap(rows, tmp_path):
+@pytest.mark.parametrize(
+    "selection", ["all", "mask", "repeated", "gather", "permuted-mask"]
+)
+def test_gaussian_threads_rows_and_memmap(selection, tmp_path):
+    # 64 varying columns permit four tasks with compute_z's minimum batch of 16.
+    shape = (128, 64)
     X = np.memmap(
-        tmp_path / "X.bin", mode="w+", dtype="float64", shape=(8, 2), order="F"
+        tmp_path / "X.bin", mode="w+", dtype="float64", shape=shape, order="F"
     )
-    X[:] = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]] * 2)
+    rng = np.random.default_rng(123)
+    X[:] = rng.normal(size=shape)
     X.flush()
-    X = np.memmap(
-        tmp_path / "X.bin", mode="r", dtype="float64", shape=(8, 2), order="F"
-    )
+    X = np.memmap(tmp_path / "X.bin", mode="r", dtype="float64", shape=shape, order="F")
+    assert not X.flags.writeable
+    rows = {
+        "all": None,
+        "mask": np.arange(0, shape[0], 2),
+        "repeated": np.r_[0, np.arange(0, shape[0], 2)],
+        "gather": np.arange(0, shape[0], 4),
+        "permuted-mask": rng.permutation(shape[0])[:115],
+    }[selection]
     y = 3 + 2 * X[:, 0] + X[:, 1]
     options = dict(
         family="gaussian", row_indices=rows, lambdas=[1, 0.5, 0.1], alpha=0.5, eps=1e-14

@@ -18,7 +18,17 @@ export interface ModelPath {
   iterations: number[];
   n_rejected: number[];
   deviance: number[];
+  holdout?: number[];
   warnings: string[];
+}
+
+export interface CrossValidation {
+  folds: number;
+  /** Held-out loss per row at each lambda every fold reached, and its standard error */
+  mean: number[];
+  se: number[];
+  best: number;
+  oneSe: number;
 }
 
 export interface Loaded {
@@ -33,11 +43,11 @@ export interface Loaded {
 export type Request =
   | { kind: "inspect"; file: File }
   | { kind: "load"; target: string; features: string[]; positive: string; family: "binomial" | "gaussian" }
-  | { kind: "fit"; alpha: number; nlambda: number; eps: number };
+  | { kind: "fit"; alpha: number; nlambda: number; eps: number; folds: number };
 
 export type Reply =
   | { kind: "inspected"; info: Inspection }
   | { kind: "loaded"; info: Loaded }
   | { kind: "progress"; message: string; done?: number; total?: number }
-  | { kind: "result"; path: ModelPath; milliseconds: number }
+  | { kind: "result"; path: ModelPath; cv?: CrossValidation; milliseconds: number }
   | { kind: "error"; message: string };

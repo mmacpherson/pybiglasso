@@ -18,16 +18,16 @@ identical across thread counts and Rust SIMD widths.
 ## Public API
 
 `biglasso(X, y, family="gaussian", ...)` shares the existing path options.
-The default family becomes `"gaussian"`. Logistic calls must explicitly pass
-`family="binomial"`, including calls inside the classifier wrappers. This
-default change must be called out in the 0.3.0 release notes and examples.
+The default family is `"gaussian"` in 0.3.0. Logistic calls explicitly pass
+`family="binomial"`, as the classifier wrappers do. This breaks the 0.2.x
+default and is called out in the README migration example.
 Gaussian requires a finite numeric
 response on the selected rows. The numba backend raises `NotImplementedError`
 for Gaussian; the implementation is Rust only. Constant responses produce
 the intercept-only optimum; supplied lambdas allow a single fit.
 
-`BiglassoPath` gains a `family` field defaulting to `"gaussian"`; internal
-constructors explicitly record the family actually fitted. Gaussian `predict()`
+`BiglassoPath` has a `family` field defaulting to `"gaussian"`; internal constructors
+explicitly record the family actually fitted. Gaussian `predict()`
 and `decision_function()` return the linear prediction, with the existing
 shape `(nrow, nlambda)`. `predict_proba()` raises for Gaussian. Coefficients,
 intercepts, sparse exports and lambda selection keep their current formats.

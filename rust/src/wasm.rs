@@ -28,6 +28,10 @@ struct Options {
     max_iter: i64,
     dfmax: Option<usize>,
     r_compatible: bool,
+    /// Fit only these rows, as a cross-validation fold does
+    train_rows: Option<Vec<usize>>,
+    /// Score every fitted lambda on these rows
+    test_rows: Option<Vec<usize>>,
 }
 
 impl Default for Options {
@@ -43,6 +47,8 @@ impl Default for Options {
             max_iter: 10000,
             dfmax: None,
             r_compatible: false,
+            train_rows: None,
+            test_rows: None,
         }
     }
 }
@@ -60,6 +66,9 @@ struct ModelPath {
     iterations: Vec<i64>,
     n_rejected: Vec<i64>,
     deviance: Vec<f64>,
+    /// With test_rows, each fit's held-out loss per row: deviance for
+    /// binomial, squared error for gaussian
+    holdout: Option<Vec<f64>>,
     warnings: Vec<String>,
 }
 
@@ -111,6 +120,23 @@ impl Dataset {
 }
 
 impl Dataset {
+    /// A path on the rows being fit; None when a mask is unsafe (see
+    /// Fit::center_scale), and the caller gathers instead.
+    fn run<D: Design>(
+        x: &D,
+        y: &[f64],
+        params: &Params,
+        mask: Option<(&[f64], &[usize])>,
+        n_fit: usize,
+    ) -> Result<Option<Path>, String> {
+        let fit = Fit { x, y, params, mask: mask.map(|(m, _)| m), rows: mask.map(|(_, rows)| rows), n_fit };
+        let (center, scale, mask_safe) = fit.center_scale()?;
+        if !mask_safe {
+            return Ok(None);
+        }
+        fit.run(center, scale).map(Some)
+    }
+
     fn fit_inner(&self, options: JsValue) -> Result<JsValue, String> {
         let options: Options = serde_wasm_bindgen::from_value(options).map_err(|e| e.to_string())?;
         if !options.alpha.is_finite() || options.alpha <= 0.0 || options.alpha > 1.0 {
@@ -128,7 +154,8 @@ impl Dataset {
         {
             return Err("Supplied lambdas must be finite, nonnegative, and nonincreasing.".into());
         }
-        let lambda_min = options.lambda_min.unwrap_or(if self.nrow > self.ncol { 0.001 } else { 0.05 });
+        let n_fit = options.train_rows.as_ref().map_or(self.nrow, Vec::len);
+        let lambda_min = options.lambda_min.unwrap_or(if n_fit > self.ncol { 0.001 } else { 0.05 });
         if !lambda_min.is_finite() || lambda_min <= 0.0 || lambda_min > 1.0 {
             return Err("lambda_min must be in (0, 1].".into());
         }
@@ -139,8 +166,15 @@ impl Dataset {
         if self.x.iter().any(|v| !v.is_finite()) {
             return Err("Every selected feature must be completely loaded with finite numeric values.".into());
         }
+        for rows in [&options.train_rows, &options.test_rows].into_iter().flatten() {
+            let mut seen = vec![false; self.nrow];
+            if rows.is_empty() || rows.iter().any(|&i| i >= self.nrow || std::mem::replace(&mut seen[i], true)) {
+                return Err("Fold rows must be nonempty, distinct, and inside the dataset.".into());
+            }
+        }
         let family = Family::parse(&options.family).map_err(str::to_owned)?;
-        let (ybar, null_deviance) = family.null_model(&self.y, None).map_err(str::to_owned)?;
+        let train = options.train_rows.as_deref();
+        let (ybar, null_deviance) = family.null_model(&self.y, train).map_err(str::to_owned)?;
         let params = Params {
             family,
             alpha: options.alpha,
@@ -163,14 +197,36 @@ impl Dataset {
             Ok(false)
         };
         let params = Params { on_lambda: Some(&on_lambda), ..params };
+        // Do not build a native thread pool: Rayon's global fallback executes
+        // these iterators serially inside the browser's dedicated Worker.
         let x = ContigX::<f64, true> {
             x: ArrayView2::from_shape((self.nrow, self.ncol).f(), &self.x).map_err(|e| e.to_string())?,
         };
-        // Do not build a native thread pool: Rayon's global fallback executes
-        // these iterators serially inside the browser's dedicated Worker.
-        let fit = Fit { x: &x, y: &self.y, params: &params, mask: None, rows: None, n_fit: self.nrow };
-        let (center, scale, _) = fit.center_scale()?;
-        let path = fit.run(center, scale)?;
+        let path = match train {
+            None => Self::run(&x, &self.y, &params, None, self.nrow)?,
+            Some(rows) => {
+                // as the Python binding fits row_indices: most of the rows as
+                // a 0/1 weight on every row, with y 0 outside the fold; a few,
+                // or when the mask is unsafe, read through the row indices.
+                // Neither copies X.
+                let masked = if rows.len() as f64 >= MASK_SHARE * self.nrow as f64 {
+                    let mut mask = vec![0.0; self.nrow];
+                    rows.iter().for_each(|&i| mask[i] = 1.0);
+                    let y: Vec<f64> = self.y.iter().zip(&mask).map(|(&y, &m)| if m != 0.0 { y } else { 0.0 }).collect();
+                    Self::run(&x, &y, &params, Some((&mask, rows)), rows.len())?
+                } else {
+                    None
+                };
+                match masked {
+                    Some(path) => Some(path),
+                    None => {
+                        let y: Vec<f64> = rows.iter().map(|&i| self.y[i]).collect();
+                        Self::run(&GatherX { x, idx: rows }, &y, &params, None, rows.len())?
+                    }
+                }
+            }
+        }
+        .expect("an unmasked fit always runs");
         if path.lambda.iter().any(|l| !l.is_finite()) {
             return Err("The automatic lambda grid is not finite; increase alpha or supply a finite grid.".into());
         }
@@ -204,6 +260,31 @@ impl Dataset {
                 }
             })
             .collect();
+        let holdout = options.test_rows.as_ref().map(|test| {
+            (0..fitted.len())
+                .map(|f| {
+                    let loss: f64 = test
+                        .iter()
+                        .map(|&i| {
+                            let eta = intercept[f]
+                                + indices[f]
+                                    .iter()
+                                    .zip(&coefficients[f])
+                                    .map(|(&j, &b)| self.x[j * self.nrow + i] * b)
+                                    .sum::<f64>();
+                            match family {
+                                // log(1 + exp(eta)) - y eta, computed stably
+                                Family::Binomial => {
+                                    2.0 * (eta.max(0.0) + libm::log1p(libm::exp(-eta.abs())) - self.y[i] * eta)
+                                }
+                                Family::Gaussian => (self.y[i] - eta).powi(2),
+                            }
+                        })
+                        .sum();
+                    loss / test.len() as f64
+                })
+                .collect()
+        });
         let result = ModelPath {
             family: options.family,
             lambdas: fitted.iter().map(|&k| path.lambda[k]).collect(),
@@ -219,6 +300,7 @@ impl Dataset {
                 .iter()
                 .map(|&k| (if family == Family::Binomial { 2.0 } else { 1.0 }) * path.deviance[k])
                 .collect(),
+            holdout,
             warnings,
         };
         serde_wasm_bindgen::to_value(&result).map_err(|e| e.to_string())

@@ -73,6 +73,25 @@ test("one dataset can fit lasso and enet repeatedly without changing its input",
   } finally { d.free(); }
 });
 
+test("Gaussian rejects an overflowing automatic grid but accepts finite supplied penalties", () => {
+  const d = new Dataset(4, 2);
+  try {
+    d.write_column(0, 0, Float64Array.of(-1, -1, 1, 1));
+    d.write_column(1, 0, Float64Array.of(-1, 1, -1, 1));
+    d.write_response(0, Float64Array.of(0, 0, 2, 2));
+    for (const r_compatible of [false, true]) {
+      const options = { family: "gaussian", alpha: Number.MIN_VALUE, eps: 1e-14, r_compatible };
+      assert.throws(() => d.fit({ ...options, nlambda: 3 }));
+      const p = d.fit({ ...options, lambdas: [1, .5] });
+      assert.deepEqual(p.lambdas, [1, .5]);
+      assert.deepEqual(p.intercept, [1, 1]);
+      assert.deepEqual(p.indices, [[0], [0]]);
+      assert(Math.abs(p.coefficients[0][0] - .5) <= 8 * Number.EPSILON);
+      assert(Math.abs(p.coefficients[1][0] - 2 / 3) <= 8 * Number.EPSILON);
+    }
+  } finally { d.free(); }
+});
+
 test("default elastic net satisfies independent one-feature logistic KKT", () => {
   const d = new Dataset(8, 1);
   try {
@@ -90,5 +109,87 @@ test("default elastic net satisfies independent one-feature logistic KKT", () =>
     // The same stated KKT ceiling as the independent native checks. Tight
     // eps makes this a useful fixture; no universal eps-to-KKT claim is made.
     assert(Math.max(Math.abs(interceptGradient), Math.abs(betaGradient)) < 1e-6);
+  } finally { d.free(); }
+});
+
+function design(nrow, ncol, family) {
+  let state = 5;
+  const random = () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return (state >>> 0) / 2 ** 32; };
+  const x = Array.from({ length: ncol }, () => Float64Array.from({ length: nrow }, () => 4 * random() - 2));
+  const y = Float64Array.from({ length: nrow }, (_, i) => {
+    const signal = 1.5 * x[0][i] - x[1][i] + random() - .5;
+    return family === "gaussian" ? 3 + signal : Number(signal > 0);
+  });
+  return { x, y };
+}
+
+function dataset({ x, y }, rows) {
+  const d = new Dataset(rows.length, x.length);
+  x.forEach((column, j) => d.write_column(j, 0, Float64Array.from(rows, (i) => column[i])));
+  d.write_response(0, Float64Array.from(rows, (i) => y[i]));
+  return d;
+}
+
+// A fold read through a mask (most rows), through its row indices (a few), and
+// through its row indices because a left-out value is too large to mask safely
+const selections = {
+  mask: (i) => i % 4 !== 1,
+  indices: (i) => i % 4 === 0,
+  "indices, unsafe mask": (i) => i % 4 !== 1 && i !== 1,
+};
+
+for (const family of ["binomial", "gaussian"]) {
+  for (const [how, inTrain] of Object.entries(selections)) {
+    test(`a ${family} fold through ${how} fits its training rows alone and scores the held-out rows`, () => {
+      const data = design(60, 6, family), all = [...Array(60).keys()];
+      if (how === "indices, unsafe mask") data.x[2][1] = 1e200;
+      const train = all.filter(inTrain), test = all.filter((i) => !inTrain(i) && data.x[2][i] !== 1e200);
+      const whole = dataset(data, all), part = dataset(data, train);
+      try {
+        const lambdas = dataset(data, all.filter((i) => i !== 1)).fit({ family, alpha: .8, nlambda: 20 }).lambdas;
+        const fold = whole.fit({ family, alpha: .8, lambdas, train_rows: train, test_rows: test });
+        if (family === "gaussian") {
+          assert.deepEqual(whole.fit({ alpha: .8, lambdas, train_rows: train, test_rows: test }), fold);
+        }
+        const alone = part.fit({ family, alpha: .8, lambdas });
+        assert.deepEqual(fold.indices, alone.indices);
+        assert.deepEqual(fold.iterations, alone.iterations);
+        fold.coefficients.forEach((b, k) => b.forEach((v, i) => assert(Math.abs(v - alone.coefficients[k][i]) <= 1e-12 * (1 + Math.abs(v)))));
+        // the held-out loss, from the returned coefficients
+        assert.equal(fold.holdout.length, fold.lambdas.length);
+        fold.holdout.forEach((loss, k) => {
+          const losses = test.map((i) => {
+            const eta = fold.intercept[k] + fold.indices[k].reduce((s, j, n) => s + data.x[j][i] * fold.coefficients[k][n], 0);
+            return family === "gaussian" ? (data.y[i] - eta) ** 2 : 2 * (Math.log1p(Math.exp(eta)) - data.y[i] * eta);
+          });
+          const expected = losses.reduce((a, b) => a + b, 0) / test.length;
+          assert(Math.abs(loss - expected) <= 1e-12 * expected, `${loss} vs ${expected}`);
+        });
+        assert.equal(alone.holdout, undefined);
+      } finally { whole.free(); part.free(); }
+    });
+  }
+}
+
+test("a fold's automatic grid ends where its training rows alone would", () => {
+  // 12 rows by 6 features is tall (lambda_min 0.001); its 6 training rows are
+  // not (0.05)
+  const data = design(12, 6, "gaussian"), all = [...Array(12).keys()], train = all.slice(0, 6);
+  const whole = dataset(data, all), part = dataset(data, train);
+  try {
+    const fold = whole.fit({ family: "gaussian", nlambda: 5, train_rows: train }).lambdas;
+    const alone = part.fit({ family: "gaussian", nlambda: 5 }).lambdas;
+    assert(Math.abs(fold.at(-1) / fold[0] - .05) < 1e-12);
+    fold.forEach((l, k) => assert(Math.abs(l - alone[k]) <= 1e-12 * l));
+  } finally { whole.free(); part.free(); }
+});
+
+test("fold rows out of range, repeated, or empty are clean errors", () => {
+  const d = sample();
+  try {
+    for (const rows of [[8], [0, 0, 1], []]) {
+      assert.throws(() => d.fit({ lambdas: [.1], train_rows: rows }), /Fold rows/);
+      assert.throws(() => d.fit({ lambdas: [.1], test_rows: rows }), /Fold rows/);
+    }
   } finally { d.free(); }
 });

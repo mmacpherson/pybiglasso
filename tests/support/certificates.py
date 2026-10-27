@@ -66,6 +66,7 @@ def gaussian_curvature(Z, lam=0.0, alpha=1.0, penalty_factor=1.0):
     this distance check uses floating-point linear algebra, not intervals.
     Ridge can supply curvature even when X is wide.
     """
+    Z = np.asarray(Z, dtype=np.float64)
     hessian = Z.T @ Z / len(Z)
     ridge = np.broadcast_to(
         lam * (1 - alpha) * np.asarray(penalty_factor), Z.shape[1] - 1
