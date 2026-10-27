@@ -17,6 +17,7 @@ from pathlib import Path
 
 PROBLEMS = {"tall": (2057, 17), "wide": (97, 129)}
 ALPHAS = (1.0, 0.5)
+FAMILIES = ("binomial", "gaussian")
 CANDIDATE_MACHINES = {
     "Linux": ("aarch64", "arm64"),
     "Darwin": ("aarch64", "arm64"),
@@ -53,39 +54,42 @@ def record(output):
         X = rng.integers(-8, 9, (nrow, ncol), dtype=np.int64).astype(np.float64)
         X[:, 0] += 4 * (2 * y - 1)
         X = np.asfortranarray(X / 8)
-        for alpha in ALPHAS:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error")
-                fit = bl.biglasso(
-                    X,
-                    y,
-                    family="binomial",
-                    alpha=alpha,
-                    nlambda=12,
-                    backend="rust",
-                    n_threads=2,
+        for family in FAMILIES:
+            # All operations are exact dyadic arithmetic, including Gaussian y.
+            response = y if family == "binomial" else 0.5 + 2 * y + X[:, 1] / 4
+            for alpha in ALPHAS:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    fit = bl.biglasso(
+                        X,
+                        response,
+                        family=family,
+                        alpha=alpha,
+                        nlambda=12,
+                        backend="rust",
+                        n_threads=2,
+                    )
+                assert len(fit) == 12 and fit.coef.nnz > 0, name
+                coef = fit.coef.tocsc()
+                arrays = dict(
+                    lambdas=fit.lambdas,
+                    intercept=fit.intercept,
+                    coef_data=coef.data,
+                    coef_indices=coef.indices,
+                    coef_indptr=coef.indptr,
+                    iterations=fit.iterations,
+                    n_rejected=fit.n_rejected,
+                    center=fit.center,
+                    scale=fit.scale,
+                    deviance=fit.deviance,
                 )
-            assert len(fit) == 12 and fit.coef.nnz > 0, name
-            coef = fit.coef.tocsc()
-            arrays = dict(
-                lambdas=fit.lambdas,
-                intercept=fit.intercept,
-                coef_data=coef.data,
-                coef_indices=coef.indices,
-                coef_indptr=coef.indptr,
-                iterations=fit.iterations,
-                n_rejected=fit.n_rejected,
-                center=fit.center,
-                scale=fit.scale,
-                deviance=fit.deviance,
-            )
-            cases[f"{name}/alpha={alpha}"] = dict(
-                inputs={"X": array_bits(X), "y": array_bits(y)},
-                fit={
-                    key: array_bits(value, include_data=True)
-                    for key, value in arrays.items()
-                },
-            )
+                cases[f"{name}/family={family}/alpha={alpha}"] = dict(
+                    inputs={"X": array_bits(X), "y": array_bits(response)},
+                    fit={
+                        key: array_bits(value, include_data=True)
+                        for key, value in arrays.items()
+                    },
+                )
     snapshot = dict(
         machine=platform.machine().lower(),
         system=platform.system(),
@@ -101,7 +105,12 @@ def record(output):
 def compare(reference, candidates):
     baseline = json.loads(reference.read_text())
     assert baseline["machine"] == "x86_64" and baseline["system"] == "Linux"
-    expected = {f"{name}/alpha={alpha}" for name in PROBLEMS for alpha in ALPHAS}
+    expected = {
+        f"{name}/family={family}/alpha={alpha}"
+        for name in PROBLEMS
+        for family in FAMILIES
+        for alpha in ALPHAS
+    }
     assert set(baseline["cases"]) == expected
     systems = set()
     differences = []
