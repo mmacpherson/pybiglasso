@@ -277,7 +277,7 @@ fn combine(acc: &[f64; LANES]) -> f64 {
     ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]))
 }
 
-/// Sequential sum: the order the numba backend's seqsum fixes.
+/// Sequential sum in left-to-right row order.
 fn seqsum(a: &[f64]) -> f64 {
     let mut out = 0.0;
     for &v in a {
@@ -451,7 +451,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     dot_col(&Contig::<_, true>(a), b)
 }
 
-/// Stable score and curvature from centered values; strict order, as numba.
+/// Stable score and curvature from centered values in left-to-right row order.
 fn centered_moments<C: Col>(c: &C, r: &[f64], w: &[f64], center: f64, scale: f64, n_fit: f64) -> (f64, f64) {
     let n = c.n();
     let (mut xwr, mut wxx) = (0.0, 0.0);
@@ -463,8 +463,9 @@ fn centered_moments<C: Col>(c: &C, r: &[f64], w: &[f64], center: f64, scale: f64
     (xwr, wxx / n_fit)
 }
 
-/// Standardized score x_j'(s) / n, with the centered fallback for columns far
-/// from zero (see the numba backend's standardized_score).
+/// Standardized score x_j'(s) / n, with a centered fallback.
+/// Differs from R biglasso, which always uses raw moments: cancellation can
+/// lose precision when a column's mean is large relative to its spread.
 #[inline(always)]
 fn standardized_score<C: Col>(c: &C, s: &[f64], s_sum: f64, center: f64, scale: f64, n_fit: f64) -> f64 {
     let n = c.n();
@@ -742,6 +743,9 @@ impl<D: Design> Fit<'_, D> {
     /// Each column's center and scale, from the rows being fit; and, with a
     /// mask, whether the rows it leaves out are safe to sweep (see
     /// LEFT_OUT_Z_MAX). X may hold anything in rows that aren't fit.
+    /// Differs from R biglasso: R derives scales from raw sums, which can lose
+    /// precision for columns far from zero; this uses two passes. R drops
+    /// columns holding NaN or infinity, whereas this rejects nonfinite fit rows.
     pub(crate) fn center_scale(&self) -> Result<(Vec<f64>, Vec<f64>, bool), String> {
         let stats: Vec<(f64, f64, bool, bool)> = (0..self.x.ncol())
             .into_par_iter()
@@ -903,6 +907,8 @@ impl<D: Design> Fit<'_, D> {
             let col = self.x.col(jj);
             let (c, sc) = (path.center[jj], path.scale[jj]);
             let (xwr, v);
+            // Differs from R biglasso, which always uses raw moments: use
+            // centered values when cancellation would make them unreliable.
             if c.abs() > 100.0 * sc {
                 if let Some((pj, delta, pc)) = pending.take() {
                     swr = Pass::shift(&self.x.col(pj), delta, pc).sweep(n, &mut st.r, &mut st.eta, &st.w).wr;
@@ -945,7 +951,9 @@ impl<D: Design> Fit<'_, D> {
                 0.0
             } else {
                 let sign = if u > 0.0 { 1.0 } else { -1.0 };
-                // Differs from R biglasso: see the numba backend's coordinate_sweep
+                // Differs from R biglasso: R divides by v * (1 + l2), while
+                // the documented elastic-net objective requires v + l2.
+                // r_compatible retains R's arithmetic; l2 = 0 agrees in both.
                 if p.r_compatible { sign * (u.abs() - l1) / v / (1.0 + l2) } else { sign * (u.abs() - l1) / (v + l2) }
             };
             let shift = new_beta - st.beta[j];
@@ -1045,6 +1053,9 @@ impl<D: Design> Fit<'_, D> {
         Ok(Status::MaxIter)
     }
 
+    // Differs from R biglasso: report stable loss at the returned predictor.
+    // R uses clipped probabilities from before the final coordinate sweep;
+    // r_compatible keeps that earlier loss instead of calling this function.
     fn final_loss(&self, st: &State) -> f64 {
         let mut loss = 0.0;
         for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
@@ -1139,7 +1150,9 @@ impl<D: Design> Fit<'_, D> {
             lstart = 0;
         } else {
             if mult.contains(&0.0) {
-                // fit the unpenalized columns alone; see the numba backend
+                // Differs from R biglasso, whose default grid is all zero
+                // with unpenalized columns. Fit those columns first: their
+                // residuals determine lambda_max for the penalized columns.
                 for j in 0..ncol_used {
                     if mult[j] == 0.0 {
                         st.active[j] = 1;
