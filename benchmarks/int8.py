@@ -51,6 +51,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-extension", type=Path, required=True)
     parser.add_argument(
+        "--family", choices=["binomial", "gaussian"], default="binomial"
+    )
+    parser.add_argument(
         "--problem", nargs="+", choices=PROBLEMS, default=["wide-2k-20k", "wide-5k-50k"]
     )
     parser.add_argument(
@@ -91,6 +94,7 @@ def main():
         ).strip(),
         extension_sha256=fingerprints,
         seed=1,
+        family=args.family,
     )
     try:
         for problem in args.problem:
@@ -98,6 +102,10 @@ def main():
             # Keep the original response/effects: passing dtype=int8 into the
             # generator would also truncate its effect sizes and change y.
             data = bl.common.make_biglasso_dataset(nrow=nrow, ncol=ncol, seed=1)
+            response = data["y"]
+            if args.family == "gaussian":
+                # A continuous dyadic response for a shared-kernel control.
+                response = 0.5 + 2 * response + data["X"][:, 1] / 4
             for dtype in args.dtype:
                 X = np.asarray(data["X"], dtype=dtype, order="F")
                 X.flags.writeable = False
@@ -105,14 +113,14 @@ def main():
                     hashes = set()
                     for threads in args.threads:
                         options = dict(
-                            family="binomial",
+                            family=args.family,
                             backend="rust",
                             alpha=alpha,
                             n_threads=threads,
                         )
                         for module in variants.values():
                             bl._rust = module
-                            hashes.add(path_hash(bl.biglasso(X, data["y"], **options)))
+                            hashes.add(path_hash(bl.biglasso(X, response, **options)))
                         times = {name: [] for name in variants}
                         for repeat in range(args.repeats):
                             order = list(variants.items())
@@ -121,7 +129,7 @@ def main():
                             for name, module in order:
                                 bl._rust = module
                                 start = time.perf_counter()
-                                fit = bl.biglasso(X, data["y"], **options)
+                                fit = bl.biglasso(X, response, **options)
                                 times[name].append(time.perf_counter() - start)
                                 hashes.add(path_hash(fit))
                         assert len(hashes) == 1, (
