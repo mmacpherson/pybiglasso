@@ -81,7 +81,10 @@ identical. There is no runtime branch, new allocation or matrix copy. The
 gated ARM probe bodies match baseline assembly after normalizing only symbol
 hashes, so the gate retains the old ARM lowering rather than asking ARM to pay
 for the x86 gain. This is assembly evidence, not a new whole-fit timing claim.
-CI's cross-platform fit-bit comparison exercises both branches.
+CI's cross-platform fit-bit comparison exercises both branches with Fortran
+int8 and float64 inputs, both families and both penalties on each of its
+chunk/tail, wide and parallel-IRLS designs: 24 fits per platform. The comparator
+requires every case, so a float64-only snapshot cannot satisfy the check.
 
 ## Paired whole-path measurements
 
