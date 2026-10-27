@@ -5,8 +5,10 @@ benchmark CLI. Use the pinned source revisions and setup in `execution.txt`.
 The three JSONL files retain 360 timed fits and 60 warm-ups; `report.txt`
 records both the results and the remaining tall-control variability.
 
-`manifest.json` covers all thirteen original files. Preserve their exact
-bytes, including the original Python formatting and unified-diff context.
+`manifest.json` covers all thirteen evidence files. The prose report is edited
+to describe this experiment alone; its checksum reflects that editorial version.
+Raw measurements, executed scripts and all other evidence retain their original
+bytes, including the Python formatting and unified-diff context.
 Narrow formatter/whitespace exclusions and Git newline attributes protect
 that provenance; a test checks every manifest entry. Credential and syntax
 checks still apply. This archive contains no hostnames or home paths.

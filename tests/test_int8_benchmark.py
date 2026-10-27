@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 
-def test_quiet_m1_evidence_matches_original_manifest():
+def test_quiet_m1_evidence_matches_manifest():
     # These are external measurements, not regenerated solver expectations.
     # Preserve executed sources too: formatting them would break provenance.
     directory = (

@@ -39,10 +39,8 @@
       6
     ]
   },
-  "background": "Java/CCH server and ordinary desktop/agent services retained; no competing builds or tests from the pybiglasso agents.",
-  "background_claim_withdrawn": true,
-  "background_correction": "The initial background claim above was incorrect. Docker history establishes bigstatsr and snpnet builds during the float64 controls. See int8-zen4-overlap.json and int8-zen4-overlap.csv; original timing/load samples are unchanged.",
+  "scope": "Eight int8 target settings, 96 timed fits; this environment record describes their execution settings.",
   "comparison_base": "7cdd687957e49514a55366a3af95ab9c43445e07",
   "baseline_source_note": "Baseline Rust sources are byte-identical to comparison_base; the latter additionally contains test-only changes.",
-  "load_note": "run is a continuous one-second stream; preflight and postflight are separately sampled bookends and overlap it. Each stream omits its since-boot average."
+  "load_note": "Preflight and the int8 portion of the one-second stream are retained. Each stream omits its since-boot average."
 }

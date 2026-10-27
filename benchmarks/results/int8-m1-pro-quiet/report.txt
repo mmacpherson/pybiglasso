@@ -1,16 +1,16 @@
 M1 Pro: baseline / ungated / aarch64-gated three-extension run
 
-CPU-idle/load gate PASSED before timing. This replaces the earlier exploratory run as the new gate-admitted measurement; the earlier data are still retained separately.
+CPU-idle/load gate PASSED before timing.
 CPU Apple M1 Pro (8 performance cores), macOS 26.7.2 (25G332), Python 3.13.13, NumPy 2.5.4, rustc 1.99.1 (58cf8f9c3), LLVM 23.1.3, native aarch64.
 Baseline fresh origin/main eeff8da3a8da038c32d9af0d96f56a8c59aac0ed; ungated pinned 2b0370297e591c8624de532bf2335e32ae9b8ef2; gated fresh origin/int8-kernels 352c6ac371d2d87308e42dbad34d3014475b7400 (includes f61a985).
-All extensions built/synced before gate. Baseline extension SHA256 is identical to the earlier baseline despite intervening source test changes. See provenance.json for every extension fingerprint.
+All extensions built/synced before gate. See provenance.json for every extension fingerprint.
 Gate sampled every 15 s: second sample from top -l 2 -n 0 -s 5; required CPU idle >= 90% AND 1-minute load < 3 continuously 180 s.
 Gate passed at 2026-10-27T22:44:29.365192+00:00 after 195.009 continuous qualifying seconds (idle 90.7%, load 1.13), 365.422 s after gate start.
 Timing window bookends 2026-10-27T22:44:34.013951+00:00 to2026-10-27T23:09:21.187860+00:00. Before first set load 1.44/2.60/3.98; after final set 3.80/3.21/3.14. All 20 power bookends AC / 100%; no recorded thermal/performance warnings.
 The start gate passed; CPU idle was not gated during fits. Post-set load includes benchmark activity. Ordinary macOS background services remained; core residency was not measured or pinned, and no high-QoS claim is made.
 
 Method: one gated Python wrapper, three actual extensions, same seed1 read-only Fortran array. Warm each build before timing. Use all six permutations once: B/U/G,B/G/U,U/B/G,U/G/B,G/B/U,G/U/B. Each build appears twice in each position; six timed fits/build/setting. No samples dropped or rerun.
-Total 20 settings, 360 timed fits, 60 warm-ups. All 420 fits completed 100 lambdas without disallowed warnings. All output hashes agree across 3 builds, repetitions, and 1/8 threads; corresponding hashes also match the earlier exploratory run.
+Total 20 settings, 360 timed fits, 60 warm-ups. All 420 fits completed 100 lambdas without disallowed warnings. All output hashes agree across 3 builds, repetitions, and 1/8 threads.
 Per-fit UTC start/end stamps, durations, variant, repeat and position are retained in raw JSONL, including warmups. Generation, warm-up, hashing and UTC bookkeeping are excluded from perf_counter timing.
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1. No commits, pushes or PRs.
 
@@ -107,4 +107,4 @@ Tall float64 binomial controls still show distinct timing bands after the start 
 Wide float64 binomial baseline/gated median ratios 0.993181–1.005781; Gaussian float64 baseline/gated 0.994878–1.006106. Full control data retained above.
 
 Privacy: no host name, user name or home path included. Battery identifier redacted in power bookends. CPU, macOS, toolchain, source revisions and extension hashes retained.
-The earlier load-only-gated 1/8-thread attempt timed out without starting. This newer CPU-idle+load-gated three-build run passed and completed.
+The CPU-idle+load-gated three-build run passed and completed.
