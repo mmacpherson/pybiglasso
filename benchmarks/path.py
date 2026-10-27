@@ -316,6 +316,8 @@ def fit_r_adaptive(X, Xs, y, lambdas, alpha, threads):
 def r_thread_limits(threads):
     # Docker does not inherit the parent's limits. Keep BLAS sequential while
     # allowing biglasso's explicit ncores to control its OpenMP work.
+    # Pin both families: even binomial glmnet's lognet wrapper wakes BLAS
+    # workers through y %*% rep(1, nc) when preparing response weights.
     return {
         "OPENBLAS_NUM_THREADS": "1",
         "MKL_NUM_THREADS": "1",
