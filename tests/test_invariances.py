@@ -121,7 +121,7 @@ def test_duplicating_every_row_leaves_fit_unchanged(data, rows):
 def test_flipping_labels_negates_the_fit(data, alpha, unpenalized):
     """y -> 1 - y maps the likelihood at (a, b) to that at (-a, -b), and the
     penalty is even. The solver's steps are symmetric too: |z| sets the grid
-    and strong rule, and the IRLS clamp at |eta| > 10 is two-sided."""
+    and strong rule, and the IRLS probability cutoff is symmetric in either mode."""
     X, y = data
     pf = np.ones(X.shape[1])
     if unpenalized:
