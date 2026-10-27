@@ -107,8 +107,12 @@ def test_duplicating_every_row_leaves_fit_unchanged(data, rows):
     X, y = data
     once_rows = None if rows == "all" else np.arange(0, len(y), 2)
     base = np.arange(len(y)) if once_rows is None else once_rows
-    once = bl.biglasso(X, y, alpha=0.7, row_indices=once_rows, nlambda=30)
-    twice = bl.biglasso(X, y, alpha=0.7, row_indices=np.r_[base, base], nlambda=30)
+    once = bl.biglasso(
+        X, y, alpha=0.7, row_indices=once_rows, nlambda=30, family="binomial"
+    )
+    twice = bl.biglasso(
+        X, y, alpha=0.7, row_indices=np.r_[base, base], nlambda=30, family="binomial"
+    )
     assert len(once) == 30 and once.n_nonzero[-1] > 0
     assert_same_trajectory(twice, once, deviance_b=2 * once.deviance)
 
@@ -122,8 +126,12 @@ def test_flipping_labels_negates_the_fit(data, alpha, unpenalized):
     pf = np.ones(X.shape[1])
     if unpenalized:
         pf[:2] = 0
-    fit = bl.biglasso(X, y, alpha=alpha, penalty_factor=pf, nlambda=30)
-    flipped = bl.biglasso(X, 1 - y, alpha=alpha, penalty_factor=pf, nlambda=30)
+    fit = bl.biglasso(
+        X, y, alpha=alpha, penalty_factor=pf, nlambda=30, family="binomial"
+    )
+    flipped = bl.biglasso(
+        X, 1 - y, alpha=alpha, penalty_factor=pf, nlambda=30, family="binomial"
+    )
     assert fit.n_nonzero[-1] > 0
     assert_same_trajectory(flipped, fit, coef_b=-dense(fit), intercept_b=-fit.intercept)
 
@@ -138,8 +146,8 @@ def test_permuting_columns_permutes_the_solution(data):
     perm = rng.permutation(X.shape[1])
     Xp = np.asfortranarray(X[:, perm])
     kw = dict(alpha=0.8, nlambda=20, eps=1e-14)
-    fit = bl.biglasso(X, y, penalty_factor=pf, **kw)
-    permuted = bl.biglasso(Xp, y, penalty_factor=pf[perm], **kw)
+    fit = bl.biglasso(X, y, penalty_factor=pf, family="binomial", **kw)
+    permuted = bl.biglasso(Xp, y, penalty_factor=pf[perm], family="binomial", **kw)
     # lambda_max is the largest |z_j| / pf_j, the same set of numbers computed
     # the same way column by column, so the grid is exact
     np.testing.assert_array_equal(fit.lambdas, permuted.lambdas)
@@ -187,8 +195,8 @@ def test_rescaling_a_column_divides_its_coefficient(dtype, c):
     np.testing.assert_array_equal(
         Xc[:, scaled_cols], c * X[:, scaled_cols].astype(float)
     )
-    fit = bl.biglasso(X, y, alpha=0.9, nlambda=25)
-    rescaled = bl.biglasso(Xc, y, alpha=0.9, nlambda=25)
+    fit = bl.biglasso(X, y, alpha=0.9, nlambda=25, family="binomial")
+    rescaled = bl.biglasso(Xc, y, alpha=0.9, nlambda=25, family="binomial")
     assert np.all(dense(fit)[scaled_cols].any(axis=1))
     expected = dense(fit)
     expected[scaled_cols] /= c
@@ -223,6 +231,7 @@ def test_lambdas_above_lambda_max_give_the_null_model(data):
         penalty_factor=pf,
         lambdas=lambda_max * np.array([2, 1 + 1e-6, 1 - 1e-6]),
         eps=1e-12,
+        family="binomial",
     )
     assert len(fit) == 3
     assert fit.coef[:, [0, 1]].nnz == 0
@@ -251,7 +260,7 @@ def test_tiny_lambda_approaches_the_unpenalized_mle():
     sklm = pytest.importorskip("sklearn.linear_model")
     d = bl.common.generate_test_data(3000, 4, seed=21)
     X, y = d["X"], d["y"]
-    fit = bl.biglasso(X, y, lambdas=[1e-9], eps=1e-14)
+    fit = bl.biglasso(X, y, lambdas=[1e-9], eps=1e-14, family="binomial")
     sk = _unpenalized_logistic(sklm).fit(X, y)
 
     Xs, center, scale = standardize(X)
@@ -292,7 +301,9 @@ def test_support_matches_saga(alpha):
     Xs, center, scale = standardize(X)
     Z = with_ones(Xs)
     root = np.sqrt(Z.shape[1])
-    fit = bl.biglasso(X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-12)
+    fit = bl.biglasso(
+        X, y, alpha=alpha, nlambda=8, lambda_min=0.02, eps=1e-12, family="binomial"
+    )
     compared = 0
     for k in (2, 4, 7):
         lam = fit.lambdas[k]
@@ -349,7 +360,7 @@ def _rebuild_cv(cv, X, y, n_folds, l1_ratio, scoring):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             fold_path = bl.biglasso(
-                X, y, row_indices=train, lambdas=grid, alpha=l1_ratio
+                X, y, row_indices=train, lambdas=grid, alpha=l1_ratio, family="binomial"
             )
         s = _held_out_score(fold_path, X, y, test, scoring)
         scores[k, : len(s)] = s
@@ -422,7 +433,7 @@ def test_single_feature():
     X, y = d["X"], d["y"]
     Xs, _, _ = standardize(X)
     alpha = 0.7
-    fit = bl.biglasso(X, y, alpha=alpha, nlambda=20, eps=1e-14)
+    fit = bl.biglasso(X, y, alpha=alpha, nlambda=20, eps=1e-14, family="binomial")
     lambda_max = abs(Xs[:, 0] @ (y - y.mean())) / len(y) / alpha
     np.testing.assert_allclose(fit.lambdas[0], lambda_max, rtol=1e-12)
     assert fit.n_nonzero[0] == 0 and fit.n_nonzero[-1] == 1
@@ -436,7 +447,9 @@ def test_unpenalized_column_beside_a_penalized_one():
     sklm = pytest.importorskip("sklearn.linear_model")
     d = bl.common.generate_test_data(400, 2, seed=13)
     X, y = d["X"], d["y"]
-    fit = bl.biglasso(X, y, penalty_factor=[0, 1], nlambda=20, eps=1e-14)
+    fit = bl.biglasso(
+        X, y, penalty_factor=[0, 1], nlambda=20, eps=1e-14, family="binomial"
+    )
     assert dense(fit)[1, 0] == 0 and dense(fit)[0, 0] != 0 and fit.n_nonzero[-1] == 2
     # this caps the prefit's gradient too: column 0 and the intercept
     assert max(kkt_residual(fit, X, y, k) for k in range(len(fit))) < KKT_TOL

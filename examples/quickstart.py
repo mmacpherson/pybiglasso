@@ -35,7 +35,9 @@ print(f"X: {X.shape}, {X.dtype}, {X.nbytes / 1e6:.0f} MB on disk")
 #    unpenalized
 penalty_factor = np.ones(X.shape[1])
 penalty_factor[:3] = 0
-path = bl.biglasso(X, y, alpha=0.5, penalty_factor=penalty_factor, nlambda=50)
+path = bl.biglasso(
+    X, y, alpha=0.5, penalty_factor=penalty_factor, nlambda=50, family="binomial"
+)
 print(path)
 print("model size along the path:", path.n_nonzero[::10])
 

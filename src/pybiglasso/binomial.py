@@ -81,7 +81,7 @@ def biglasso(
     X,
     y,
     alpha=1.0,
-    family="binomial",
+    family="gaussian",
     nlambda=100,
     lambdas=None,
     eps=1e-7,
@@ -100,21 +100,21 @@ def biglasso(
 ):
     """Fit a lasso or elastic-net binomial or Gaussian regression path.
 
-    family="gaussian" minimizes RSS/(2n) plus the standardized elastic-net
+    The default family="gaussian" minimizes RSS/(2n) plus the standardized elastic-net
     penalty, with an unpenalized intercept. It requires the Rust backend and
     reports RSS as deviance. Gaussian fits do not use a saturation cutoff.
 
-    This is a port of R biglasso's `biglasso(..., family = "binomial",
-    screen = "SSR")`, and uses its parameter names: `alpha` mixes the L1 and L2
+    This ports R biglasso's Gaussian and binomial solvers with screen="SSR",
+    and uses its parameter names: `alpha` mixes the L1 and L2
     penalties (1 is the lasso), and `lambdas` are penalty strengths.
 
     X may be a numpy array or memmap, ideally in Fortran (column-major) order;
     it is read a column at a time and never copied.
 
-    Like R, the path stops early once training deviance falls below 1% of the
+    Like R, a binomial path stops early once training deviance falls below 1% of the
     null deviance; `stop_on_saturation=False` (not in R) fits every lambda.
 
-    For the elastic net (alpha < 1), the coordinate update minimizes the
+    For binomial elastic net (alpha < 1), the coordinate update minimizes the
     documented objective, (1/n) * NLL + lambda * (alpha * |b|_1 +
     (1 - alpha) / 2 * |b|_2^2), as glmnet and scikit-learn do. R biglasso's
     logistic update instead divides by v * (1 + l2) rather than v + l2, which
@@ -181,7 +181,11 @@ def biglasso(
     if family not in ("binomial", "gaussian"):
         raise NotImplementedError("Supported families are 'binomial' and 'gaussian'.")
     if family == "gaussian" and backend == "numba":
-        raise NotImplementedError("Gaussian endpoints require backend='rust'.")
+        raise NotImplementedError(
+            "Gaussian endpoints require backend='rust'. "
+            "The family now defaults to 'gaussian'; "
+            "pass family='binomial' for logistic regression with numba."
+        )
     if backend == "numba":
         _use_numba()
     # not np.isfortran, which is False for one column: both C and F order

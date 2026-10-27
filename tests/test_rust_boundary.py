@@ -59,7 +59,7 @@ def test_direct_call_rejects_misaligned_arrays(name, boundscheck):
 def test_biglasso_rejects_misaligned_x():
     args = arguments(np.random.default_rng(0))
     with pytest.raises(ValueError, match="aligned"):
-        bl.biglasso(misaligned(args["x"]), args["y"], backend="rust")
+        bl.biglasso(misaligned(args["x"]), args["y"], backend="rust", family="binomial")
 
 
 def test_direct_call_rejects_unknown_row_path():

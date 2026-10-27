@@ -13,7 +13,7 @@
 [![Built with uv](https://img.shields.io/badge/Built%20with-uv-purple.svg)](https://github.com/astral-sh/uv)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**Lasso and elastic-net logistic regression for data larger than memory.**
+**Lasso and elastic-net regression for data larger than memory.**
 
 If your penalized regression won't fit in memory, pybiglasso fits it where the
 data already is: on disk. A 12 GB design matrix fits under a 3 GB memory limit,
@@ -27,9 +27,10 @@ To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
 solver, compiled to WebAssembly, in your browser, on example datasets or your
 own CSV or Parquet file, which never leaves your machine. It fits lasso and
-elastic-net paths, and can cross-validate them.
+elastic-net paths for Gaussian or binomial responses, and can cross-validate them.
 
-It's also fast when the data does fit in memory. On a full 100-step lasso path
+It's also fast when the data does fit in memory. The benchmarks use binomial
+(logistic) fits. On a full 100-step lasso path
 over 5,000 samples by 50,000 features, it is 2.4x faster than R's glmnet, 2.5x
 faster than R biglasso, and 5.2x faster than skglm, the fastest of the other
 Python solvers we tested. Across the four benchmark problems, with 1,000 to
@@ -75,8 +76,8 @@ path
 
 path.coef                  # scipy.sparse (features x lambdas)
 path.n_nonzero             # model size along the path
-path.predict_proba(X_new)  # (rows x lambdas); reads only the columns in use
-path.score(X_val, y_val, metric="auc")
+path.predict(X_new)        # (rows x lambdas); reads only the columns in use
+path.score(X_val, y_val, metric="mse")
 
 path.to_polars()           # lambda_, feature, coefficient (nonzero only)
 ```
@@ -110,25 +111,34 @@ path = bl.biglasso(X, y, penalty_factor=pf)
 
 ### Gaussian regression
 
-Pass `family="gaussian"` for least-squares lasso or elastic net. This uses the
+Gaussian is the default family in 0.3.0, matching R biglasso. This uses the
 shared Rust solver in Python and WASM; the deprecated numba backend supports
 binomial fits only. Gaussian paths predict continuous responses and report
 residual sum of squares as `deviance`; scoring also accepts `"mse"` and `"r2"`.
 `BiglassoRegressor` and `BiglassoRegressorCV` provide sklearn's regression API.
-The default family remains binomial until the separate 0.3.0 default switch.
+For logistic regression, explicitly pass `family="binomial"`:
+
+```python
+classification = bl.biglasso(X, y_binary, family="binomial")
+classification.predict_proba(X_new)
+```
+
+This is a breaking default change from 0.2.x: existing logistic callers must
+select binomial explicitly. Classifier wrappers already do so. Numba remains
+available for explicit binomial fits through 0.3.x and is removed in 0.4.0.
 
 ### scikit-learn
 
 pybiglasso also offers a scikit-learn interface: `BiglassoClassifier` fits at
 one penalty strength, and `BiglassoClassifierCV` chooses it by cross-validation.
-Both pass scikit-learn's estimator checks, so they work in pipelines, grid
-searches, and anywhere else a scikit-learn classifier does (install
-`pybiglasso[sklearn]`).
+`BiglassoRegressor` and `BiglassoRegressorCV` provide the corresponding Gaussian
+estimators. All four pass scikit-learn's estimator checks and work in pipelines
+and grid searches (install `pybiglasso[sklearn]`).
 
 ```python
 from pybiglasso import BiglassoClassifierCV
 
-clf = BiglassoClassifierCV(l1_ratio=1.0, cv=5, rule="1se").fit(X, y)
+clf = BiglassoClassifierCV(l1_ratio=1.0, cv=5, rule="1se").fit(X, y_binary)
 clf.alpha_, clf.coef_
 ```
 
@@ -167,8 +177,9 @@ against checks that don't depend on R, which also cover the few places where
 the two differ (see [Differences](#differences-from-r-biglasso)).
 
 **Against R.** Every push runs pybiglasso against stored R biglasso 1.7.2
-output for 128 configurations, comparing coefficients, deviance, the lambda
-grid, centering and scaling, strong-rule rejections, and the iteration count at
+output for 192 configurations (152 binomial and 40 Gaussian), comparing
+coefficients, deviance, the lambda grid, centering and scaling, strong-rule
+rejections, and the iteration count at
 every lambda, with `rtol=1e-9`. The grid covers wide and tall problems,
 genotype-like dosage data (including int8 and uint8 storage), memmaps, float32,
 row subsets, penalty factors (including zeros), user-supplied and linear lambda
@@ -180,18 +191,22 @@ upstream changes.
 
 **Independent of R.**
 
-- **Optimality.** At every lambda along the path, the fit satisfies the
+- **Optimality.** Converged test paths satisfy the
   elastic-net optimality (KKT) conditions to 1e-6, on wide, correlated,
   partly unpenalized, and genotype-like designs.
 - **Other solvers.** R's glmnet, which minimizes the same objective, and
   scikit-learn's saga solver, both tightly converged, find the same
-  coefficients: each pair passes the optimality conditions, and then their
+  binomial coefficients: each pair passes the optimality conditions, and then their
   distance is certified, to about 1e-7 on tall data and, through the duality
   gap, to about 1e-5 on wide data (all but the wide lasso, whose optimum
   need not be unique). glmnet's path is stored from a pinned release and
   checked at every lambda where no fitted log-odds exceeds 10, beyond which
   pybiglasso, like R biglasso, clips them. In the benchmarks, glum reaches
   the same elastic-net objective as well.
+- **Gaussian checks.** Six pinned glmnet paths use its generic `gaussian()`
+  family, avoiding the response scaling of its fast Gaussian path. Independent
+  checks cover KKT conditions, curvature, exact-arithmetic duality gaps,
+  analytic solutions, and invariances.
 - **Where R differs.** R's elastic-net update (reproduced by
   `r_compatible=True`) doesn't satisfy the optimality conditions, and its
   coefficients differ from saga's by 2–50% of their size on the test problem.
@@ -338,11 +353,11 @@ with a comment beginning "Differs from R biglasso".
 - **Invalid input.** NaN or infinite values in the rows being fit, and
   non-finite penalty factors or lambdas, raise `ValueError`; R instead drops
   the affected column or returns the null model.
-- **Deviance.** `deviance` is the deviance, -2 log-likelihood, of the returned
+- **Binomial deviance.** `deviance` is the deviance, -2 log-likelihood, of the returned
   model. R reports `loss`, half the deviance, computed before the final
   coordinate sweep and with probabilities clipped at 0 and 1, so it can
   occasionally be infinite. `r_compatible=True` keeps R's version.
-- **Saturation.** `stop_on_saturation=False`, an option R doesn't have, fits
+- **Binomial saturation.** `stop_on_saturation=False`, an option R doesn't have, fits
   every lambda, even past R's saturation cutoff.
 - **Gaussian constant responses.** R's strict convergence comparison against
   a zero null loss uses the full iteration budget for a constant response.
@@ -438,6 +453,12 @@ solver to it, and both to R.
 | `check` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
 | `fit_lambda` | `cdfit_binomial_lambda_core` |
 | `run` | `cdfit_binomial_ssr` |
+
+The Gaussian driver and coordinate sweeps live in `rust/src/gaussian.rs`,
+porting R's Gaussian SSR solver.
+They share column access, standardization, and fixed-order reductions with the
+binomial solver, but use residual updates with constant curvature, without IRLS.
+The independent NumPy reference also covers Gaussian paths.
 
 Every sum over rows runs in an order fixed by the data's shape alone. Threads
 split the work by column, and a tall column's rows into 2,048-row chunks whose

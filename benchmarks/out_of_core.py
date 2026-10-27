@@ -143,7 +143,12 @@ def fit_py(workdir, threads):
     )
     warm[:] = X[:50, :20]
     warm.flush()
-    bl.biglasso(np.load(workdir / "warm.npy", mmap_mode="r"), y[:50], nlambda=2)
+    bl.biglasso(
+        np.load(workdir / "warm.npy", mmap_mode="r"),
+        y[:50],
+        nlambda=2,
+        family="binomial",
+    )
     io0, t0 = read_bytes(), time.perf_counter()
     path = bl.biglasso(
         X,
@@ -153,6 +158,7 @@ def fit_py(workdir, threads):
         lambda_min=prm["lambda_min"],
         eps=prm["eps"],
         n_threads=threads,
+        family="binomial",
     )
     seconds = time.perf_counter() - t0
     io1 = read_bytes()

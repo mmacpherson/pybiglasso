@@ -1,8 +1,8 @@
-# Gaussian endpoint contract (proposal)
+# Gaussian endpoint contract
 
 Explicit Gaussian fitting is implemented in the shared Rust solver, Python
-and WASM bindings, and sklearn regression estimators. The default-family
-switch below is reserved for a separate final 0.3.0 release PR.
+and WASM bindings, and sklearn regression estimators. Version 0.3.0 makes
+Gaussian the public default; logistic callers explicitly select binomial.
 
 Version 0.3.0 adds Gaussian support and makes it the default family, matching
 R biglasso. The deprecated numba backend remains available for binomial fits
@@ -18,18 +18,17 @@ identical across thread counts and Rust SIMD widths.
 ## Public API
 
 `biglasso(X, y, family="gaussian", ...)` shares the existing path options.
-This opt-in implementation retains the `"binomial"` default. The final 0.3.0
-release PR switches it to `"gaussian"`; logistic calls then explicitly pass
-`family="binomial"`, as the classifier wrappers already do. That default
-change must be called out in the 0.3.0 release notes and examples.
+The default family is `"gaussian"` in 0.3.0. Logistic calls explicitly pass
+`family="binomial"`, as the classifier wrappers do. This breaks the 0.2.x
+default and is called out in the README migration example.
 Gaussian requires a finite numeric
 response on the selected rows. The numba backend raises `NotImplementedError`
 for Gaussian; the implementation is Rust only. Constant responses produce
 the intercept-only optimum; supplied lambdas allow a single fit.
 
-`BiglassoPath` has a `family` field currently defaulting to `"binomial"`,
-switching to `"gaussian"` in the final 0.3.0 release PR; internal constructors
-explicitly record the family actually fitted. Gaussian `predict()`
+`BiglassoPath` records the family actually fitted, including `"gaussian"` for
+default fits. Its dataclass field fallback stays `"binomial"` so paths pickled
+before families existed retain their classification behavior. Gaussian `predict()`
 and `decision_function()` return the linear prediction, with the existing
 shape `(nrow, nlambda)`. `predict_proba()` raises for Gaussian. Coefficients,
 intercepts, sparse exports and lambda selection keep their current formats.

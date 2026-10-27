@@ -33,10 +33,12 @@ ROWS = dict(all=None, most=np.arange(400)[np.arange(400) % 7 != 0], few=np.arang
 def test_stopped_path_is_a_prefix(data, grid, rows, at):
     X, y = data
     kwargs = dict(nlambda=15, row_indices=ROWS[rows], **GRIDS[grid])
-    full = bl.biglasso(X, y, **kwargs)
+    full = bl.biglasso(X, y, family="binomial", **kwargs)
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # stopping isn't a truncation to warn of
-        short = bl.biglasso(X, y, _stop=lambda il, *_: il >= at, **kwargs)
+        short = bl.biglasso(
+            X, y, _stop=lambda il, *_: il >= at, family="binomial", **kwargs
+        )
     assert len(short) == at + 1
     assert_bitwise(short, full, length=len(short))
 
@@ -50,7 +52,7 @@ def test_stop_sees_each_fit(data):
         seen.append((il, lambdas.copy(), cols.copy(), beta.copy(), intercept))
         return False
 
-    path = bl.biglasso(X, y, nlambda=12, _stop=record)
+    path = bl.biglasso(X, y, nlambda=12, _stop=record, family="binomial")
     assert [s[0] for s in seen] == list(range(12))
     for il, lambdas, cols, beta, intercept in seen:
         np.testing.assert_array_equal(lambdas, path.lambdas)
@@ -72,7 +74,7 @@ def test_stop_errors_propagate(data):
         return False
 
     with pytest.raises(Boom):
-        bl.biglasso(X, y, nlambda=10, _stop=boom)
+        bl.biglasso(X, y, nlambda=10, _stop=boom, family="binomial")
 
 
 def test_cv_with_patience_past_the_path_matches_none(data):

@@ -88,7 +88,9 @@ def test_strong_rule_at_and_next_to_the_boundary(direction, backend):
     X = np.asfortranarray(np.repeat(hadamard(4)[:, 1:3].astype(float), 4, axis=0))
     y = np.concatenate([np.arange(4) < count for count in (3, 1, 2, 0)]).astype(float)
     lam = 3 / 16 if direction == 0 else np.nextafter(3 / 16, direction * np.inf)
-    path = bl.biglasso(X, y, lambdas=[lam], backend=backend, **FIT_OPTIONS)
+    path = bl.biglasso(
+        X, y, lambdas=[lam], backend=backend, family="binomial", **FIT_OPTIONS
+    )
     assert len(path) == 1
     assert path.n_rejected[0] == int(direction >= 0)
 
@@ -121,6 +123,7 @@ def test_both_kkt_reentry_branches_are_needed(backend):
         penalty_factor=[1.0, 1 / 16],
         lambdas=[3 / 16, 1 / 8],
         backend=backend,
+        family="binomial",
         **FIT_OPTIONS,
     )
     assert len(path) == 2
@@ -139,6 +142,7 @@ def test_independent_kkt_rejects_a_disabled_reentry_scan(monkeypatch, scan):
         penalty_factor=[1.0, 1 / 16],
         lambdas=[3 / 16],
         backend="numba",
+        family="binomial",
         **FIT_OPTIONS,
     )
     with pytest.raises(AssertionError, match="KKT residual"):
@@ -181,7 +185,9 @@ def test_scale_cutoff_and_neighbors(direction, backend):
     cutoff = 1e-6
     scale = cutoff if direction == 0 else np.nextafter(cutoff, direction * np.inf)
     X[:, 1] *= scale
-    fit = bl.biglasso(X, y, lambdas=[0.125, 0.0625], backend=backend, **FIT_OPTIONS)
+    fit = bl.biglasso(
+        X, y, lambdas=[0.125, 0.0625], backend=backend, family="binomial", **FIT_OPTIONS
+    )
     assert_bitwise(fit.scale[1:], np.array([scale]))
     if direction <= 0:
         assert fit.coef.nnz == 0
@@ -197,9 +203,9 @@ def test_default_lambda_min_switches_when_n_crosses_p(delta, backend):
     X = np.asfortranarray(np.tile(x[:, None], (1, p)))
     y = np.resize([0.0, 0.0, 0.0, 1.0], n)
     options = dict(nlambda=2, backend=backend, **FIT_OPTIONS)
-    auto = bl.biglasso(X, y, **options)
+    auto = bl.biglasso(X, y, family="binomial", **options)
     ratio = 0.001 if n > p else 0.05
-    explicit = bl.biglasso(X, y, lambda_min=ratio, **options)
+    explicit = bl.biglasso(X, y, lambda_min=ratio, family="binomial", **options)
     assert len(auto) == 2
     # Independent of the explicit-parameter comparison: log/exp and division,
     # with a gamma_(16*n) relative allowance for their rounding.
@@ -229,7 +235,12 @@ def test_storage_and_promotion_do_not_change_the_fit(dtype, layout, backend):
     stored = np.asfortranarray(np.where(X > 0, high, low).astype(dtype))
     y = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0])
     promoted = bl.biglasso(
-        stored.astype(float), y, lambdas=[0.125, 0.0625], backend=backend, **FIT_OPTIONS
+        stored.astype(float),
+        y,
+        lambdas=[0.125, 0.0625],
+        backend=backend,
+        family="binomial",
+        **FIT_OPTIONS,
     )
     with tempfile.TemporaryDirectory() as directory:
         if layout == "c":
@@ -249,7 +260,12 @@ def test_storage_and_promotion_do_not_change_the_fit(dtype, layout, backend):
                 "ignore", message="The design matrix is not in Fortran"
             )
             actual = bl.biglasso(
-                view, y, lambdas=[0.125, 0.0625], backend=backend, **FIT_OPTIONS
+                view,
+                y,
+                lambdas=[0.125, 0.0625],
+                backend=backend,
+                family="binomial",
+                **FIT_OPTIONS,
             )
         assert view.tobytes() == before
         if backend == "rust":
@@ -322,24 +338,24 @@ def test_invalid_input_raises_value_error(case, backend):
     else:
         options[name] = value
     with pytest.raises(ValueError):
-        bl.biglasso(X, y, **options)
+        bl.biglasso(X, y, family="binomial", **options)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_zero_alpha_has_its_documented_exception(backend):
     with pytest.raises(NotImplementedError, match="zero alpha"):
-        bl.biglasso(*signal_arrays(), alpha=0, backend=backend)
+        bl.biglasso(*signal_arrays(), alpha=0, backend=backend, family="binomial")
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_dfmax_equality_vs_one_above(backend):
     X, y = signal_arrays()
     options = dict(lambdas=[0.125, 0.0625], backend=backend, **FIT_OPTIONS)
-    equal = bl.biglasso(X, y, dfmax=1, **options)
+    equal = bl.biglasso(X, y, dfmax=1, family="binomial", **options)
     assert len(equal) == 2
     np.testing.assert_array_equal(equal.n_nonzero, [1, 1])
     with pytest.warns(UserWarning, match="Exceeded dfmax"):
-        above = bl.biglasso(X, y, dfmax=0, **options)
+        above = bl.biglasso(X, y, dfmax=0, family="binomial", **options)
     assert_bitwise(above, equal, length=1)
 
 
@@ -351,7 +367,9 @@ def test_saturation_can_return_an_empty_exportable_path(backend, prefit):
         dict(penalty_factor=[1.0, 0.0], nlambda=2) if prefit else dict(lambdas=[0.0])
     )
     with pytest.warns(UserWarning, match="Model saturated"):
-        path = bl.biglasso(X, y, backend=backend, **options, **FIT_OPTIONS)
+        path = bl.biglasso(
+            X, y, backend=backend, family="binomial", **options, **FIT_OPTIONS
+        )
     assert len(path) == 0
     assert path.coef.shape == (2, 0)
     assert path.decision_function(X).shape == (8, 0)
@@ -368,6 +386,7 @@ def test_numba_restores_threads_when_standardization_fails():
             np.tile([0.0, 1.0], 4),
             n_threads=requested,
             backend="numba",
+            family="binomial",
         )
     assert numba.get_num_threads() == prior
 
@@ -390,8 +409,8 @@ def test_rust_row_chunk_parallelism_preserves_bits(delta):
     )
     y = np.resize([1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0], n)
     options = dict(alpha=0.5, lambdas=[0.125, 0.0625], backend="rust")
-    one = bl.biglasso(X, y, n_threads=1, **options)
-    many = bl.biglasso(X, y, n_threads=2, **options)
+    one = bl.biglasso(X, y, n_threads=1, family="binomial", **options)
+    many = bl.biglasso(X, y, n_threads=2, family="binomial", **options)
     assert len(one) == 2
     assert np.all(one.n_nonzero == 2)
     assert_bitwise(one, many)
@@ -427,6 +446,7 @@ def test_one_active_sweep_uses_the_documented_enet_denominator(
                 r_compatible=compatible,
                 n_threads=1,
                 backend=backend,
+                family="binomial",
             )
     l1 = Fraction(lam) * Fraction(alpha)
     l2 = Fraction(lam) * (1 - Fraction(alpha))
@@ -478,6 +498,7 @@ def test_tiny_positive_alpha_fits_finitely_or_raises_value_error(backend):
                 nlambda=2,
                 n_threads=1,
                 backend=backend,
+                family="binomial",
             )
         except ValueError:
             return

@@ -45,7 +45,7 @@ def fit_reference(data, options):
 
 def fit_solver(data, options):
     """A pybiglasso fit, in R biglasso's layout."""
-    fit = bl.biglasso(data["X"], data["y"], **options)
+    fit = bl.biglasso(data["X"], data["y"], family="binomial", **options)
     return dict(
         center=fit.center,
         scale=fit.scale,

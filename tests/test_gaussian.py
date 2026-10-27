@@ -1,6 +1,7 @@
 """Production Gaussian solver: outside R trajectories and independent optima."""
 
 import dataclasses
+import pickle
 
 import numpy as np
 import pytest
@@ -20,6 +21,30 @@ def _fit(*args, **kwargs):
 @pytest.fixture(scope="module")
 def fixtures():
     return rcompare.load_fixtures()
+
+
+def test_gaussian_is_the_default_family():
+    X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
+    y = 3 + 2 * X[:, 0]
+    implicit = bl.biglasso(X, y, lambdas=[0.5], alpha=0.5, backend="rust")
+    explicit = bl.biglasso(
+        X, y, lambdas=[0.5], alpha=0.5, family="gaussian", backend="rust"
+    )
+    assert implicit.family == "gaussian"
+    assert_bitwise(implicit, explicit)
+    restored = pickle.loads(pickle.dumps(implicit))
+    assert restored.family == "gaussian"
+    assert_bitwise(restored, implicit)
+    np.testing.assert_array_equal(restored.predict(X), implicit.predict(X))
+
+
+def test_numba_default_family_error_explains_migration():
+    X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
+    with pytest.raises(
+        NotImplementedError,
+        match="family now defaults to 'gaussian'.*family='binomial'",
+    ):
+        bl.biglasso(X, [0.0, 0.0, 1.0, 1.0], backend="numba")
 
 
 @pytest.mark.parametrize("compatible", [False, True])

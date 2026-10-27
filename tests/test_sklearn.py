@@ -32,10 +32,10 @@ def data():
 
 def test_classifier_matches_functional_api(data):
     X, y = data
-    path = bl.biglasso(X, y, alpha=0.7, nlambda=10)
+    path = bl.biglasso(X, y, alpha=0.7, nlambda=10, family="binomial")
     lam = path.lambdas[6]
     clf = BiglassoClassifier(alpha=lam, l1_ratio=0.7).fit(X, y)
-    ref = bl.biglasso(X, y, alpha=0.7, lambdas=[lam])
+    ref = bl.biglasso(X, y, alpha=0.7, lambdas=[lam], family="binomial")
     np.testing.assert_allclose(clf.coef_.ravel(), ref.coef.toarray().ravel())
     np.testing.assert_allclose(clf.intercept_, ref.intercept)
     # and close to the warm-started path solution at the same lambda. The

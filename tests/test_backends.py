@@ -21,19 +21,19 @@ def test_numba_warns_once_a_process(monkeypatch):
     monkeypatch.setattr(binomial, "_numba_warned", False)
     d = bl.common.generate_test_data(60, 4, seed=1)
     with pytest.warns(FutureWarning, match="0.4.0") as caught:
-        bl.biglasso(d["X"], d["y"], nlambda=3, backend="numba")
+        bl.biglasso(d["X"], d["y"], nlambda=3, backend="numba", family="binomial")
     assert caught[0].filename == __file__  # pointed at the caller
     with warnings.catch_warnings():
         warnings.simplefilter("error", FutureWarning)
-        bl.biglasso(d["X"], d["y"], nlambda=3, backend="numba")
+        bl.biglasso(d["X"], d["y"], nlambda=3, backend="numba", family="binomial")
 
 
 def test_numba_backend_without_numba_says_how_to_install(monkeypatch):
     monkeypatch.setattr(binomial, "nb", None)
     d = bl.common.generate_test_data(60, 4, seed=1)
     with pytest.raises(ImportError, match=r"pybiglasso\[numba\]"):
-        bl.biglasso(d["X"], d["y"], nlambda=3, backend="numba")
-    bl.biglasso(d["X"], d["y"], nlambda=3, backend="rust")
+        bl.biglasso(d["X"], d["y"], nlambda=3, backend="numba", family="binomial")
+    bl.biglasso(d["X"], d["y"], nlambda=3, backend="rust", family="binomial")
 
 
 @pytest.mark.parametrize("subset", [False, True])
@@ -52,6 +52,14 @@ def test_rust_uses_no_numpy_transcendentals(monkeypatch, subset):
     monkeypatch.setattr(binomial, "get_nrow", forbidden)
     for name in ("exp", "log", "log1p"):
         monkeypatch.setattr(np, name, forbidden)
-    fit = bl.biglasso(X, y, row_indices=rows, nlambda=3, lambda_min=0.5, backend="rust")
+    fit = bl.biglasso(
+        X,
+        y,
+        row_indices=rows,
+        nlambda=3,
+        lambda_min=0.5,
+        backend="rust",
+        family="binomial",
+    )
     # Both the full response and selected rows are balanced: log(1) = 0.
     assert fit.intercept[0] == 0
