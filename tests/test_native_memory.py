@@ -3,7 +3,8 @@
 tracemalloc (test_out_of_core.py) sees numpy's allocations but not the Rust
 extension's, which go straight to malloc. Here each fit runs in a child
 process whose private writable memory is capped (RLIMIT_DATA) at what it
-already holds after a warm-up fit, plus half of X's own size. A copy of X in
+holds after a warm-up fit on a small, different X, plus half of X's own
+size; the target X's first fit runs under the cap. A copy of X in
 any dtype, by numpy or by Rust, can't be allocated: numpy raises MemoryError,
 and Rust aborts the child. The memmap itself is a read-only file mapping,
 which the limit doesn't count. Linux only: other systems don't enforce
@@ -32,11 +33,12 @@ CHILD = textwrap.dedent(
     import pybiglasso as bl
 
     xfile, yfile, case = sys.argv[1:]
-    X, y = np.load(xfile, mmap_mode="r"), np.load(yfile)
-    nrow = X.shape[0]
-    gaussian = y + np.arange(nrow) % 7  # any continuous response
+    target_X, target_y = np.load(xfile, mmap_mode="r"), np.load(yfile)
+    keep = []
 
-    def run():
+    def run(X, y):
+        nrow = X.shape[0]
+        gaussian = y + np.arange(nrow) % 7  # any continuous response
         if case == "binomial":
             bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2)
         elif case == "gaussian":
@@ -51,13 +53,17 @@ CHILD = textwrap.dedent(
         elif case == "cross-validation":
             from pybiglasso.sklearn import BiglassoClassifierCV
             BiglassoClassifierCV(n_alphas=6, alpha_min_ratio=0.2, cv=3, n_jobs=1).fit(X, y)
-        elif case == "copy X":  # the negative controls: these must fail
-            np.array(X)
+        # the negative controls, which must fail: a copy of X kept by numpy,
+        # and an allocation of X's size, as Rust's would be, before a fit
+        elif case == "copy X":
+            keep.append(np.array(X))
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2)
         elif case == "malloc X":
             libc = ctypes.CDLL(None)
             libc.malloc.restype = ctypes.c_void_p
             if not libc.malloc(ctypes.c_size_t(X.nbytes)):
                 raise MemoryError("malloc")
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2)
 
     def private_bytes():
         with open("/proc/self/status") as status:
@@ -65,13 +71,17 @@ CHILD = textwrap.dedent(
                 if line.startswith("VmData:"):
                     return int(line.split()[1]) * 1024
 
-    if not case.endswith(" X"):
-        run()  # thread pools, imports and the allocator's arenas, first
-    budget = X.nbytes // 2
+    # Warm up thread pools, imports and the allocator's arenas on a small,
+    # different X, so anything a first fit of the target X keeps is measured.
+    rng = np.random.default_rng(0)
+    small = np.asfortranarray(rng.integers(0, 3, size=(2_000, 200), dtype=np.int8))
+    run(small, (rng.random(2_000) < 0.5).astype(np.float64))
+    del small, keep[:]
+    budget = target_X.nbytes // 2
     limit = private_bytes() + budget
     resource.setrlimit(resource.RLIMIT_DATA, (limit, resource.RLIM_INFINITY))
     try:
-        run()
+        run(target_X, target_y)
     except MemoryError:
         print(json.dumps({"fits": False}))
     else:
@@ -100,7 +110,12 @@ def memmap(tmp_path_factory):
 
 def run_child(memmap, case):
     # one malloc arena, so threads don't each reserve one during the measured fit
-    env = {"MALLOC_ARENA_MAX": "1", "PYTHONWARNINGS": "ignore"}
+    # and the Rust backend, whatever the environment asks for
+    env = {
+        "MALLOC_ARENA_MAX": "1",
+        "PYTHONWARNINGS": "ignore",
+        "PYBIGLASSO_BACKEND": "rust",
+    }
     result = subprocess.run(
         [sys.executable, "-c", CHILD, *map(str, memmap), case],
         capture_output=True,
