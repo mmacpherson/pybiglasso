@@ -1,5 +1,5 @@
 """The backend setting: Rust by default since 0.2.0; numba deprecated, an
-optional extra, and gone in 0.3.0."""
+optional extra, and gone in 0.4.0."""
 
 import warnings
 
@@ -20,7 +20,7 @@ def test_numba_warns_once_a_process(monkeypatch):
     pytest.importorskip("numba")
     monkeypatch.setattr(binomial, "_numba_warned", False)
     d = bl.common.generate_test_data(60, 4, seed=1)
-    with pytest.warns(FutureWarning, match="0.3.0") as caught:
+    with pytest.warns(FutureWarning, match="0.4.0") as caught:
         bl.biglasso(d["X"], d["y"], nlambda=3, backend="numba")
     assert caught[0].filename == __file__  # pointed at the caller
     with warnings.catch_warnings():

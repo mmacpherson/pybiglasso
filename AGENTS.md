@@ -15,7 +15,7 @@ pick up the same content. It follows the [AGENTS.md](https://agents.md) conventi
 
 ## Matching R biglasso is the contract
 
-pybiglasso is a port of R biglasso's logistic solver, and matches it to
+pybiglasso ports R biglasso's binomial and Gaussian solvers, matching them to
 floating-point precision: coefficients, lambda grid, centering and scaling,
 strong-rule rejections, and the iteration count at every lambda. A change that
 moves any of these, on a case where R's behavior is intended, is a regression.
@@ -93,10 +93,12 @@ to observed output.
 
 - `src/pybiglasso/binomial.py` — `biglasso()`: validation, then the solver;
   also the deprecated numba backend (`fit_path`, `_fit_lambda`, one numba
-  kernel per step), until 0.3.0
+  kernel per step), until 0.4.0
 - `rust/src/solver.rs` — the shared solver (the default backend): the whole
   path in one call, with Python bindings in `rust/src/python.rs` and browser
   bindings in `rust/src/wasm.rs`. The README maps its steps to R biglasso's C++.
+- `rust/src/gaussian.rs` — Gaussian SSR coordinate descent, using the same
+  column access, standardization and fixed-order score reductions.
 - `web/` — the static browser playground and CSV/Parquet import worker;
   `make browser` builds it, `make test-browser` checks it against R and in browsers.
 - `tests/support/reference.py` — the same algorithm in plain numpy, step by
@@ -104,6 +106,7 @@ to observed output.
 - `src/pybiglasso/path.py` — `BiglassoPath`, the fitted path: prediction, scoring,
   dataframe export
 - `src/pybiglasso/sklearn.py` — `BiglassoClassifier`, `BiglassoClassifierCV`
+  and the corresponding `BiglassoRegressor`, `BiglassoRegressorCV`
 - `tests/support/rcompare.py`, `tests/r/fit_biglasso.R` — the R comparison harness
 - `benchmarks/` — in-memory and out-of-core benchmarks; results in
   `benchmarks/results/`

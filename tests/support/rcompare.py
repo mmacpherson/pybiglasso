@@ -58,6 +58,7 @@ class Case:
     max_iter: int = MAX_ITER
     filebacked: bool = False  # R side: file-backed big.matrix
     tag: str = ""
+    family: str = "binomial"
 
     @property
     def name(self):
@@ -65,6 +66,7 @@ class Case:
         parts.append(f"a{self.alpha}")
         parts.append(f"L{self.nlambda}")
         for field, default in [
+            ("family", "binomial"),
             ("frac_mono", 0.0),
             ("response", "logistic"),
             ("columns", "distinct"),
@@ -161,6 +163,31 @@ def fast_grid():
     return cases
 
 
+def gaussian_grid():
+    """Least-squares paths, generated independently of the production solver."""
+    cases = []
+    for nrow, ncol in ((100, 10), (60, 200)):
+        for alpha in (0.1, 0.5, 1.0):
+            base = dict(nrow=nrow, ncol=ncol, alpha=alpha, family="gaussian")
+            cases += [Case(**base), Case(**base, frac_mono=0.5)]
+        base = dict(nrow=nrow, ncol=ncol, alpha=0.8, family="gaussian")
+        cases += [
+            Case(**base, penalty=penalty) for penalty in ("varied", "heavy", "zeros")
+        ]
+        cases += [Case(**base, rows=rows) for rows in ("half", "quarter", "most")]
+        cases += [
+            Case(**base, data="dosage", dtype="int8"),
+            Case(**base, dtype="float32"),
+            Case(**base, memmap=True),
+            Case(**base, user_lambdas=True),
+            Case(**base, lambda_log_scale=False),
+            Case(**base, columns="duplicate"),
+            Case(**base, dfmax=5),
+            Case(**base, max_iter=4),
+        ]
+    return cases
+
+
 def soak_grid(scale=None):
     """Larger problems, meant to be run locally; scale rows with SOAK_SCALE."""
     scale = float(os.environ.get("SOAK_SCALE", 1.0) if scale is None else scale)
@@ -219,7 +246,17 @@ def make_case_data(case, workdir):
     else:
         raise ValueError(case.data)
 
-    if case.response != "logistic":
+    if case.family == "gaussian":
+        weights = np.random.default_rng(case.seed + 4).normal(size=case.ncol)
+        weights[min(5, case.ncol) :] = 0
+        # Fixture digests must survive different BLAS implementations and
+        # CPUs. Each multiplication and addition happens separately in a
+        # fixed column order, rather than an architecture-dependent GEMV.
+        y = np.full(case.nrow, 2.5)
+        for j in range(min(5, case.ncol)):
+            y += Xbin[:, j] * weights[j]
+        y += rng.normal(size=case.nrow)
+    elif case.response != "logistic":
         if case.data != "normal":
             raise ValueError("imbalanced responses are for normal data")
         y = imbalanced_response(Xbin, d["w"], case.response, case.seed)
@@ -333,8 +370,9 @@ def fit_py(case, data, lambdas=None):
         fit = bl.biglasso(
             data["X"],
             data["y"],
-            family="binomial",
             alpha=case.alpha,
+            family=case.family,
+            backend="rust" if case.family == "gaussian" else None,
             nlambda=case.nlambda,
             lambdas=lambdas,
             eps=EPS,
@@ -351,8 +389,8 @@ def fit_py(case, data, lambdas=None):
         center=fit.center,
         scale=fit.scale,
         lambda_=fit.lambdas,
-        # R's `loss` is the negative log-likelihood, half the deviance
-        loss=fit.deviance / 2,
+        # R reports RSS for Gaussian and NLL for binomial.
+        loss=fit.deviance / (2 if case.family == "binomial" else 1),
         iter=fit.iterations,
         rejections=fit.n_rejected,
         beta=np.vstack([fit.intercept, fit.coef.toarray()]),
@@ -381,11 +419,13 @@ def warning_kinds(messages):
     )
 
 
-def prepare_case(case, workdir, lambdas=None):
+def prepare_case(case, workdir, lambdas=None, *, fit_python=True):
     """Write a case's inputs for R and fit it in Python.
 
-    When the case gives R a lambda grid, it is derived from pybiglasso's default
-    grid, unless `lambdas` (e.g. the grid a stored R fit was given) is passed.
+    When the case gives R a lambda grid, binomial uses pybiglasso's default
+    grid; Gaussian uses the null-model covariance calculated independently.
+    `lambdas` reuses the grid a stored R fit was given. With fit_python=False,
+    prepare only the R inputs and return None for the Python results.
 
     Returns (python results, data digest, lambdas given to R or None).
     """
@@ -396,6 +436,25 @@ def prepare_case(case, workdir, lambdas=None):
         lambdas = None
     elif lambdas is not None:
         lambdas = np.asarray(lambdas, dtype=np.float64)
+    elif case.family == "gaussian":
+        # Prescribe the Gaussian grid from the problem itself, independently
+        # of the implementation. Fixture expectations always come from R.
+        X, y = data["X"], data["y"]
+        if data["row_indices"] is not None:
+            X, y = X[data["row_indices"]], y[data["row_indices"]]
+        scale = X.std(axis=0)
+        used = scale > 1e-6
+        pf = data["penalty_factor"]
+        pf = np.ones(case.ncol) if pf is None else pf
+        used &= pf > 0
+        scores = (X[:, used] - X[:, used].mean(axis=0)).T @ (y - y.mean())
+        maximum = np.max(np.abs(scores) / scale[used] / pf[used]) / len(y) / case.alpha
+        lambdas = np.geomspace(
+            maximum, maximum * case.resolved_lambda_min, case.nlambda
+        )
+        lambdas[0] *= 1 + 1e-9
+        if case.user_lambdas:
+            lambdas *= 0.9
     else:
         grid = fit_py(case, data)["lambda_"]
         if case.user_lambdas:
@@ -406,7 +465,7 @@ def prepare_case(case, workdir, lambdas=None):
             # R and numba can't flip that check and shift iteration counts
             lambdas = grid.copy()
             lambdas[0] *= 1 + 1e-9
-    py = fit_py(case, data, lambdas)
+    py = fit_py(case, data, lambdas) if fit_python else None
 
     y = data["y"]
     row_idx = None
@@ -419,6 +478,7 @@ def prepare_case(case, workdir, lambdas=None):
         ncol=case.ncol,
         ny=len(y),
         alpha=case.alpha,
+        family=case.family,
         nlambda=case.nlambda,
         lambda_min=case.resolved_lambda_min,
         lambda_log_scale=case.lambda_log_scale,

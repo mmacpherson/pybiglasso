@@ -8,8 +8,10 @@ the displayed deviance is a training statistic.
 
 The first examples are colon (R biglasso's 62x2000 binary gene-expression
 dataset), Wisconsin breast cancer and deterministic correlated features. Sources
-and transformations are in `public/examples/README.txt`. Diabetes and riboflavin
-need a future Gaussian-family solver; the current solver is binary logistic.
+and transformations are in `public/examples/README.txt`. A deterministic
+continuous-response example exercises Gaussian regression. Uploads can use
+either binomial or Gaussian responses; diabetes and riboflavin remain possible
+additional examples.
 
 ## Develop
 
@@ -59,8 +61,9 @@ Python suites and live R gates still apply when changing the shared solver.
 - CSV needs a header with unique nonempty column names. Parquet needs flat
   scalar columns. Snappy, gzip, zstd and the other hyparquet-compressors codecs
   are available in the worker.
-- Pick numeric, finite predictors and a response with exactly two classes.
-  The chosen positive label maps to 1. Missing values and categorical
+- Pick numeric, finite predictors. For binomial fits choose a response with
+  exactly two classes; the chosen positive label maps to 1. Gaussian fits
+  accept finite numeric responses and report training RSS. Missing values and categorical
   predictors require preprocessing; nothing is silently imputed or encoded.
 - CSV integers and Parquet bigint values that cannot round-trip through
   float64 are rejected. Browser data is stored as float64 even if the file's

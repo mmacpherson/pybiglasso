@@ -93,6 +93,32 @@ test("phone layout fits the viewport and a new dataset replaces the old model", 
   await expect(page.locator("#model-results")).toBeVisible();
 });
 
+test("Gaussian imports CSV and Parquet, reports RSS, and exports the fitted family", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#family").selectOption("gaussian");
+  const data = Array.from({ length: 48 }, (_, i) => [3 + 2 * (i % 3 - 1) + i % 5 / 10, i % 3 - 1, Math.floor(i / 3) % 3 - 1]);
+  await upload(page, "regression.csv", "response,x,z\n" + data.map((r) => r.join(",")).join("\n"));
+  await expect(page.locator("#loss-label")).toHaveText("Training RSS");
+  const a = await pathDownload(page);
+  expect(a.family).toBe("gaussian");
+  expect(a.classes).toBeUndefined();
+  expect(a.lambdas.length).toBe(100);
+  expect(a.deviance.at(-1)).toBeLessThan(a.deviance[0]);
+  const buffer = parquetWriteBuffer({ columnData: [
+    { name: "response", data: data.map((r) => r[0]), type: "DOUBLE" },
+    { name: "x", data: data.map((r) => r[1]), type: "DOUBLE" },
+    { name: "z", data: data.map((r) => r[2]), type: "DOUBLE" },
+  ], rowGroupSize: 7 });
+  await upload(page, "regression.parquet", new Uint8Array(buffer));
+  const b = await pathDownload(page);
+  for (const field of ["lambdas", "intercept", "coefficients", "deviance", "iterations", "n_rejected"]) expect(a[field]).toEqual(b[field]);
+  await page.locator("#example").selectOption("gaussian");
+  await page.locator("#load-example").click();
+  await expect(page.locator("#dataset-summary")).toContainText("Gaussian");
+  await expect(page.locator("#model-results")).toBeVisible();
+  expect((await pathDownload(page)).family).toBe("gaussian");
+});
+
 test("cancelling an example download cannot restart a fit when the response arrives", async ({ page }) => {
   let release;
   const waiting = new Promise((resolve) => { release = resolve; });

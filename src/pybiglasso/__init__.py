@@ -13,7 +13,12 @@ except PackageNotFoundError:  # pragma: no cover
 
 def __getattr__(name):
     # the scikit-learn estimators need scikit-learn; import them on first use
-    if name in ("BiglassoClassifier", "BiglassoClassifierCV"):
+    if name in (
+        "BiglassoClassifier",
+        "BiglassoClassifierCV",
+        "BiglassoRegressor",
+        "BiglassoRegressorCV",
+    ):
         try:
             from . import sklearn as _sklearn
         except ImportError as e:

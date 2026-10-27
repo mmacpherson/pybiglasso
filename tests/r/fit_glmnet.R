@@ -28,9 +28,13 @@ fit_case <- function(case_dir) {
   glmnet.control(fdev = 0, devmax = 1)
   on.exit(glmnet.control(factory = TRUE))
   warns <- character()
+  # The generic Gaussian family keeps y in its original units. The fast
+  # character-family path standardizes y, which changes the effective ridge
+  # penalty. Check the documented RSS/(2n) objective without that rescaling.
+  family <- if (identical(prm$family, "gaussian")) gaussian() else "binomial"
   fit <- withCallingHandlers(
     glmnet(
-      X, y, family = "binomial", alpha = prm$alpha, nlambda = prm$nlambda,
+      X, y, family = family, alpha = prm$alpha, nlambda = prm$nlambda,
       lambda.min.ratio = prm$lambda_min_ratio, penalty.factor = pf,
       standardize = TRUE, intercept = TRUE,
       control = list(thresh = prm$thresh, maxit = prm$maxit)

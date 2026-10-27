@@ -57,7 +57,8 @@ fit_case <- function(case_dir) {
   y <- readBin(file.path(case_dir, "y.bin"), "double", prm$ny)
 
   args <- list(
-    X = X, y = y, family = "binomial",
+    X = X, y = y,
+    family = if (is.null(prm$family)) "binomial" else prm$family,
     screen = if (is.null(prm$screen)) "SSR" else prm$screen,
     penalty = if (prm$alpha < 1) "enet" else "lasso", alpha = prm$alpha,
     nlambda = prm$nlambda, lambda.min = prm$lambda_min,

@@ -47,10 +47,10 @@ wheel. Extras add optional integrations:
 |---|---|
 | `pybiglasso[polars]` | `BiglassoPath.to_polars()` |
 | `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
-| `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV` |
+| `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV`, `BiglassoRegressor`, `BiglassoRegressorCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
-| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.3.0 |
+| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.4.0 |
 
 ## Quick start
 
@@ -101,6 +101,15 @@ pf = np.ones(X.shape[1])
 pf[:12] = 0
 path = bl.biglasso(X, y, penalty_factor=pf)
 ```
+
+### Gaussian regression
+
+Pass `family="gaussian"` for least-squares lasso or elastic net. This uses the
+shared Rust solver in Python and WASM; the deprecated numba backend supports
+binomial fits only. Gaussian paths predict continuous responses and report
+residual sum of squares as `deviance`; scoring also accepts `"mse"` and `"r2"`.
+`BiglassoRegressor` and `BiglassoRegressorCV` provide sklearn's regression API.
+The default family remains binomial until the separate 0.3.0 default switch.
 
 ### scikit-learn
 
@@ -328,6 +337,21 @@ with a comment beginning "Differs from R biglasso".
   occasionally be infinite. `r_compatible=True` keeps R's version.
 - **Saturation.** `stop_on_saturation=False`, an option R doesn't have, fits
   every lambda, even past R's saturation cutoff.
+- **Gaussian constant responses.** R's strict convergence comparison against
+  a zero null loss uses the full iteration budget for a constant response.
+  pybiglasso stops once the coefficients no longer change;
+  `r_compatible=True` retains R's comparison.
+- **Gaussian zero maximum penalty.** R's logarithmic grid calculation can
+  produce non-finite values when the maximum penalty is zero. pybiglasso
+  returns a finite all-zero grid, whose fits solve the unpenalized problem.
+- **Gaussian unrepresentable grids.** If an automatic grid overflows (for
+  example, with extremely small positive `alpha`), pybiglasso raises
+  `ValueError` rather than returning non-finite penalties. Finite supplied
+  grids remain supported, including in compatibility mode.
+- **Gaussian loss after an iteration limit.** R can leave `loss` at zero when
+  the budget ends with outstanding KKT violations. pybiglasso reports the
+  returned model's residual sum of squares; `r_compatible=True` retains R's
+  bookkeeping.
 
 ## Threads, cross-validation, and storage
 
@@ -419,11 +443,11 @@ bits differ between Linux, macOS, and Windows. So results are bit-identical at
 any thread count, on any CPU, and on every operating system with a wheel.
 
 The deprecated numba backend (`backend="numba"`) is in
-`src/pybiglasso/binomial.py`, one numba kernel per step; it is slated for removal in 0.3.0.
+`src/pybiglasso/binomial.py`, one numba kernel per step; it is slated for removal in 0.4.0.
 
 ## Scope
 
-- Binomial (logistic) family only; R's Gaussian and Cox families are not ported.
+- Binomial (logistic) and Gaussian (least-squares) families; Cox is not ported.
 - SSR (sequential strong rule) screening only. R uses its newer Hybrid and
   Adaptive rules only for the plain lasso without penalty factors, and they
   were no faster than SSR on our benchmarks.

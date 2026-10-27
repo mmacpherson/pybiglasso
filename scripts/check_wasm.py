@@ -37,14 +37,14 @@ def main():
     fixtures = rcompare.load_fixtures()
     cases, payload, expected, native = [], [], [], []
     with tempfile.TemporaryDirectory() as temp:
-        for case in rcompare.fast_grid():
+        for case in rcompare.fast_grid() + rcompare.gaussian_grid():
             if case.rows != "all" or not case.lambda_log_scale:
                 continue
             digest, lambdas, reference = fixtures[case.name]
             data = rcompare.make_case_data(case, Path(temp) / case.name)
             assert rcompare.data_digest(data) == digest, case.name
             options = dict(
-                family="binomial",
+                family=case.family,
                 alpha=case.alpha,
                 nlambda=case.nlambda,
                 eps=rcompare.EPS,
@@ -107,7 +107,11 @@ def main():
             ("center", actual["center"]),
             ("scale", actual["scale"]),
             ("lambda_", actual["lambdas"]),
-            ("loss", np.asarray(actual["deviance"]) / 2),
+            (
+                "loss",
+                np.asarray(actual["deviance"])
+                / (2 if case.family == "binomial" else 1),
+            ),
             ("beta", coef),
         ]:
             np.testing.assert_allclose(

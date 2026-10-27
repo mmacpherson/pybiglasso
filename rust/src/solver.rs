@@ -5,6 +5,53 @@ use libm::{exp, log, log1p};
 use pulp::{Simd, WithSimd};
 use rayon::prelude::*;
 
+#[path = "gaussian.rs"]
+mod gaussian;
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Family {
+    Binomial,
+    Gaussian,
+}
+
+impl Family {
+    pub(crate) fn parse(name: &str) -> Result<Self, &'static str> {
+        match name {
+            "binomial" => Ok(Self::Binomial),
+            "gaussian" => Ok(Self::Gaussian),
+            _ => Err("family must be 'binomial' or 'gaussian'."),
+        }
+    }
+
+    pub(crate) fn null_model(self, y: &[f64], rows: Option<&[usize]>) -> Result<(f64, f64), &'static str> {
+        if self == Self::Binomial {
+            return null_model(y, rows);
+        }
+        let n = rows.map_or(y.len(), <[usize]>::len);
+        if n == 0 {
+            return Err("y must contain at least one selected response.");
+        }
+        let at = |i: usize| y[rows.map_or(i, |r| r[i])];
+        let mut total = 0.0;
+        for i in 0..n {
+            let value = at(i);
+            if !value.is_finite() {
+                return Err("Gaussian y must be finite in the rows used for fitting.");
+            }
+            total += value;
+        }
+        let mean = total / n as f64;
+        let mut rss = 0.0;
+        for i in 0..n {
+            rss += (at(i) - mean).powi(2);
+        }
+        if !mean.is_finite() || !rss.is_finite() {
+            return Err("Gaussian y has values too large to fit safely.");
+        }
+        Ok((mean, rss))
+    }
+}
+
 const LANES: usize = 8;
 const SCALE_MIN: f64 = 1e-6;
 const ETA_MAX: f64 = 10.0;
@@ -582,6 +629,7 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> WithSimd for Chunks<'_, Pas
 // The solver
 
 pub(crate) struct Params<'a> {
+    pub(crate) family: Family,
     pub(crate) alpha: f64,
     pub(crate) lambdas: Option<&'a [f64]>,
     pub(crate) nlambda: usize,
@@ -965,6 +1013,9 @@ impl<D: Design> Fit<'_, D> {
     }
 
     pub(crate) fn run(&self, center: Vec<f64>, scale: Vec<f64>) -> Result<Path, String> {
+        if self.params.family == Family::Gaussian {
+            return self.run_gaussian(center, scale);
+        }
         let p = self.params;
         let nrow = self.x.nrow();
         let col_map: Vec<usize> = (0..scale.len()).filter(|&j| scale[j] > SCALE_MIN).collect();

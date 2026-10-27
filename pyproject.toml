@@ -51,7 +51,7 @@ version = "0.2.0"
 
 [project.optional-dependencies]
 all = ["pybiglasso[polars,pandas,sklearn,viz]"]
-# the deprecated numba backend (backend="numba"), until 0.3.0 removes it
+# the deprecated numba backend (backend="numba"), until 0.4.0 removes it
 numba = ["numba"]
 pandas = ["pandas"]
 polars = ["polars"]

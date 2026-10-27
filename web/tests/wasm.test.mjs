@@ -37,11 +37,29 @@ test("invalid dimensions, incomplete data, invalid options and nonbinary y are c
     assert.throws(() => d.write_column(2, 0, Float64Array.of(1)));
     assert.throws(() => d.write_column(0, 7, Float64Array.of(1, 2)));
     assert.throws(() => d.write_column(0, 0, Float64Array.of(NaN)));
-    assert.throws(() => d.write_response(0, Float64Array.of(2)));
-    assert.throws(() => d.fit({ family: "gaussian" }), /only family='binomial'/);
-    for (const options of [{ alpha: 0 }, { alpha: NaN }, { nlambda: 1 }, { nlambda: 201 }, { eps: -1 }, { lambdas: [1, 2] }, { penalty_factor: [1] }, { max_iter: 0 }]) {
+    assert.throws(() => d.write_response(0, Float64Array.of(NaN)));
+    d.write_response(0, Float64Array.of(2));
+    assert.throws(() => d.fit({ family: "binomial" }));
+    d.write_response(0, Float64Array.of(0));
+    for (const options of [{ family: "invalid" }, { alpha: 0 }, { alpha: NaN }, { nlambda: 1 }, { nlambda: 201 }, { eps: -1 }, { lambdas: [1, 2] }, { penalty_factor: [1] }, { max_iter: 0 }]) {
       assert.throws(() => d.fit(options));
     }
+  } finally { d.free(); }
+});
+
+test("Gaussian uses the analytic squared-loss elastic-net optimum and RSS", () => {
+  const d = new Dataset(4, 2);
+  try {
+    d.write_column(0, 0, Float64Array.of(-1, -1, 1, 1));
+    d.write_column(1, 0, Float64Array.of(-1, 1, -1, 1));
+    d.write_response(0, Float64Array.of(1, 1, 5, 5));
+    const p = d.fit({ family: "gaussian", alpha: .5, lambdas: [.5], eps: 1e-14 });
+    assert.equal(p.family, "gaussian");
+    assert.deepEqual(p.indices, [[0]]);
+    assert(Math.abs(p.coefficients[0][0] - 1.4) <= 16 * Number.EPSILON);
+    assert.equal(p.intercept[0], 3);
+    assert(Math.abs(p.deviance[0] - 4 * .6 ** 2) <= 32 * Number.EPSILON);
+    assert.deepEqual(d.fit({ family: "gaussian", alpha: .5, lambdas: [.5], eps: 1e-14 }), p);
   } finally { d.free(); }
 });
 
@@ -51,6 +69,25 @@ test("one dataset can fit lasso and enet repeatedly without changing its input",
     const lasso = d.fit({ alpha: 1, nlambda: 10 });
     d.fit({ alpha: .5, nlambda: 10 });
     assert.deepEqual(d.fit({ alpha: 1, nlambda: 10 }), lasso);
+  } finally { d.free(); }
+});
+
+test("Gaussian rejects an overflowing automatic grid but accepts finite supplied penalties", () => {
+  const d = new Dataset(4, 2);
+  try {
+    d.write_column(0, 0, Float64Array.of(-1, -1, 1, 1));
+    d.write_column(1, 0, Float64Array.of(-1, 1, -1, 1));
+    d.write_response(0, Float64Array.of(0, 0, 2, 2));
+    for (const r_compatible of [false, true]) {
+      const options = { family: "gaussian", alpha: Number.MIN_VALUE, eps: 1e-14, r_compatible };
+      assert.throws(() => d.fit({ ...options, nlambda: 3 }));
+      const p = d.fit({ ...options, lambdas: [1, .5] });
+      assert.deepEqual(p.lambdas, [1, .5]);
+      assert.deepEqual(p.intercept, [1, 1]);
+      assert.deepEqual(p.indices, [[0], [0]]);
+      assert(Math.abs(p.coefficients[0][0] - .5) <= 8 * Number.EPSILON);
+      assert(Math.abs(p.coefficients[1][0] - 2 / 3) <= 8 * Number.EPSILON);
+    }
   } finally { d.free(); }
 });
 

@@ -7,6 +7,7 @@ export interface Inspection {
 }
 
 export interface ModelPath {
+  family: "binomial" | "gaussian";
   lambdas: number[];
   intercept: number[];
   indices: number[][];
@@ -21,6 +22,7 @@ export interface ModelPath {
 }
 
 export interface Loaded {
+  family: "binomial" | "gaussian";
   rows: number;
   features: string[];
   classes: [string, string];
@@ -30,7 +32,7 @@ export interface Loaded {
 
 export type Request =
   | { kind: "inspect"; file: File }
-  | { kind: "load"; target: string; features: string[]; positive: string }
+  | { kind: "load"; target: string; features: string[]; positive: string; family: "binomial" | "gaussian" }
   | { kind: "fit"; alpha: number; nlambda: number; eps: number };
 
 export type Reply =

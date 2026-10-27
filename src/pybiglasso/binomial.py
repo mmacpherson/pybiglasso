@@ -45,14 +45,14 @@ def _use_numba():
     if nb is None:
         raise ImportError(
             'backend="numba" needs numba: pip install "pybiglasso[numba]". '
-            "It is deprecated and slated for removal in pybiglasso 0.3.0; the default, "
+            "It is deprecated and slated for removal in pybiglasso 0.4.0; the default, "
             'backend="rust", needs nothing more.'
         )
     if not _numba_warned:
         _numba_warned = True
         warnings.warn(
             "The numba backend is deprecated and slated for removal in pybiglasso "
-            '0.3.0; use the default, backend="rust".',
+            '0.4.0; use the default, backend="rust".',
             FutureWarning,
             stacklevel=3,
         )
@@ -98,7 +98,11 @@ def biglasso(
     backend=None,
     _stop=None,
 ):
-    """Fit a lasso or elastic-net penalized logistic regression path.
+    """Fit a lasso or elastic-net binomial or Gaussian regression path.
+
+    family="gaussian" minimizes RSS/(2n) plus the standardized elastic-net
+    penalty, with an unpenalized intercept. It requires the Rust backend and
+    reports RSS as deviance. Gaussian fits do not use a saturation cutoff.
 
     This is a port of R biglasso's `biglasso(..., family = "binomial",
     screen = "SSR")`, and uses its parameter names: `alpha` mixes the L1 and L2
@@ -174,6 +178,10 @@ def biglasso(
     if n_threads is not None:
         _integer("n_threads", n_threads)
     backend = settings.backend if backend is None else check_backend(backend)
+    if family not in ("binomial", "gaussian"):
+        raise NotImplementedError("Supported families are 'binomial' and 'gaussian'.")
+    if family == "gaussian" and backend == "numba":
+        raise NotImplementedError("Gaussian endpoints require backend='rust'.")
     if backend == "numba":
         _use_numba()
     if not np.isfortran(X):
@@ -189,9 +197,6 @@ def biglasso(
         )
     elif not (0 < alpha <= 1):
         raise ValueError(f"Alpha must be in (0, 1]; you gave [{alpha}]")
-
-    if family != "binomial":
-        raise NotImplementedError("Sorry, we only do binomial endpoints now.")
 
     if X.shape[0] != len(y):
         raise ValueError(
@@ -215,7 +220,9 @@ def biglasso(
         row_indices = row_indices.astype(np.intp)
 
     y_used = y if row_indices is None else y[row_indices]
-    if set(np.unique(y_used)) != {0, 1}:
+    if family == "gaussian" and not np.isfinite(y_used).all():
+        raise ValueError("Gaussian y must be finite in the rows used for fitting.")
+    if family == "binomial" and set(np.unique(y_used)) != {0, 1}:
         raise ValueError(
             "Family `binomial` requires a response with both 0s and 1s; "
             f"got values {set(np.unique(y_used))}."
@@ -310,7 +317,7 @@ def biglasso(
             return bool(_stop(il, lambdas, cols, beta, intercept))
 
     if backend == "rust":
-        results = fit_path_rust(X, y, row_indices, params, n_threads, on_lambda)
+        results = fit_path_rust(X, y, row_indices, params, n_threads, on_lambda, family)
     else:
         prior_threads = nb.get_num_threads()
         try:
@@ -347,7 +354,7 @@ def biglasso(
         intercept=intercept,
         coef=coef,
         # the solver tracks -log-likelihood, as R does; report true deviance
-        deviance=2.0 * results["deviance"][fitted],
+        deviance=(2.0 if family == "binomial" else 1.0) * results["deviance"][fitted],
         iterations=results["iters"][fitted],
         n_rejected=results["n_reject"][fitted],
         center=center,
@@ -355,6 +362,7 @@ def biglasso(
         penalty_factor=penalty_factor,
         feature_names=feature_names,
         alpha=alpha,
+        family=family,
     )
 
 
@@ -1001,7 +1009,9 @@ def fit_path(
     return path
 
 
-def fit_path_rust(X, y, row_indices, params, n_threads, on_lambda=None):
+def fit_path_rust(
+    X, y, row_indices, params, n_threads, on_lambda=None, family="binomial"
+):
     """fit_path, run by the Rust backend in one call."""
     from . import _rust
 
@@ -1029,6 +1039,7 @@ def fit_path_rust(X, y, row_indices, params, n_threads, on_lambda=None):
         n_threads or 0,
         settings.boundscheck,
         on_lambda=on_lambda,
+        family=family,
     )
     path.pop("row_path")  # gathered or masked rows; reported for tests
     for kind, il in path.pop("events"):

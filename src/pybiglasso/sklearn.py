@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import scipy.sparse as sps
-from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.model_selection import check_cv
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
 from sklearn.utils.validation import check_is_fitted, validate_data
@@ -24,7 +24,12 @@ from .binomial import biglasso
 from .config import settings
 from .path import METRICS, _expit, linear_predictor, score_logits
 
-__all__ = ["BiglassoClassifier", "BiglassoClassifierCV"]
+__all__ = [
+    "BiglassoClassifier",
+    "BiglassoClassifierCV",
+    "BiglassoRegressor",
+    "BiglassoRegressorCV",
+]
 
 
 def _as_design(X):
@@ -67,6 +72,7 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
 
     def _fit_kwargs(self):
         return dict(
+            family="binomial",
             alpha=self.l1_ratio,
             penalty_factor=self.penalty_factor,
             eps=self.tol,
@@ -97,6 +103,166 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
         tags.classifier_tags.multi_class = False
         tags.input_tags.sparse = False
         return tags
+
+
+class _RegressionBase(RegressorMixin, BaseEstimator):
+    def _validate_xy(self, X, y):
+        X, y = validate_data(
+            self,
+            X,
+            y,
+            dtype="numeric",
+            order=None,
+            copy=False,
+            ensure_all_finite=False,
+            y_numeric=True,
+            ensure_min_samples=2,
+        )
+        if not 0 < self.l1_ratio <= 1:
+            raise ValueError(f"l1_ratio must be in (0, 1]; got {self.l1_ratio}.")
+        return _as_design(X), y
+
+    def _fit_kwargs(self):
+        return dict(
+            family="gaussian",
+            alpha=self.l1_ratio,
+            penalty_factor=self.penalty_factor,
+            eps=self.tol,
+            max_iter=self.max_iter,
+            backend=self.backend,
+        )
+
+    def predict(self, X):
+        check_is_fitted(self)
+        X = validate_data(self, X, reset=False, dtype="numeric", order=None)
+        return linear_predictor(
+            _as_design(X), self.coef_[:, None], np.atleast_1d(self.intercept_)
+        )[:, 0]
+
+
+class BiglassoRegressor(_RegressionBase):
+    """Gaussian elastic net at one penalty strength, on standardized features.
+
+    alpha is the penalty strength (R's lambda); l1_ratio is its mixing
+    parameter (R's alpha). Only the Rust backend supports Gaussian fits.
+    score returns R², following sklearn's regression convention.
+    """
+
+    def __init__(
+        self,
+        alpha=1e-3,
+        l1_ratio=1.0,
+        penalty_factor=None,
+        tol=1e-7,
+        max_iter=1000,
+        backend=None,
+    ):
+        self.alpha = alpha
+        self.l1_ratio = l1_ratio
+        self.penalty_factor = penalty_factor
+        self.tol = tol
+        self.max_iter = max_iter
+        self.backend = backend
+
+    def fit(self, X, y):
+        X, y = self._validate_xy(X, y)
+        self.path_ = biglasso(
+            X,
+            y,
+            lambdas=[self.alpha],
+            feature_names=getattr(self, "feature_names_in_", None),
+            **self._fit_kwargs(),
+        )
+        self.coef_ = self.path_.coef.toarray()[:, 0]
+        self.intercept_ = float(self.path_.intercept[0])
+        self.n_iter_ = int(self.path_.iterations[0])
+        return self
+
+
+class BiglassoRegressorCV(_RegressionBase):
+    """Gaussian elastic net with min-error or one-standard-error selection.
+
+    cv_scores_ contains one held-out score per fold and alpha. MSE is the
+    default; deviance is also averaged per observation for fold comparability.
+    Folds index the original X without copying training matrices.
+    """
+
+    def __init__(
+        self,
+        l1_ratio=1.0,
+        n_alphas=100,
+        alpha_min_ratio=None,
+        alphas=None,
+        cv=5,
+        scoring="mse",
+        rule="min",
+        penalty_factor=None,
+        tol=1e-7,
+        max_iter=1000,
+        n_jobs=None,
+        backend=None,
+    ):
+        self.l1_ratio = l1_ratio
+        self.n_alphas = n_alphas
+        self.alpha_min_ratio = alpha_min_ratio
+        self.alphas = alphas
+        self.cv = cv
+        self.scoring = scoring
+        self.rule = rule
+        self.penalty_factor = penalty_factor
+        self.tol = tol
+        self.max_iter = max_iter
+        self.n_jobs = n_jobs
+        self.backend = backend
+
+    def fit(self, X, y):
+        if self.scoring not in ("mse", "deviance", "r2"):
+            raise ValueError("scoring must be 'mse', 'deviance', or 'r2'.")
+        if self.rule not in ("min", "1se"):
+            raise ValueError("rule must be 'min' or '1se'.")
+        X, y = self._validate_xy(X, y)
+        kwargs = self._fit_kwargs()
+        path = biglasso(
+            X,
+            y,
+            nlambda=self.n_alphas,
+            lambda_min=self.alpha_min_ratio,
+            lambdas=self.alphas,
+            feature_names=getattr(self, "feature_names_in_", None),
+            **kwargs,
+        )
+        grid = path.lambdas
+        splitter = check_cv(self.cv, y, classifier=False)
+        folds = list(splitter.split(np.zeros((len(y), 1)), y))
+
+        def score_fold(fold):
+            train, test = fold
+            fit = biglasso(X, y, lambdas=grid, row_indices=train, n_threads=1, **kwargs)
+            score = fit.score(X, y, self.scoring, row_indices=test)
+            return score / len(test) if self.scoring == "deviance" else score
+
+        jobs = self.n_jobs
+        if jobs is not None and (
+            isinstance(jobs, bool)
+            or not isinstance(jobs, numbers.Integral)
+            or jobs == 0
+        ):
+            raise ValueError("n_jobs must be None or a nonzero integer.")
+        jobs = (os.cpu_count() or 1) if jobs is None or jobs < 0 else jobs
+        with ThreadPoolExecutor(max_workers=min(jobs, len(folds))) as pool:
+            scores = np.array(list(pool.map(score_fold, folds)))
+        sign = -1 if self.scoring == "r2" else 1
+        means = sign * scores.mean(axis=0)
+        best = int(np.argmin(means))
+        if self.rule == "1se":
+            error = scores[:, best].std(ddof=1) / np.sqrt(len(folds))
+            best = int(np.flatnonzero(means <= means[best] + error)[0])
+        self.cv_scores_, self.alphas_, self.path_ = scores, grid, path
+        self.alpha_ = grid[best]
+        self.coef_ = path.coef[:, [best]].toarray().ravel()
+        self.intercept_ = float(path.intercept[best])
+        self.n_iter_ = int(path.iterations[best])
+        return self
 
 
 class BiglassoClassifier(_BiglassoBase):
