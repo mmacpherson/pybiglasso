@@ -38,7 +38,9 @@ test("colon fits locally, lambda changes the model, and enet refits", async ({ p
   const last = await page.locator("#lambda").getAttribute("max");
   await page.locator("#lambda").fill(last);
   await expect(page.locator("#active-count")).not.toHaveText("0");
-  await page.locator('[data-alpha="0.5"]').click(); await page.locator("#fit").click();
+  // penalty changes refit on their own; the Fit button stays away while fits are quick
+  await page.locator('[data-alpha="0.2"]').click(); await page.locator('[data-alpha="0.5"]').click();
+  await expect(page.locator("#fit")).toBeHidden();
   await expect(page.locator("#path-title")).toContainText("α = 0.50");
   const result = await pathDownload(page);
   expect(result.features).toHaveLength(2000);
@@ -142,6 +144,9 @@ test("cross-validation chooses λ on held-out rows for both families", async ({ 
   await page.goto("/");
   for (const example of ["breast", "gaussian"]) {
     await page.locator("#example").selectOption(example);
+    const cvSwitch = page.getByLabel("Cross-validate to choose λ");
+    if (!await cvSwitch.isChecked()) await page.getByText("Cross-validate to choose λ").click();
+    await expect(cvSwitch).toBeChecked();
     await page.locator("#folds").selectOption("5");
     await page.locator("#load-example").click();
     await expect(page.locator("#model-results")).toBeVisible();
@@ -160,7 +165,71 @@ test("cross-validation chooses λ on held-out rows for both families", async ({ 
     await expect(page.locator("#active-count")).toHaveText(String(result.indices[cv.best].length));
     await expect(page.locator("#cv-note")).toContainText(example === "gaussian" ? "squared error" : "deviance");
   }
-  await page.locator("#folds").selectOption("0"); await page.locator("#fit").click();
+  await page.getByText("Cross-validate to choose λ").click();
+  await expect(page.getByLabel("Cross-validate to choose λ")).not.toBeChecked();
   await expect(page.locator("#cv-panel")).toBeHidden();
   expect(errors).toEqual([]);
+});
+
+test("metric explainers open on hover, focus and tap, and close on Escape", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#example").selectOption("breast");
+  await page.locator("#load-example").click();
+  await expect(page.locator("#model-results")).toBeVisible();
+  const tip = page.locator("#tip-rejections");
+  const button = page.getByRole("button", { name: "About strong-rule rejections" });
+  await expect(tip).toBeHidden();
+  // hover, then onto the text itself, which stays open; Escape closes it
+  // while the pointer is still there
+  await button.hover();
+  await expect(tip).toBeVisible();
+  await expect(tip).toContainText("screening never changes the answer");
+  await tip.hover();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(tip).toBeHidden();
+  await page.mouse.move(0, 0);
+  // keyboard focus opens it; Escape closes it with focus still there
+  await button.focus();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(tip).toBeHidden();
+  await expect(button).toBeFocused();
+  // a tap opens it and leaving the pointer elsewhere keeps it; a click away closes it
+  await page.getByRole("button", { name: "About training deviance" }).click();
+  await page.mouse.move(0, 0);
+  await expect(page.locator("#tip-loss")).toBeVisible();
+  await expect(page.locator("#tip-loss")).toContainText("deviance");
+  await page.locator("h1").click();
+  await expect(page.locator("#tip-loss")).toBeHidden();
+});
+
+test("Gaussian names its loss explainer for RSS", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#example").selectOption("gaussian");
+  await page.locator("#load-example").click();
+  await expect(page.locator("#model-results")).toBeVisible();
+  await expect(page.getByRole("button", { name: "About training rss" })).toBeVisible();
+  await expect(page.locator("#loss-label")).toHaveText("Training RSS");
+});
+
+test("a change just before loading another dataset doesn't refit the new one twice", async ({ page }) => {
+  const fits = [];
+  await page.goto("/");
+  await page.locator("#example").selectOption("breast");
+  await page.locator("#load-example").click();
+  await expect(page.locator("#model-results")).toBeVisible();
+  await page.evaluate(() => {
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message, ...rest) { (window.__posts ??= []).push(message.kind); return post.call(this, message, ...rest); };
+  });
+  await page.route("**/examples/colon.csv", async (route) => { await new Promise((r) => setTimeout(r, 800)); await route.continue(); });
+  await page.locator('[data-alpha="0.5"]').click();
+  await page.locator("#example").selectOption("colon");
+  await page.locator("#load-example").click();
+  await expect(page.locator("#dataset-summary")).toContainText("62 rows");
+  await expect(page.locator("#model-results")).toBeVisible();
+  await page.waitForTimeout(500);
+  fits.push(...await page.evaluate(() => window.__posts.filter((kind) => kind === "fit")));
+  expect(fits).toHaveLength(1);
 });
