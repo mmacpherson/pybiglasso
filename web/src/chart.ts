@@ -89,6 +89,6 @@ export function drawCv(canvas: HTMLCanvasElement, path: ModelPath, cv: CrossVali
   cv.mean.forEach((m, k) => { ctx.beginPath(); ctx.moveTo(x(k), y(m - cv.se[k])); ctx.lineTo(x(k), y(m + cv.se[k])); ctx.stroke(); });
   ctx.fillStyle = "#346b52";
   cv.mean.forEach((m, k) => { ctx.beginPath(); ctx.arc(x(k), y(m), 2.4, 0, 2 * Math.PI); ctx.fill(); });
-  marks(ctx, x, top, bottom, Math.min(selected, cv.mean.length - 1), cv);
+  marks(ctx, x, top, bottom, selected, cv);
   canvas.setAttribute("aria-label", `Held-out loss, mean and standard error over ${cv.folds} folds, across ${cv.mean.length} lambdas. Lowest at lambda ${path.lambdas[cv.best].toPrecision(4)}; one-standard-error choice ${path.lambdas[cv.oneSe].toPrecision(4)}.`);
 }

@@ -129,32 +129,56 @@ function dataset({ x, y }, rows) {
   return d;
 }
 
+// A fold read through a mask (most rows), through its row indices (a few), and
+// through its row indices because a left-out value is too large to mask safely
+const selections = {
+  mask: (i) => i % 4 !== 1,
+  indices: (i) => i % 4 === 0,
+  "indices, unsafe mask": (i) => i % 4 !== 1 && i !== 1,
+};
+
 for (const family of ["binomial", "gaussian"]) {
-  test(`a ${family} fold fits its training rows alone and scores the held-out rows`, () => {
-    const data = design(60, 6, family), all = [...Array(60).keys()];
-    const train = all.filter((i) => i % 4 !== 1), test = all.filter((i) => i % 4 === 1);
-    const whole = dataset(data, all), part = dataset(data, train);
-    try {
-      const lambdas = whole.fit({ family, alpha: .8, nlambda: 20 }).lambdas;
-      const fold = whole.fit({ family, alpha: .8, lambdas, train_rows: train, test_rows: test });
-      const alone = part.fit({ family, alpha: .8, lambdas });
-      assert.deepEqual(fold.indices, alone.indices);
-      assert.deepEqual(fold.iterations, alone.iterations);
-      fold.coefficients.forEach((b, k) => b.forEach((v, i) => assert(Math.abs(v - alone.coefficients[k][i]) <= 1e-12 * (1 + Math.abs(v)))));
-      // the held-out loss, from the returned coefficients
-      assert.equal(fold.holdout.length, fold.lambdas.length);
-      fold.holdout.forEach((loss, k) => {
-        const losses = test.map((i) => {
-          const eta = fold.intercept[k] + fold.indices[k].reduce((s, j, n) => s + data.x[j][i] * fold.coefficients[k][n], 0);
-          return family === "gaussian" ? (data.y[i] - eta) ** 2 : 2 * (Math.log1p(Math.exp(eta)) - data.y[i] * eta);
+  for (const [how, inTrain] of Object.entries(selections)) {
+    test(`a ${family} fold through ${how} fits its training rows alone and scores the held-out rows`, () => {
+      const data = design(60, 6, family), all = [...Array(60).keys()];
+      if (how === "indices, unsafe mask") data.x[2][1] = 1e200;
+      const train = all.filter(inTrain), test = all.filter((i) => !inTrain(i) && data.x[2][i] !== 1e200);
+      const whole = dataset(data, all), part = dataset(data, train);
+      try {
+        const lambdas = dataset(data, all.filter((i) => i !== 1)).fit({ family, alpha: .8, nlambda: 20 }).lambdas;
+        const fold = whole.fit({ family, alpha: .8, lambdas, train_rows: train, test_rows: test });
+        const alone = part.fit({ family, alpha: .8, lambdas });
+        assert.deepEqual(fold.indices, alone.indices);
+        assert.deepEqual(fold.iterations, alone.iterations);
+        fold.coefficients.forEach((b, k) => b.forEach((v, i) => assert(Math.abs(v - alone.coefficients[k][i]) <= 1e-12 * (1 + Math.abs(v)))));
+        // the held-out loss, from the returned coefficients
+        assert.equal(fold.holdout.length, fold.lambdas.length);
+        fold.holdout.forEach((loss, k) => {
+          const losses = test.map((i) => {
+            const eta = fold.intercept[k] + fold.indices[k].reduce((s, j, n) => s + data.x[j][i] * fold.coefficients[k][n], 0);
+            return family === "gaussian" ? (data.y[i] - eta) ** 2 : 2 * (Math.log1p(Math.exp(eta)) - data.y[i] * eta);
+          });
+          const expected = losses.reduce((a, b) => a + b, 0) / test.length;
+          assert(Math.abs(loss - expected) <= 1e-12 * expected, `${loss} vs ${expected}`);
         });
-        const expected = losses.reduce((a, b) => a + b, 0) / test.length;
-        assert(Math.abs(loss - expected) <= 1e-12 * expected, `${loss} vs ${expected}`);
-      });
-      assert.equal(alone.holdout, undefined);
-    } finally { whole.free(); part.free(); }
-  });
+        assert.equal(alone.holdout, undefined);
+      } finally { whole.free(); part.free(); }
+    });
+  }
 }
+
+test("a fold's automatic grid ends where its training rows alone would", () => {
+  // 12 rows by 6 features is tall (lambda_min 0.001); its 6 training rows are
+  // not (0.05)
+  const data = design(12, 6, "gaussian"), all = [...Array(12).keys()], train = all.slice(0, 6);
+  const whole = dataset(data, all), part = dataset(data, train);
+  try {
+    const fold = whole.fit({ family: "gaussian", nlambda: 5, train_rows: train }).lambdas;
+    const alone = part.fit({ family: "gaussian", nlambda: 5 }).lambdas;
+    assert(Math.abs(fold.at(-1) / fold[0] - .05) < 1e-12);
+    fold.forEach((l, k) => assert(Math.abs(l - alone[k]) <= 1e-12 * l));
+  } finally { whole.free(); part.free(); }
+});
 
 test("fold rows out of range, repeated, or empty are clean errors", () => {
   const d = sample();

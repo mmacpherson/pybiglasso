@@ -120,26 +120,16 @@ impl Dataset {
 }
 
 impl Dataset {
-    /// A path on X stored column-major with nrow rows, over every row or,
-    /// with a mask, over the rows it weights; None when the mask is unsafe.
-    fn run(
-        &self,
-        x: &[f64],
+    /// A path on the rows being fit; None when a mask is unsafe (see
+    /// Fit::center_scale), and the caller gathers instead.
+    fn run<D: Design>(
+        x: &D,
         y: &[f64],
-        nrow: usize,
         params: &Params,
         mask: Option<(&[f64], &[usize])>,
+        n_fit: usize,
     ) -> Result<Option<Path>, String> {
-        let x =
-            ContigX::<f64, true> { x: ArrayView2::from_shape((nrow, self.ncol).f(), x).map_err(|e| e.to_string())? };
-        let fit = Fit {
-            x: &x,
-            y,
-            params,
-            mask: mask.map(|(m, _)| m),
-            rows: mask.map(|(_, rows)| rows),
-            n_fit: mask.map_or(nrow, |(_, rows)| rows.len()),
-        };
+        let fit = Fit { x, y, params, mask: mask.map(|(m, _)| m), rows: mask.map(|(_, rows)| rows), n_fit };
         let (center, scale, mask_safe) = fit.center_scale()?;
         if !mask_safe {
             return Ok(None);
@@ -164,7 +154,8 @@ impl Dataset {
         {
             return Err("Supplied lambdas must be finite, nonnegative, and nonincreasing.".into());
         }
-        let lambda_min = options.lambda_min.unwrap_or(if self.nrow > self.ncol { 0.001 } else { 0.05 });
+        let n_fit = options.train_rows.as_ref().map_or(self.nrow, Vec::len);
+        let lambda_min = options.lambda_min.unwrap_or(if n_fit > self.ncol { 0.001 } else { 0.05 });
         if !lambda_min.is_finite() || lambda_min <= 0.0 || lambda_min > 1.0 {
             return Err("lambda_min must be in (0, 1].".into());
         }
@@ -208,22 +199,29 @@ impl Dataset {
         let params = Params { on_lambda: Some(&on_lambda), ..params };
         // Do not build a native thread pool: Rayon's global fallback executes
         // these iterators serially inside the browser's dedicated Worker.
+        let x = ContigX::<f64, true> {
+            x: ArrayView2::from_shape((self.nrow, self.ncol).f(), &self.x).map_err(|e| e.to_string())?,
+        };
         let path = match train {
-            None => self.run(&self.x, &self.y, self.nrow, &params, None)?,
+            None => Self::run(&x, &self.y, &params, None, self.nrow)?,
             Some(rows) => {
-                // a fold is a 0/1 weight on every row, as in the Python
-                // binding, so X is never copied; y is 0 outside the fold
-                let mut mask = vec![0.0; self.nrow];
-                rows.iter().for_each(|&i| mask[i] = 1.0);
-                let y: Vec<f64> = self.y.iter().zip(&mask).map(|(&y, &m)| if m != 0.0 { y } else { 0.0 }).collect();
-                match self.run(&self.x, &y, self.nrow, &params, Some((&mask, rows)))? {
+                // as the Python binding fits row_indices: most of the rows as
+                // a 0/1 weight on every row, with y 0 outside the fold; a few,
+                // or when the mask is unsafe, read through the row indices.
+                // Neither copies X.
+                let masked = if rows.len() as f64 >= MASK_SHARE * self.nrow as f64 {
+                    let mut mask = vec![0.0; self.nrow];
+                    rows.iter().for_each(|&i| mask[i] = 1.0);
+                    let y: Vec<f64> = self.y.iter().zip(&mask).map(|(&y, &m)| if m != 0.0 { y } else { 0.0 }).collect();
+                    Self::run(&x, &y, &params, Some((&mask, rows)), rows.len())?
+                } else {
+                    None
+                };
+                match masked {
                     Some(path) => Some(path),
-                    // a left-out row the mask can't sweep safely: gather
                     None => {
-                        let x: Vec<f64> =
-                            (0..self.ncol).flat_map(|j| rows.iter().map(move |&i| self.x[j * self.nrow + i])).collect();
                         let y: Vec<f64> = rows.iter().map(|&i| self.y[i]).collect();
-                        self.run(&x, &y, rows.len(), &params, None)?
+                        Self::run(&GatherX { x, idx: rows }, &y, &params, None, rows.len())?
                     }
                 }
             }
