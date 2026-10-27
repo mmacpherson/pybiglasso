@@ -31,6 +31,32 @@ PROBLEMS = {
 }
 
 
+def cpu_model() -> str:
+    """CPU-only metadata, without requiring Linux's proc filesystem."""
+    system = platform.system()
+    if system == "Linux":
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip() == "model name" and value.strip():
+                    return value.strip()
+        except OSError:
+            pass
+    elif system == "Darwin":
+        try:
+            model = subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            ).strip()
+            if model:
+                return model
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return platform.processor().strip() or platform.machine().strip() or "unknown"
+
+
 def checked_fit(X, response, *, nlambda=100, **options):
     """Time only a fit; reject warning-bearing or incomplete paths before use."""
     with warnings.catch_warnings():
@@ -123,13 +149,8 @@ def main():
     # Every order for a three-way control balances position/predecessor effects.
     # With two variants this is the familiar AB/BA sequence.
     orders = list(itertools.permutations(variants.items()))
-    cpu = next(
-        line.split(":", 1)[1].strip()
-        for line in Path("/proc/cpuinfo").read_text().splitlines()
-        if line.startswith("model name")
-    )
     metadata = dict(
-        cpu=cpu,
+        cpu=cpu_model(),
         python=platform.python_version(),
         numpy=np.__version__,
         source_commit=subprocess.check_output(

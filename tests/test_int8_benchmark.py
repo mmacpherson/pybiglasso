@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import subprocess
 import sys
 import warnings
 from pathlib import Path
@@ -86,6 +87,7 @@ def test_benchmark_records_each_balanced_fit_interval(benchmark, monkeypatch, tm
         benchmark.importlib.util, "module_from_spec", lambda spec: baseline
     )
     monkeypatch.setattr(benchmark, "_rust", candidate)
+    monkeypatch.setattr(benchmark, "cpu_model", lambda: "test CPU")
     # main restores its own candidate; restore the real package module after
     # this isolated bookkeeping test, too.
     monkeypatch.setattr(benchmark.bl, "_rust", benchmark.bl._rust)
@@ -134,6 +136,7 @@ def test_benchmark_records_each_balanced_fit_interval(benchmark, monkeypatch, tm
     )
     benchmark.main()
     record = json.loads(out.read_text())
+    assert record["cpu"] == "test CPU"
     assert calls == [baseline, candidate, baseline, candidate, candidate, baseline]
     assert record["times"] == {"baseline": [0.25, 0.25], "candidate": [0.25, 0.25]}
     assert record["fit_intervals"] == [
@@ -145,3 +148,81 @@ def test_benchmark_records_each_balanced_fit_interval(benchmark, monkeypatch, tm
         )
         for i, name in enumerate(["baseline", "candidate", "candidate", "baseline"])
     ]
+
+
+def test_cpu_metadata_linux_model(benchmark, monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        benchmark.Path,
+        "read_text",
+        lambda path: "processor : 0\nmodel name\t: Example CPU\n",
+    )
+    assert benchmark.cpu_model() == "Example CPU"
+
+
+def test_cpu_metadata_macos_sysctl_without_proc(benchmark, monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Darwin")
+
+    def no_proc(path):
+        raise AssertionError("macOS must not read /proc/cpuinfo")
+
+    def sysctl(command, **kwargs):
+        assert command == ["sysctl", "-n", "machdep.cpu.brand_string"]
+        assert kwargs == dict(text=True, stderr=subprocess.DEVNULL, timeout=5)
+        return "Apple M1\n"
+
+    monkeypatch.setattr(benchmark.Path, "read_text", no_proc)
+    monkeypatch.setattr(benchmark.subprocess, "check_output", sysctl)
+    assert benchmark.cpu_model() == "Apple M1"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        FileNotFoundError(),
+        subprocess.CalledProcessError(1, "sysctl"),
+        subprocess.TimeoutExpired("sysctl", 5),
+    ],
+)
+def test_cpu_metadata_macos_failure_falls_back(benchmark, monkeypatch, reason):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(benchmark.platform, "processor", lambda: "fallback CPU")
+
+    def fail(*args, **kwargs):
+        raise reason
+
+    monkeypatch.setattr(benchmark.subprocess, "check_output", fail)
+    assert benchmark.cpu_model() == "fallback CPU"
+
+
+@pytest.mark.parametrize("content", [None, "CPU architecture: 8\n", "model name : \n"])
+def test_cpu_metadata_linux_missing_model_falls_back(benchmark, monkeypatch, content):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(benchmark.platform, "processor", lambda: "fallback CPU")
+
+    def read(path):
+        if content is None:
+            raise FileNotFoundError()
+        return content
+
+    monkeypatch.setattr(benchmark.Path, "read_text", read)
+    assert benchmark.cpu_model() == "fallback CPU"
+
+
+@pytest.mark.parametrize("machine, expected", [("arm64", "arm64"), ("", "unknown")])
+def test_cpu_metadata_empty_processor_uses_architecture(
+    benchmark, monkeypatch, machine, expected
+):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(benchmark.platform, "processor", lambda: "")
+    monkeypatch.setattr(benchmark.platform, "machine", lambda: machine)
+    assert benchmark.cpu_model() == expected
+
+
+def test_cpu_metadata_blank_sysctl_uses_fallback(benchmark, monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        benchmark.subprocess, "check_output", lambda *args, **kwargs: "\n"
+    )
+    monkeypatch.setattr(benchmark.platform, "processor", lambda: "fallback CPU")
+    assert benchmark.cpu_model() == "fallback CPU"
