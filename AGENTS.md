@@ -90,10 +90,9 @@ to observed output.
 
 ## Architecture
 
-- `src/pybiglasso/binomial.py` — `biglasso()`: validation, then the solver;
-  also the deprecated numba backend (`fit_path`, `_fit_lambda`, one numba
-  kernel per step), until 0.4.0
-- `rust/src/solver.rs` — the shared solver (the default backend): the whole
+- `src/pybiglasso/binomial.py` — `biglasso()`: validation, then the Rust
+  solver, and the fitted path's assembly
+- `rust/src/solver.rs` — the shared solver: the whole
   path in one call, with Python bindings in `rust/src/python.rs` and browser
   bindings in `rust/src/wasm.rs`. The README maps its steps to R biglasso's C++.
 - `rust/src/gaussian.rs` — Gaussian SSR coordinate descent, using the same
@@ -101,7 +100,7 @@ to observed output.
 - `web/` — the static browser playground and CSV/Parquet import worker;
   `make browser` builds it, `make test-browser` checks it against R and in browsers.
 - `tests/support/reference.py` — the same algorithm in plain numpy, step by
-  step; the tests hold both backends to it
+  step; the tests hold the Rust solver to it
 - `src/pybiglasso/path.py` — `BiglassoPath`, the fitted path: prediction, scoring,
   dataframe export
 - `src/pybiglasso/sklearn.py` — `BiglassoClassifier`, `BiglassoClassifierCV`
@@ -114,12 +113,10 @@ to observed output.
 
 - **Out of core**: X is read a column at a time, through the memmap, and never
   loaded or copied; row subsets are index arrays into the same X.
-- **Numba (deprecated backend) compiles each array type separately** (a read-only memmap is not a
-  writable array), so warm-ups must use the same type as the fit.
 - **Reproducibility**: every sum runs in an order fixed by the data's shape
-  (Rust: CHUNK-row chunks added in order, LANES accumulators combined in a
-  fixed tree, no fused multiply-add; numba: `dot`, `seqsum`), so results are
-  bit-identical at any thread count, and in Rust at any SIMD width; don't
+  (CHUNK-row chunks added in order, LANES accumulators combined in a fixed
+  tree, no fused multiply-add), so results are bit-identical at any thread
+  count and SIMD width; don't
   replace them with `@` or `.sum()`, or let operations fuse.
 
 ## Public history

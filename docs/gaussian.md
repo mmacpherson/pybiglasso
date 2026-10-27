@@ -5,8 +5,7 @@ and WASM bindings, and sklearn regression estimators. Version 0.3.0 makes
 Gaussian the public default; logistic callers explicitly select binomial.
 
 Version 0.3.0 adds Gaussian support and makes it the default family, matching
-R biglasso. The deprecated numba backend remains available for binomial fits
-through 0.3.x; its removal is deferred to 0.4.0. Gaussian minimizes
+R biglasso. Gaussian minimizes
 
     RSS / (2 n) + lambda * sum_j pf_j (alpha |b_j| + (1-alpha) b_j² / 2)
 
@@ -22,8 +21,7 @@ The default family is `"gaussian"` in 0.3.0. Logistic calls explicitly pass
 `family="binomial"`, as the classifier wrappers do. This breaks the 0.2.x
 default and is called out in the README migration example.
 Gaussian requires a finite numeric
-response on the selected rows. The numba backend raises `NotImplementedError`
-for Gaussian; the implementation is Rust only. Constant responses produce
+response on the selected rows. Constant responses produce
 the intercept-only optimum; supplied lambdas allow a single fit.
 
 `BiglassoPath` records the family actually fitted, including `"gaussian"` for

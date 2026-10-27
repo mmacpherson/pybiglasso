@@ -57,7 +57,6 @@ wheel. Extras add optional integrations:
 | `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV`, `BiglassoRegressor`, `BiglassoRegressorCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
-| `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.4.0 |
 
 ## Quick start
 
@@ -111,9 +110,8 @@ path = bl.biglasso(X, y, penalty_factor=pf)
 
 ### Gaussian regression
 
-Gaussian is the default family in 0.3.0, matching R biglasso. This uses the
-shared Rust solver in Python and WASM; the deprecated numba backend supports
-binomial fits only. Gaussian paths predict continuous responses and report
+Gaussian is the default family, as in R biglasso. Python and the browser
+playground share one Rust solver for both families. Gaussian paths predict continuous responses and report
 residual sum of squares as `deviance`; scoring also accepts `"mse"` and `"r2"`.
 `BiglassoRegressor` and `BiglassoRegressorCV` provide sklearn's regression API.
 For logistic regression, explicitly pass `family="binomial"`:
@@ -123,9 +121,8 @@ classification = bl.biglasso(X, y_binary, family="binomial")
 classification.predict_proba(X_new)
 ```
 
-This is a breaking default change from 0.2.x: existing logistic callers must
-select binomial explicitly. Classifier wrappers already do so. Numba remains
-available for explicit binomial fits through 0.3.x and is removed in 0.4.0.
+Since 0.3.0, logistic callers must select binomial explicitly; the classifier
+wrappers already do.
 
 ### scikit-learn
 
@@ -465,9 +462,7 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   `n_threads=1` there. Results are bit-identical at any thread count.
 - **Cross-validation scales with cores.** `BiglassoClassifierCV(n_jobs=...)`
   fits folds in parallel threads that share one X (and, for a memmap, one page
-  cache); results don't depend on `n_jobs`. With the deprecated numba backend
-  this needs numba's tbb or omp threading layer; where numba falls back to
-  workqueue, as on macOS by default, folds run one at a time.
+  cache); results don't depend on `n_jobs`.
 - **Cross-validation can stop each fold early.** With
   `BiglassoClassifierCV(early_stopping=10)`, a fold's path stops once its
   held-out score has gone 10 alphas without improving, as bigstatsr's
@@ -489,10 +484,7 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   cross-validation, which is read through a mask. Where every read goes
   through an index or a stride (C-ordered X, or a smaller or repeating
   `row_indices`), it costs up to about 15%. `PYBIGLASSO_BOUNDSCHECK=0` turns it off; the path is the same
-  (lambdas, iterations, screening), with coefficients identical in the Rust
-  backend and equal to about 1e-11 in numba's, whose vectorized sums the
-  check reorders. numba reads the setting at import, and caches compiled
-  kernels only with it on.
+  (lambdas, iterations, screening), with identical coefficients.
 
 ## How the code is organized
 
@@ -543,17 +535,12 @@ implementation rather than the operating system's math library, whose last
 bits differ between Linux, macOS, and Windows. So results are bit-identical at
 any thread count, on any CPU, and on every operating system with a wheel.
 
-The deprecated numba backend (`backend="numba"`) is in
-`src/pybiglasso/binomial.py`, one numba kernel per step; it is slated for removal in 0.4.0.
-
 ## Scope
 
 - Binomial (logistic) and Gaussian (least-squares) families; Cox is not ported.
 - SSR (sequential strong rule) screening only. R uses its newer Hybrid and
   Adaptive rules only for the plain lasso without penalty factors, and they
   were no faster than SSR on our benchmarks.
-- With the deprecated numba backend, the first call in a session pays a few
-  seconds of compilation; after that, compiled kernels are cached on disk.
 
 ## Citation
 
