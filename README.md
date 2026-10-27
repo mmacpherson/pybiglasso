@@ -47,7 +47,7 @@ wheel. Extras add optional integrations:
 |---|---|
 | `pybiglasso[polars]` | `BiglassoPath.to_polars()` |
 | `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
-| `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV` |
+| `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV`, `BiglassoRegressor`, `BiglassoRegressorCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
 | `pybiglasso[numba]` | the numba backend, `backend="numba"`: deprecated, and slated for removal in 0.4.0 |
