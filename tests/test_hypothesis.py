@@ -98,11 +98,6 @@ class SmoothProblem:
         # rather than an excuse to omit a lambda from the optimality checks.
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            # A one-column array is both C- and F-contiguous; np.isfortran
-            # returns False there, so even asfortranarray gets this advice.
-            warnings.filterwarnings(
-                "ignore", message="The design matrix is not in Fortran"
-            )
             path = bl.biglasso(X, y, family="binomial", **options)
         # Check metadata against inputs, so optimality cannot pass by silently
         # solving a problem with a different alpha, penalty or lambda grid.

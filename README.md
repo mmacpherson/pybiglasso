@@ -231,7 +231,8 @@ against R biglasso and by checks independent of it (see
 same problem along the same 100-value lambda path, at its own default
 tolerance, and its accuracy is reported alongside its time. Machine: AMD Ryzen 5
 5600X (6 cores, 12 threads) and 64 GB of RAM, with Python 3.14 and R 4.6.1. Each
-time is the best of 3 runs. Every multithreaded solver is shown at its fastest
+time is the median of 3 runs, or a single run for a solver slow enough to take
+over a third of its time limit. Every multithreaded solver is shown at its fastest
 thread count: 1, 6, or 12. The scripts and raw results are in
 [`benchmarks/`](benchmarks/).
 
@@ -365,10 +366,10 @@ with a comment beginning "Differs from R biglasso".
 - **Gaussian zero maximum penalty.** R's logarithmic grid calculation can
   produce non-finite values when the maximum penalty is zero. pybiglasso
   returns a finite all-zero grid, whose fits solve the unpenalized problem.
-- **Gaussian unrepresentable grids.** If an automatic grid overflows (for
-  example, with extremely small positive `alpha`), pybiglasso raises
-  `ValueError` rather than returning non-finite penalties. Finite supplied
-  grids remain supported, including in compatibility mode.
+- **Unrepresentable grids.** If an automatic grid overflows (for example,
+  with extremely small positive `alpha`), R returns non-finite penalties, and
+  pybiglasso raises `ValueError`, for both families and in both modes. Finite
+  supplied grids remain supported, including in compatibility mode.
 - **Gaussian loss after an iteration limit.** R can leave `loss` at zero when
   the budget ends with outstanding KKT violations. pybiglasso reports the
   returned model's residual sum of squares; `r_compatible=True` retains R's
