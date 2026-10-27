@@ -59,6 +59,9 @@ def test_benchmark_default_objective_remains_binomial(benchmark, orthogonal):
 def test_benchmark_r_thread_limits_cross_container_boundary(
     benchmark, monkeypatch, tmp_path, container
 ):
+    # Exercise POSIX container command construction even on Windows CI.
+    monkeypatch.setattr(rcompare.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(rcompare.os, "getgid", lambda: 1000, raising=False)
     if container:
         monkeypatch.setenv("CONTAINER", container)
     else:
