@@ -123,6 +123,15 @@ to observed output.
   bit-identical at any thread count, and in Rust at any SIMD width; don't
   replace them with `@` or `.sum()`, or let operations fuse.
 
+## Architecture-specific code
+
+Keep code portable, even if it is slower on one platform. An architecture-specific
+path is allowed only when it is bit-identical by construction (the same arithmetic
+in the same order), confined to one small function with a comment explaining why,
+and exercised by CI's cross-platform bit check. It must have measured gains on at
+least two chips of the winning architecture, with no measured loss on the other
+architecture using its retained path.
+
 ## Public history
 
 The repository is public. Keep internal and machine-identifying material out of

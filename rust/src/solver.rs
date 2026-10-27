@@ -138,10 +138,17 @@ impl<T: Elem, const CHECKED: bool> Col for Contig<'_, T, CHECKED> {
     #[inline(always)]
     fn block(&self, i0: usize) -> [f64; LANES] {
         let rows: &[T; LANES] = self.0[i0..i0 + LANES].try_into().expect("LANES rows");
-        // Index the borrowed input rather than mapping a copied array. For
-        // int8, this exposes packed sign-extension loads to the vectorizer
-        // instead of extracting each byte from a temporary integer value.
-        std::array::from_fn(|k| rows[k].f())
+        // For int8 on NEON, map gives one 64-bit load, not eight byte loads.
+        // On x86, indexing exposes packed sign-extension/conversion instead.
+        // Same conversions and lane order; measurements: benchmarks/int8.md.
+        #[cfg(target_arch = "aarch64")]
+        {
+            rows.map(Elem::f)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            std::array::from_fn(|k| rows[k].f())
+        }
     }
 }
 

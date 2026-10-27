@@ -1,9 +1,10 @@
 # Compact column conversion
 
-`Contig::block` reads eight elements from a borrowed column. Mapping the
-fixed array by value can make LLVM unpack byte fields from a temporary
+`Contig::block` reads eight elements from a borrowed column. On x86, mapping
+the fixed array by value can make LLVM unpack byte fields from a temporary
 integer before converting them to doubles. Indexing the borrowed array with
-`from_fn` exposes packed sign-extension loads instead. Each element still
+`from_fn` exposes packed sign-extension loads instead. Aarch64 retains the
+original array mapping: indexed conversion is slower there. Each element still
 undergoes the same conversion; no floating-point expression, lane assignment,
 sum order, allocation or matrix access policy changes.
 
@@ -13,6 +14,33 @@ width, with both bounds settings and chunk/tail cases. Full paths retain
 identical bytes, including centering/scaling, losses and iteration/rejection
 counts, across the before/after extensions and thread counts. The hashes below
 check that relation; they are not stored expected solver values.
+
+## Architecture gate
+
+The indexed form improves the measured int8 targets on both AMD Ryzen 5 5600X
+(Zen 3) and Ryzen 5 7640U (Zen 4), as recorded below. An independent Apple M1 Pro
+run reports baseline/candidate ratios of 0.847–0.952 across all twelve int8
+settings, with identical path hashes: the ungated candidate is slower on every
+setting. These measurements predate the gate and must not be read as timings
+of the final gated ARM build.
+
+Assembly probes cross-compiled with Rust 1.98 / LLVM 22.1.8 for
+`aarch64-apple-darwin` (`target-cpu=apple-m1`) and generic
+`aarch64-unknown-linux-gnu` explain the different lowering. The old array map
+loads eight int8 values with one 64-bit load and extracts them in registers;
+`from_fn` emits eight byte loads. Both use eight scalar integer-to-double
+conversions, not a packed NEON conversion. This persists in the actual score,
+moment and fused shift/moment loops. More load/address work is a plausible
+explanation, not a hardware-counter attribution of the measured slowdown.
+
+Only this small conversion function has a compile-time architecture branch:
+`aarch64` keeps the original `rows.map(Elem::f)`; other targets keep `from_fn`.
+The conversions, lane assignments and all floating-point operations remain
+identical. There is no runtime branch, new allocation or matrix copy. The
+gated ARM probe bodies match baseline assembly after normalizing only symbol
+hashes, so the gate retains the old ARM lowering rather than asking ARM to pay
+for the x86 gain. This is assembly evidence, not a new whole-fit timing claim.
+CI's cross-platform fit-bit comparison exercises both branches.
 
 ## Paired whole-path measurements
 
