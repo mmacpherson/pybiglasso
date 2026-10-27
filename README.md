@@ -450,6 +450,13 @@ pybiglasso reads the matrix one column at a time, through the memmap, and
 never loads or copies it; strong-rule screening skips most columns at most
 steps. Cross-validation folds are row indices into the same matrix on disk.
 
+By default, `n_threads="auto"` (also `None`) chooses one thread for a memmap
+or fewer than ten million fitted-row/column entries, otherwise physical cores.
+Unknown topology falls back to one. `RAYON_NUM_THREADS` caps auto mode; an
+explicit positive `n_threads` overrides it. See the
+[rule and recorded evidence](benchmarks/threads.md). Results remain
+bit-identical at every thread count.
+
 - **A single fit is effectively single-threaded**, as is R biglasso's.
   Coordinate descent updates one coefficient at a time, and that sequential
   sweep is most of the work: profiling an elastic-net path on 5,000 x 1,000
