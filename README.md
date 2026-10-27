@@ -328,20 +328,26 @@ threads don't reliably help: they evict pages each other still need.
 
 Gaussian timings are separate from the binomial results above. The runner
 [`benchmarks/run-gaussian.sh`](benchmarks/run-gaussian.sh) compares Rust,
-R biglasso's SSR solver and glmnet's generic `gaussian()` family on the same
+R biglasso's SSR solver and glmnet's native `family="gaussian"` path on the same
 100 supplied lambdas. The grid comes from the standardized score formula,
 not a pybiglasso fit. All receive raw X and standardize it during the fit;
 data generation, imports, container startup and R `big.matrix` construction
-are outside the timers. Each repetition uses a fresh process. The
+are outside the timers. Gaussian Python times `biglasso()` itself; the older
+binomial Python table also includes coefficient export. Each repetition uses a fresh process. The
 [raw results](benchmarks/results/path-gaussian.jsonl) record every time, input
 fingerprints, versions, warnings, fitted path length, first-principles KKT
 residuals and objective differences versus glmnet.
 R's BLAS is limited to one thread inside the container; biglasso's explicit
 thread count controls its own parallel work.
 
-The generic glmnet family is intentional: its fast `family="gaussian"` path
-rescales y, changing the effective elastic-net ridge penalty. These timings
-are not a speed comparison against that optimized, differently scaled path.
+Glmnet internally rescales the response by its population standard deviation
+sᵧ and returns coefficients in the original response units. To match the
+same standardized elastic-net objective, the native path receives
+α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ).
+For the lasso this leaves α and λ unchanged. No further coefficient
+rescaling is needed. The generic `gaussian()` path remains a correctness
+reference in tests, not a timed competitor. See the
+[glmnet response-scaling documentation](https://glmnet.stanford.edu/articles/glmnet.html).
 The solvers retain their default tolerances, so accuracy accompanies timing;
 the KKT residual is measured, not an `eps`-to-accuracy promise.
 
@@ -350,20 +356,17 @@ binomial benchmarks, with pybiglasso 0.3.0, Python 3.14.0, NumPy 2.5.4,
 R 4.6.1, biglasso 1.7.2 and glmnet 5.1. Times are seconds, the median of
 three runs; both thread counts are shown rather than choosing the faster one.
 
-| Dataset | Penalty | pybiglasso, 1 thread | pybiglasso, 6 threads | R biglasso, 1 thread | R biglasso, 6 threads | Generic glmnet, 1 thread |
-|---|---|---|---|---|---|---|
-| 5,000 x 1,000 | lasso | 0.52 | 0.45 | 0.90 | 0.71 | 2.20 |
-| 5,000 x 1,000 | elastic net (α=0.5) | 0.55 | 0.49 | 0.94 | 0.72 | 2.19 |
-| 2,000 x 20,000 | lasso | 1.09 | 0.77 | 2.80 | 0.93 | 13.04 |
-| 2,000 x 20,000 | elastic net (α=0.5) | 0.97 | 0.76 | 2.80 | 0.94 | 13.11 |
+Native-glmnet timing rows are being regenerated; the previous generic-path
+timings are not a comparison with glmnet's optimized Gaussian solver.
 
 Shapes are requested sizes; dropping generated constant columns leaves 973
 and 19,199 features respectively. Accuracy and warnings describe each row's
-final repetition. All 20 reported paths contain 100 lambdas with no warnings.
-The largest observed KKT residual is about 1.0e-4 for Rust and R biglasso,
-and 1.2e-5 for generic glmnet. The largest relative objective difference
-versus glmnet is 9.8e-7; this pairwise difference is not a certified
-suboptimality bound.
+final repetition. The KKT diagnostic is an absolute subgradient residual in
+response units (the columns have unit variance). Raw records also divide it
+by the smallest L1 penalty, λ_min α; it is not a relative error in the
+coefficients. Pairwise objective differences are not certified suboptimality
+bounds. Regenerate the table with `python benchmarks/gaussian-table.py
+benchmarks/results/path-gaussian.jsonl`.
 
 ```bash
 benchmarks/run-gaussian.sh

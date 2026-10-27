@@ -1,4 +1,4 @@
-# Fit glmnet's binomial or generic Gaussian path for benchmarks/path.py.
+# Fit glmnet's binomial or native Gaussian path for benchmarks/path.py.
 #
 # Usage: Rscript fit_glmnet.R CASE_DIR [CASE_DIR ...]
 #
@@ -21,27 +21,49 @@ fit_case <- function(case_dir) {
   X <- matrix(readBin(file.path(case_dir, "X.bin"), "double", n * p), n, p)
   y <- readBin(file.path(case_dir, "y.bin"), "double", n)
 
-  # Generic gaussian() keeps the supplied response units and ridge penalty.
-  # The optimized character-family path rescales y and solves a different
-  # elastic-net objective; its timing is not presented as an equivalent fit.
   warns <- character()
-  elapsed <- system.time(
-    fit <- withCallingHandlers(glmnet(
-      X, y, family = if (identical(prm$family, "gaussian")) gaussian() else "binomial",
-      alpha = prm$alpha, lambda = prm$lambdas,
+  elapsed <- system.time({
+    family <- if (identical(prm$family, "gaussian")) "gaussian" else "binomial"
+    alpha <- prm$alpha
+    factor <- 1
+    response_scale <- NULL
+    if (identical(family, "gaussian")) {
+      response_scale <- sqrt(mean((y - mean(y))^2))
+      if (isTRUE(prm$generic)) {
+        # Correctness reference only; never selected by the timing runner.
+        family <- gaussian()
+      } else {
+        # Native glmnet fits y/s and returns coefficients in original units.
+        # Its raw-scale L1 and L2 weights are lambda'*alpha' and
+        # lambda'*(1-alpha')/s. Match lambda*alpha and lambda*(1-alpha).
+        factor <- alpha + (1 - alpha) * response_scale
+        alpha <- alpha / factor
+      }
+    }
+    options <- list()
+    if (!is.null(prm$thresh)) {
+      options <- list(control = list(thresh = prm$thresh))
+    }
+    fit <- withCallingHandlers(do.call(glmnet, c(list(
+      x = X, y = y, family = family,
+      alpha = alpha, lambda = prm$lambdas * factor,
       standardize = TRUE, intercept = TRUE
-    ), warning = function(w) {
+    ), options)), warning = function(w) {
       warns <<- c(warns, conditionMessage(w))
       invokeRestart("muffleWarning")
     })
-  )[["elapsed"]]
+  })[["elapsed"]]
 
   beta <- as.matrix(fit$beta)
   writeLines(
     toJSON(list(
       glmnet_version = as.character(packageVersion("glmnet")),
       r_version = R.version.string,
-      lambda = fit$lambda,
+      lambda = fit$lambda / factor,
+      glmnet_alpha = alpha,
+      glmnet_lambda_factor = factor,
+      response_scale = response_scale,
+      glmnet_family = if (is.list(family)) "gaussian()" else family,
       intercept = as.vector(fit$a0),
       beta = as.vector(beta),
       beta_dim = dim(beta),

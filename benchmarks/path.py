@@ -13,10 +13,11 @@ counts set before numpy loads and a hard time cap.
 
     uv run --group bench benchmarks/path.py --threads 1 --threads 12
 
-With --family gaussian, compare Rust, R biglasso SSR and glmnet's generic
-gaussian() family on RSS/(2n) plus the same standardized penalty. The input
+With --family gaussian, compare Rust, R biglasso SSR and glmnet's native
+Gaussian path on RSS/(2n) plus the same standardized penalty. The input
 grid is computed analytically; KKT residuals and objective differences versus
-glmnet accompany the timings. This is not glmnet's response-rescaled fast path.
+glmnet accompany the timings. An analytic alpha/lambda map compensates for
+glmnet's internal response scaling; returned coefficients are already unscaled.
 """
 
 import argparse
@@ -280,9 +281,7 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial"):
         if family == "gaussian":
             params["lambdas"] = list(lambdas)
         (d / "params.json").write_text(json.dumps(params))
-        (r,) = rcompare.run_r(
-            [d], env=r_thread_limits(threads) if family == "gaussian" else None
-        )
+        (r,) = rcompare.run_r([d], env=r_thread_limits(threads))
     if "error" in r:
         raise RuntimeError(r["error"])
     beta, scale, center = r["beta"], r["scale"], r["center"]
@@ -324,7 +323,9 @@ def r_thread_limits(threads):
     }
 
 
-def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads, family="binomial"):
+def fit_r_glmnet(
+    X, Xs, y, lambdas, alpha, threads, family="binomial", *, generic=False, thresh=None
+):
     """Fit in R's glmnet; returns (coef, intercept, R's own fit seconds,
     glmnet's version). glmnet gets raw X and standardizes it itself, as its
     users run it and as pybiglasso does, so its time includes that."""
@@ -342,14 +343,20 @@ def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads, family="binomial"):
         np.asfortranarray(X, dtype=np.float64).ravel(order="F").tofile(d / "X.bin")
         np.asarray(y, dtype=np.float64).tofile(d / "y.bin")
         params = dict(
-            nrow=nrow, ncol=ncol, alpha=alpha, lambdas=list(lambdas), family=family
+            nrow=nrow,
+            ncol=ncol,
+            alpha=alpha,
+            lambdas=list(lambdas),
+            family=family,
+            generic=generic,
+            thresh=thresh,
         )
         (d / "params.json").write_text(json.dumps(params))
         (r,) = rcompare.run_r(
             [d],
             script=HERE / "r" / "fit_glmnet.R",
             load=load,
-            env=r_thread_limits(threads) if family == "gaussian" else None,
+            env=r_thread_limits(threads),
         )
     if "error" in r:
         raise RuntimeError(r["error"])
@@ -370,7 +377,10 @@ def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads, family="binomial"):
         {
             "glmnet": r["glmnet_version"],
             "r": r["r_version"],
-            "glmnet_family": "gaussian()" if family == "gaussian" else "binomial",
+            "glmnet_family": r["glmnet_family"],
+            "glmnet_alpha": r["glmnet_alpha"],
+            "glmnet_lambda_factor": r["glmnet_lambda_factor"],
+            "response_scale": r["response_scale"],
             "warnings": list(np.atleast_1d(r.get("warnings") or [])),
             "jerr": r.get("jerr"),
         },
@@ -416,6 +426,9 @@ def run_one(args):
             warnings.simplefilter("always")
         out = fitter(X, Xs, y, lambdas, args.alpha, args.threads)
     seconds = time.perf_counter() - t0
+    # Gaussian Python and all R adapters report their fit-only clock. Legacy
+    # binomial Python rows include the wrapper's coefficient export too; keep
+    # that historical scope rather than silently changing published timings.
     versions = {}
     if len(out) == 4:  # R's glmnet, which also reports its version
         coef, intercept, seconds, versions = out
@@ -711,12 +724,15 @@ def main():
                         ratio_cap=args.ratio_cap,
                         max_rel_suboptimality=subopt,
                         max_kkt_residual=kkt,
+                        max_kkt_residual_over_min_l1=kkt / (lambdas[-1] * alpha)
+                        if kkt is not None
+                        else None,
                         max_rel_objective_difference_vs_glmnet=difference,
                         fitted_lambdas=fitted,
                         **env_info,
                         **versions,
                     )
-                    if args.family == "gaussian" and solver in R_SOLVERS:
+                    if solver in R_SOLVERS:
                         record["r_thread_limits"] = r_thread_limits(t)
                     fp.write(json.dumps(record) + "\n")
 
