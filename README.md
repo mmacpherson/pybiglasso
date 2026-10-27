@@ -332,9 +332,10 @@ R biglasso's SSR solver and glmnet's generic `gaussian()` family on the same
 100 supplied lambdas. The grid comes from the standardized score formula,
 not a pybiglasso fit. All receive raw X and standardize it during the fit;
 data generation, imports, container startup and R `big.matrix` construction
-are outside the timers. Each repetition uses a fresh process. Raw results
-record every time, input fingerprints, versions, warnings, fitted path length,
-first-principles KKT residuals and objective differences versus glmnet.
+are outside the timers. Each repetition uses a fresh process. The
+[raw results](benchmarks/results/path-gaussian.jsonl) record every time, input
+fingerprints, versions, warnings, fitted path length, first-principles KKT
+residuals and objective differences versus glmnet.
 R's BLAS is limited to one thread inside the container; biglasso's explicit
 thread count controls its own parallel work.
 
@@ -343,6 +344,26 @@ rescales y, changing the effective elastic-net ridge penalty. These timings
 are not a speed comparison against that optimized, differently scaled path.
 The solvers retain their default tolerances, so accuracy accompanies timing;
 the KKT residual is measured, not an `eps`-to-accuracy promise.
+
+The table uses the same AMD Ryzen 5 5600X (6 cores, 12 threads) as the
+binomial benchmarks, with pybiglasso 0.3.0, Python 3.14.0, NumPy 2.5.4,
+R 4.6.1, biglasso 1.7.2 and glmnet 5.1. Times are seconds, the median of
+three runs; both thread counts are shown rather than choosing the faster one.
+
+| Dataset | Penalty | pybiglasso, 1 thread | pybiglasso, 6 threads | R biglasso, 1 thread | R biglasso, 6 threads | Generic glmnet, 1 thread |
+|---|---|---|---|---|---|---|
+| 5,000 x 1,000 | lasso | 0.52 | 0.45 | 0.90 | 0.71 | 2.20 |
+| 5,000 x 1,000 | elastic net (α=0.5) | 0.55 | 0.49 | 0.94 | 0.72 | 2.19 |
+| 2,000 x 20,000 | lasso | 1.09 | 0.77 | 2.80 | 0.93 | 13.04 |
+| 2,000 x 20,000 | elastic net (α=0.5) | 0.97 | 0.76 | 2.80 | 0.94 | 13.11 |
+
+Shapes are requested sizes; dropping generated constant columns leaves 973
+and 19,199 features respectively. Accuracy and warnings describe each row's
+final repetition. All 20 reported paths contain 100 lambdas with no warnings.
+The largest observed KKT residual is about 1.0e-4 for Rust and R biglasso,
+and 1.2e-5 for generic glmnet. The largest relative objective difference
+versus glmnet is 9.8e-7; this pairwise difference is not a certified
+suboptimality bound.
 
 ```bash
 benchmarks/run-gaussian.sh
