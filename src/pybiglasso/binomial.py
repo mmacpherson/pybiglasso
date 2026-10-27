@@ -118,8 +118,10 @@ def biglasso(
     documented objective, (1/n) * NLL + lambda * (alpha * |b|_1 +
     (1 - alpha) / 2 * |b|_2^2), as glmnet and scikit-learn do. R biglasso's
     logistic update instead divides by v * (1 + l2) rather than v + l2, which
-    solves a different problem; `r_compatible=True` reproduces R exactly. The
-    two agree for the lasso (alpha = 1).
+    solves a different problem; `r_compatible=True` reproduces R exactly.
+    The default binomial probability cutoff also differs from R: it uses
+    glmnet's pmin=1e-9 boundary with a positive weight floor; compatibility
+    mode retains R's |eta| > 10 cutoff and 1e-4 weights.
 
     Column-wise work (standardization and the strong-rule and KKT scans) runs on
     `n_threads` threads, by default numba's (all cores); coordinate descent
@@ -566,7 +568,7 @@ def get_nrow(X, row_indices):  # pragma: no cover
 
 @jit
 def update_irls(
-    y, row_indices, eta, p, w, s, r, eta_max=10, w_min=0.0001
+    y, row_indices, eta, p, w, s, r, r_compatible=False
 ):  # pragma: no cover
     """Refresh the IRLS quadratic approximation at the current eta: fitted
     probabilities p, weights w, score residuals s = y - p and working residuals
@@ -574,6 +576,12 @@ def update_irls(
 
     Mutates: p, w, s, r
     """
+    # Differs from R biglasso: default mode uses glmnet's pmin boundary,
+    # reducing the score bias from clipping. Unlike glmnet's zero weights,
+    # keep boundary curvature positive so the working residual s/w is defined.
+    p_min = 1e-9
+    eta_max = 10.0 if r_compatible else np.log(1.0 / p_min - 1.0)
+    w_min = 0.0001 if r_compatible else p_min * (1.0 - p_min)
 
     for ix in range(len(eta)):
         eta_i = eta[ix]
@@ -918,6 +926,7 @@ def fit_path(
                 state["w"],
                 state["s"],
                 state["r"],
+                params.r_compatible,
             )
             state["z"] = z = compute_z(
                 X, row_indices, col_map, center, scale, state["s"]
@@ -1147,7 +1156,14 @@ def _fit_lambda(
         unscanned = "both"
 
         path["deviance"][il] = update_irls(
-            y, row_indices, state["eta"], state["p"], state["w"], state["s"], state["r"]
+            y,
+            row_indices,
+            state["eta"],
+            state["p"],
+            state["w"],
+            state["s"],
+            state["r"],
+            r_compatible,
         )
 
         # break early if model is saturated

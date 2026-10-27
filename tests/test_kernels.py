@@ -229,3 +229,34 @@ def test_final_loss_handles_extreme_logits_and_row_selection():
     rows = np.array([0, 1, 4, 5])
     expected = np.logaddexp(0, np.where(y[rows] == 1, -eta, eta)).sum()
     assert solver.final_loss(y, rows, eta) == expected == 2000.0
+
+
+@pytest.mark.parametrize("compatible", [False, True])
+@pytest.mark.parametrize("subset", [False, True])
+def test_irls_clip_and_positive_curvature(compatible, subset):
+    eta = np.array(
+        [-1000.0, -21.0, -20.0, -11.0, -10.0, 0.0, 10.0, 11.0, 20.0, 21.0, 1000.0]
+    )
+    y = (np.arange(len(eta)) % 2).astype(float)
+    rows = np.arange(len(y))[::-1] if subset else None
+    p, w, s, r = (np.zeros_like(eta) for _ in range(4))
+    with np.errstate(divide="ignore"):
+        loss = solver.update_irls(y, rows, eta, p, w, s, r, r_compatible=compatible)
+    # Independent Bernoulli equations and glmnet's pmin=1e-9 boundary.
+    cutoff = 10.0 if compatible else np.log(1 / 1e-9 - 1)
+    clipped = np.abs(eta) > cutoff
+    expected = expit(eta)
+    expected[clipped] = (eta[clipped] > 0).astype(float)
+    # Different expit formulas use at most a handful of rounded operations.
+    np.testing.assert_allclose(p, expected, rtol=8 * np.finfo(float).eps, atol=0)
+    # The unrounded Bernoulli tail beyond the selected threshold is bounded
+    # by expit(-cutoff), hence by 1e-9 in default mode.
+    if not compatible:
+        assert np.max(np.abs(p[clipped] - expit(eta[clipped]))) <= 1e-9
+    floor = 1e-4 if compatible else 1e-9 * (1 - 1e-9)
+    np.testing.assert_array_equal(w[clipped], floor)
+    np.testing.assert_array_equal(w[~clipped], p[~clipped] * (1 - p[~clipped]))
+    np.testing.assert_array_equal(s, (y if rows is None else y[rows]) - p)
+    np.testing.assert_array_equal(r, s / w)
+    assert np.isfinite(r).all() and (w > 0).all()
+    assert np.isinf(loss)  # intentionally wrong labels on clipped rows

@@ -41,9 +41,38 @@ fn intercept_solves_weighted_normal_equation_with_shared_weight_sum() {
 
 #[test]
 fn irls_matches_row_formulas_and_sequential_loss() {
+    for compatible in [false, true] {
+        for wrong_label in [false, true] {
+            check_irls_row_formulas(compatible, wrong_label);
+        }
+    }
+}
+
+fn check_irls_row_formulas(compatible: bool, wrong_label: bool) {
+    // Independent specifications: R's boundary and glmnet's pmin=1e-9.
+    // Neighbors pin the strict comparison, including the new default cutoff.
+    let cutoff = if compatible { 10.0 } else { libm::log(1.0 / 1e-9 - 1.0) };
+    let floor = if compatible { 0.0001 } else { 1e-9 * (1.0 - 1e-9) };
+    let probes = [
+        -1000.0,
+        -cutoff.next_up(),
+        -cutoff,
+        -cutoff.next_down(),
+        -11.0,
+        -10.0,
+        -0.7,
+        0.0,
+        0.7,
+        10.0,
+        11.0,
+        cutoff.next_down(),
+        cutoff,
+        cutoff.next_up(),
+        1000.0,
+    ];
     for n in [7, CHUNK + 1, PAR_IRLS_ROWS - 1, PAR_IRLS_ROWS, PAR_IRLS_ROWS + 7, 40_003] {
-        let eta: Vec<f64> = (0..n).map(|i| [-10.25, -10.0, -0.7, 0.0, 0.7, 10.0, 10.25][i % 7]).collect();
-        let y: Vec<f64> = eta.iter().map(|&e| if e > 0.0 { 1.0 } else { 0.0 }).collect();
+        let eta: Vec<f64> = (0..n).map(|i| probes[i % probes.len()]).collect();
+        let y: Vec<f64> = eta.iter().map(|&e| if (e > 0.0) != wrong_label { 1.0 } else { 0.0 }).collect();
         let mask: Vec<f64> = (0..n).map(|i| if i % 3 == 0 { 0.0 } else { 1.0 }).collect();
         let array = Array2::<f64>::zeros((n, 1).f());
         let x = ContigX::<f64, true> { x: array.view() };
@@ -60,7 +89,7 @@ fn irls_matches_row_formulas_and_sequential_loss() {
             dfmax: 2,
             max_iter: 100,
             stop_on_saturation: true,
-            r_compatible: false,
+            r_compatible: compatible,
             ybar: 0.5,
             null_deviance: 1.0,
             on_lambda: None,
@@ -82,6 +111,11 @@ fn irls_matches_row_formulas_and_sequential_loss() {
                     sum_w_residuals: 0.0,
                 };
                 st.eta.copy_from_slice(&eta);
+                if masked {
+                    for i in (0..n).filter(|&i| mask[i] == 0.0) {
+                        st.eta[i] = f64::NAN;
+                    }
+                }
                 let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
                 let loss = pool.install(|| fit.update_irls(&mut st));
                 let mut expected_loss = 0.0;
@@ -91,20 +125,22 @@ fn irls_matches_row_formulas_and_sequential_loss() {
                     } else {
                         // The clipped Bernoulli row equations, independently
                         // of the driver and its serial/parallel dispatch.
-                        let p = if eta[i] > 10.0 {
+                        let p = if eta[i] > cutoff {
                             1.0
-                        } else if eta[i] < -10.0 {
+                        } else if eta[i] < -cutoff {
                             0.0
                         } else {
                             let e = libm::exp(eta[i]);
                             e / (1.0 + e)
                         };
-                        let w = if eta[i].abs() > 10.0 { 0.0001 } else { p * (1.0 - p) };
+                        let w = if eta[i].abs() > cutoff { floor } else { p * (1.0 - p) };
                         let s = y[i] - p;
                         let term = if y[i] == 1.0 { libm::log(p) } else { libm::log(1.0 - p) };
                         expected_loss += term;
                         (w, s, s / w)
                     };
+                    assert!(w.is_finite() && r.is_finite());
+                    assert!(w > 0.0 || masked && mask[i] == 0.0);
                     for (actual, expected) in [(st.w[i], w), (st.s[i], s), (st.r[i], r)] {
                         assert_eq!(
                             actual.to_bits(),

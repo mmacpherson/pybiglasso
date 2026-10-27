@@ -156,7 +156,7 @@ def test_irls_clamp_is_strict_at_ten(side, direction):
     # The matching label keeps the loss finite even outside the clamp.
     y = np.array([float(side > 0)])
     p, w, s, r = (np.zeros(1) for _ in range(4))
-    solver.update_irls(y, None, eta, p, w, s, r)
+    solver.update_irls(y, None, eta, p, w, s, r, r_compatible=True)
     if abs(eta[0]) > 10:
         assert p[0] == y[0]
         assert w[0] == 0.0001

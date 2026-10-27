@@ -200,8 +200,8 @@ upstream changes.
   distance is certified, to about 1e-7 on tall data and, through the duality
   gap, to about 1e-5 on wide data (all but the wide lasso, whose optimum
   need not be unique). glmnet's path is stored from a pinned release and
-  checked at every lambda where no fitted log-odds exceeds 10, beyond which
-  pybiglasso, like R biglasso, clips them. In the benchmarks, glum reaches
+  checked at every lambda, including rare-response fits whose log-odds exceed
+  R biglasso's probability cutoff of 10. In the benchmarks, glum reaches
   the same elastic-net objective as well.
 - **Gaussian checks.** Six pinned glmnet paths use its generic `gaussian()`
   family, avoiding the response scaling of its fast Gaussian path. Independent
@@ -399,7 +399,16 @@ with a comment beginning "Differs from R biglasso".
   `v * (1 + l2)`, where the elastic-net objective in its documentation calls
   for `v + l2`, so the two solve somewhat different problems. pybiglasso uses
   `v + l2`, as glmnet and scikit-learn do; `r_compatible=True` reproduces R
-  exactly. The lasso is the same either way.
+  exactly for this update.
+- **Binomial probability clipping (0.4.0 results change).** R sets probabilities
+  to 0 or 1 beyond `|eta| > 10`, with weights of `1e-4`. Default mode uses
+  glmnet's `pmin = 1e-9` boundary, `|eta| > log(1 / pmin - 1)` (about 20.7).
+  This reduces each clipped row's probability error from at most `4.6e-5` to
+  `1e-9`. We retain a positive boundary weight of `pmin * (1 - pmin)` so the
+  working residual `(y - p) / w` remains defined; glmnet can use zero weights.
+  Default-mode coefficients, iterations and screening counts can change,
+  for both lasso and elastic net. `r_compatible=True` retains R's cutoff and
+  weights. Independent KKT checks against pinned glmnet fits cover the change.
 - **Zero penalty factors.** With a `penalty.factor` of 0 and the default
   lambda grid, R's grid comes out as `lambda = 0` at every step. pybiglasso
   instead fits the unpenalized columns first, and starts the path at the

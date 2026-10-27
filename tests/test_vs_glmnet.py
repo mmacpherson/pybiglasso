@@ -9,9 +9,8 @@ pass its KKT conditions, and then convexity bounds their distance: through
 the curvature of tall data (support.certificates.assert_same_optimum), or
 through the duality gap of wide data (assert_gap_close).
 
-The solver clips |eta| at ETA_CLIP, as R biglasso does, and solves the
-clipped problem there, so the comparison holds where glmnet's own fit keeps
-every |eta| within it. Beyond, pybiglasso-h7i: a strict xfail.
+Every lambda is checked, including rare-response fits beyond R biglasso's
+|eta| > 10 cutoff. Default mode uses glmnet's later pmin=1e-9 boundary.
 """
 
 import numpy as np
@@ -32,7 +31,7 @@ from test_vs_r import needs_r
 import pybiglasso as bl
 
 CASES = rglmnet.glmnet_grid()
-# update_irls's eta_max: beyond it p is exactly 0 or 1
+# R biglasso's boundary, retained only in compatibility mode.
 ETA_CLIP = 10.0
 # the response with 3% ones, whose small lambdas pass ETA_CLIP
 RARE = next(c for c in CASES if c.response == "rare")
@@ -88,18 +87,16 @@ def fit_glmnet_grid(case, data, glmnet):
 
 
 def assert_matches_glmnet(case, data, glmnet):
-    """glmnet passes KKT at every lambda, clipped or not, and pybiglasso is
-    certified close to it at every unclipped one."""
+    """Both paths pass KKT and the distance certificate at every lambda."""
     p = fit_glmnet_grid(case, data, glmnet)
     for k, lam in enumerate(p["lambdas"]):
         residual = standardized_kkt(
             p["Z"], p["y"], p["theirs"][k], lam, case.alpha, p["penalty"]
         )
         assert residual < KKT_TOL, f"glmnet at lambda {k}: {residual:.2e}"
-    unclipped = np.flatnonzero(~clipped_lambdas(data["X"], glmnet))
     # never vacuous: something beyond the null model is compared
-    assert glmnet["beta"][:, unclipped].any()
-    for k in unclipped:
+    assert glmnet["beta"].any()
+    for k in range(len(p["lambdas"])):
         args = (p["lambdas"][k], case.alpha, p["penalty"])
         if case.nrow > case.ncol:
             assert_same_optimum(p["Z"], p["y"], p["ours"][k], p["theirs"][k], *args)
@@ -139,22 +136,19 @@ def test_matches_stored_glmnet(case, fixtures, tmp_path):
 
 
 def test_rare_response_reaches_the_clip(fixtures, tmp_path):
-    """The xfail below has clipped lambdas to check. Its reference, glmnet at
-    those lambdas, passes KKT in test_matches_stored_glmnet."""
+    """The regression covers both the extended range and the later clip."""
     _, glmnet = fixtures[RARE.name]
     data, _ = rglmnet.prepare_case(RARE, tmp_path)
     assert clipped_lambdas(data["X"], glmnet).any()
+    eta = glmnet["intercept"] + data["X"] @ glmnet["beta"]
+    maximum = np.abs(eta).max(axis=0)
+    new_cutoff = np.log(1 / 1e-9 - 1)
+    assert ((maximum > ETA_CLIP) & (maximum < new_cutoff)).any()
+    assert (maximum > new_cutoff).any()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="pybiglasso-h7i: the |eta| > 10 clip biases the default objective",
-)
-@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_clipped_lambdas_pass_kkt(fixtures, tmp_path):
-    """pybiglasso's own KKT conditions at every clipped lambda, all checked
-    before failing: fixed, this passes, and the strict xfail reports it."""
+    """Default fits pass KKT even past R biglasso's |eta| > 10 cutoff."""
     _, glmnet = fixtures[RARE.name]
     data, _ = rglmnet.prepare_case(RARE, tmp_path)
     p = fit_glmnet_grid(RARE, data, glmnet)

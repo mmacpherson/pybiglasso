@@ -112,6 +112,34 @@ test("default elastic net satisfies independent one-feature logistic KKT", () =>
   } finally { d.free(); }
 });
 
+test("default binomial fits analytic log odds beyond R's cutoff", () => {
+  // Neutral rows keep the loss above the browser's saturation cutoff while
+  // the two informative groups still require log odds above ten.
+  const group = 32768, neutral = 4096, n = 2 * group + neutral, lambda = 2 ** -20;
+  const d = new Dataset(n, 1);
+  try {
+    const x = Float64Array.from({ length: n }, (_, i) => i < group ? -1 : i < 2 * group ? 1 : 0);
+    const y = Float64Array.from(x, (v, i) => v === 0 ? i % 2 : Number(v > 0));
+    y[0] = 1; y[group] = 0;
+    d.write_column(0, 0, x);
+    d.write_response(0, y);
+    const fit = d.fit({ family: "binomial", alpha: 1, lambdas: [lambda], eps: 1e-14, max_iter: 10000 });
+    assert.deepEqual(fit.warnings, []);
+    assert.deepEqual(fit.indices, [[0]]);
+    const a = fit.intercept[0], b = fit.coefficients[0][0];
+    const scale = Math.sqrt(2 * group / n);
+    const tail = 1 / group + lambda / scale;
+    const optimum = Math.log1p(-tail) - Math.log(tail);
+    assert(b > 10 && optimum > 10);
+    const p = (eta) => 1 / (1 + Math.exp(-eta));
+    const interceptGradient = group / n * (p(a + b) + p(a - b) - 1) + neutral / n * (p(a) - .5);
+    const betaGradient = scale * ((p(a + b) - p(a - b)) / 2 - .5 + 1 / group) + lambda;
+    // The same fixed KKT ceiling as the native certificates; the analytic
+    // optimum comes from expit(-beta_raw) = q + lambda/scale.
+    assert(Math.max(Math.abs(interceptGradient), Math.abs(betaGradient)) < 1e-6);
+  } finally { d.free(); }
+});
+
 function design(nrow, ncol, family) {
   let state = 5;
   const random = () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return (state >>> 0) / 2 ** 32; };
