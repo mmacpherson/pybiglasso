@@ -2,12 +2,15 @@
 
 Use two actual Rust extensions with one Python wrapper and shared inputs.
 AB/BA ordering balances the two versions; hashes compare transformations of
-the same fit and are never expected solver values.
+the same fit and are never expected solver values. An optional numba control
+uses every three-way order; it agrees to rounding rather than sharing Rust's
+bits, so its own repeat/thread identity is checked separately.
 """
 
 import argparse
 import hashlib
 import importlib.util
+import itertools
 import json
 import platform
 import statistics
@@ -62,12 +65,21 @@ def main():
     parser.add_argument("--threads", nargs="+", type=int, default=[1, 6])
     parser.add_argument("--alpha", nargs="+", type=float, default=[1.0, 0.5])
     parser.add_argument("--repeats", type=int, default=4)
+    parser.add_argument(
+        "--with-numba",
+        action="store_true",
+        help="include a numba control; use a multiple of six repetitions",
+    )
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     if args.repeats < 2 or args.repeats % 2 or min(args.threads) < 1:
         parser.error("Use an even number of repetitions >= 2 and positive threads.")
     if not all(0 < alpha <= 1 for alpha in args.alpha):
         parser.error("alpha must be in (0, 1].")
+    if args.with_numba and (args.family != "binomial" or args.repeats % 6):
+        parser.error(
+            "The numba control is binomial-only and requires repetitions divisible by six."
+        )
     spec = importlib.util.spec_from_file_location(
         "baseline._rust", args.baseline_extension
     )
@@ -80,6 +92,17 @@ def main():
     }
     if len(set(fingerprints.values())) != 2:
         parser.error("The baseline and candidate extension files must differ.")
+    numba_version = None
+    if args.with_numba:
+        import numba
+
+        if max(args.threads) > numba.config.NUMBA_NUM_THREADS:
+            parser.error("Requested threads exceed numba's available pool.")
+        numba_version = numba.__version__
+        variants["numba"] = _rust
+    # Every order for a three-way control balances position/predecessor effects.
+    # With two variants this is the familiar AB/BA sequence.
+    orders = list(itertools.permutations(variants.items()))
     cpu = next(
         line.split(":", 1)[1].strip()
         for line in Path("/proc/cpuinfo").read_text().splitlines()
@@ -95,6 +118,7 @@ def main():
         extension_sha256=fingerprints,
         seed=1,
         family=args.family,
+        numba=numba_version,
     )
     try:
         for problem in args.problem:
@@ -110,7 +134,8 @@ def main():
                 X = np.asarray(data["X"], dtype=dtype, order="F")
                 X.flags.writeable = False
                 for alpha in args.alpha:
-                    hashes = set()
+                    hashes = {name: set() for name in variants}
+                    trajectories = {}
                     for threads in args.threads:
                         options = dict(
                             family=args.family,
@@ -118,22 +143,33 @@ def main():
                             alpha=alpha,
                             n_threads=threads,
                         )
-                        for module in variants.values():
+                        for name, module in variants.items():
                             bl._rust = module
-                            hashes.add(path_hash(bl.biglasso(X, response, **options)))
+                            options["backend"] = "numba" if name == "numba" else "rust"
+                            hashes[name].add(
+                                path_hash(bl.biglasso(X, response, **options))
+                            )
                         times = {name: [] for name in variants}
                         for repeat in range(args.repeats):
-                            order = list(variants.items())
-                            if repeat % 2:
-                                order.reverse()
+                            order = orders[repeat % len(orders)]
                             for name, module in order:
                                 bl._rust = module
+                                options["backend"] = (
+                                    "numba" if name == "numba" else "rust"
+                                )
                                 start = time.perf_counter()
                                 fit = bl.biglasso(X, response, **options)
                                 times[name].append(time.perf_counter() - start)
-                                hashes.add(path_hash(fit))
-                        assert len(hashes) == 1, (
-                            "A fit changed bits across versions/repetitions/threads"
+                                hashes[name].add(path_hash(fit))
+                                trajectories[name] = dict(
+                                    nlambda=len(fit),
+                                    iterations=int(fit.iterations.sum()),
+                                )
+                        assert len(hashes["baseline"] | hashes["candidate"]) == 1, (
+                            "A Rust fit changed bits across versions/threads"
+                        )
+                        assert all(len(h) == 1 for h in hashes.values()), (
+                            "A backend changed bits across repetitions/threads"
                         )
                         medians = {
                             name: statistics.median(values)
@@ -150,9 +186,12 @@ def main():
                             times=times,
                             median_seconds=medians,
                             speedup=medians["baseline"] / medians["candidate"],
-                            path_hash=next(iter(hashes)),
-                            nlambda=len(fit),
-                            iterations=int(fit.iterations.sum()),
+                            path_hash=next(iter(hashes["candidate"])),
+                            variant_hashes={
+                                name: next(iter(h)) for name, h in hashes.items()
+                            },
+                            trajectories=trajectories,
+                            **trajectories["candidate"],
                         )
                         line = json.dumps(result)
                         print(line, flush=True)
