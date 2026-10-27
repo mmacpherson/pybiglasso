@@ -15,7 +15,7 @@ import platform
 import warnings
 from pathlib import Path
 
-PROBLEMS = {"tall": (2057, 17), "wide": (97, 129)}
+PROBLEMS = {"tall": (2057, 17), "wide": (97, 129), "parallel-irls": (16_391, 9)}
 ALPHAS = (1.0, 0.5)
 FAMILIES = ("binomial", "gaussian")
 CANDIDATE_MACHINES = {
@@ -49,6 +49,8 @@ def record(output):
     for name, (nrow, ncol) in PROBLEMS.items():
         # Exact dyadic inputs avoid platform libm/BLAS in data generation.
         # The tall case crosses a 2048-row chunk and has a non-8-row tail.
+        # parallel-irls also crosses the row-parallel IRLS threshold, so the
+        # cross-OS check covers portable math on worker threads.
         rng = np.random.default_rng(1)
         y = rng.integers(0, 2, nrow, dtype=np.int64).astype(np.float64)
         X = rng.integers(-8, 9, (nrow, ncol), dtype=np.int64).astype(np.float64)
