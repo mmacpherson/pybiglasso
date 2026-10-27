@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from sklearn.linear_model import Lasso
 from support.certificates import (
-    KKT_TOL,
     gaussian_curvature,
     gaussian_duality_gap,
     gaussian_subgradient_residual,
@@ -17,9 +16,47 @@ from support.certificates import (
 
 import pybiglasso as bl
 
-# A declared objective accuracy target for these small, O(1)-scaled problems.
-# This is independent of the production stopping rule and its observed output.
-GAP_TOL = 1e-10
+# Gaussian's sweep stops when max(delta_beta**2) < eps * Var(y).
+FIT_EPS = 1e-22
+
+
+def roundoff(y):
+    # Six length-n sums/products need at most 12n rounded operations along a
+    # dependency chain; reserve another 4n for centering/scaling and mapping
+    # (n=4 or 16, at most five parameters here). Use gamma_(16n), not just 16n*u.
+    # Response norm supplies the scale for these fixed, well-conditioned data.
+    operations = 16 * len(y)
+    unit = np.finfo(float).eps
+    return operations * unit / (1 - operations * unit) * max(1, np.linalg.norm(y))
+
+
+def kkt_cap(Z, y):
+    # After a coordinate's exact minimization its stationarity error is zero;
+    # later shifts in the sweep change that gradient by G_jk*delta_k. Each
+    # shift is <=sqrt(FIT_EPS*Var(y)), so an absolute Gram row sum bounds the
+    # final error. Including its diagonal is conservative. The intercept's
+    # equation and raw/standardized conversion receive the rounding allowance.
+    gram = Z.T @ Z / len(y)
+    return np.sqrt(FIT_EPS * np.var(y)) * max(
+        1, np.linalg.norm(gram, np.inf)
+    ) + roundoff(y)
+
+
+def gap_cap(Z, y, lam, alpha, pf):
+    """Propagate the declared stationarity accuracy into the dual construction."""
+    error = kkt_cap(Z, y)
+    if alpha < 1:
+        # g_j=l1_j*|b|+l2_j*b^2/2 has conjugate curvature <=1/l2_j.
+        # Fenchel error is <=error^2/(2*l2_j); the intercept adds error^2/2.
+        return error**2 * (1 + np.sum(1 / (lam * (1 - alpha) * pf))) / 2
+    # For lasso, dual contraction is FIRST order in stationarity error:
+    # 1-t <= error/min(l1). Objective<=null implies ||beta||_1<=Var(y)/(2min(l1))
+    # and ||u||<=sd(y)/sqrt(n). Thus the uncontracted Fenchel error is at most
+    # error*Var(y)/(2min(l1)), contraction adds <=error*Var(y)/min(l1),
+    # and centering the residual adds at most error^2/2. Unlike EN, its gap
+    # therefore need not scale as eps. No cap is fitted to observed gaps.
+    null_budget = np.var(y) / 2 + roundoff(y)
+    return 3 * error * null_budget / (lam * min(pf)) + error**2 / 2
 
 
 def objective(Z, y, theta, lam, alpha, pf):
@@ -32,9 +69,10 @@ def objective(Z, y, theta, lam, alpha, pf):
 def assert_optimal(Z, y, theta, lam, alpha, pf):
     """Cap both stationarity and an outward-rounded rational primal/dual gap."""
     residual = gaussian_subgradient_residual(Z, y, theta, lam, alpha, pf)
-    assert np.max(abs(residual)) <= KKT_TOL
+    assert np.max(abs(residual)) <= kkt_cap(Z, y)
+    assert objective(Z, y, theta, lam, alpha, pf) <= np.var(y) / 2 + roundoff(y)
     gap = gaussian_duality_gap(Z, y, theta, lam, alpha, pf)
-    assert gap <= GAP_TOL
+    assert gap <= gap_cap(Z, y, lam, alpha, pf)
     return gap
 
 
@@ -53,9 +91,10 @@ def enumerate_optimum(Z, y, lam, alpha, pf):
     assert 0 < p <= 4 and np.all(np.asarray(pf) > 0)
     candidates = []
     gram, score = Z.T @ Z / len(y), Z.T @ y / len(y)
-    # These systems have order <=5. This conservative allowance covers double
-    # precision formation/solve error; it is checked again by exact-gap algebra.
-    oracle_kkt = 1e-10
+    # Require the directly recomputed stationarity residual to reach the
+    # formation/reconstruction rounding floor above. This is an accuracy gate
+    # on candidates, not a claim about an arbitrary SVD's forward error.
+    oracle_kkt = roundoff(y)
     for state in product((-1, 0, 1), repeat=p):
         signs = np.asarray(state)
         active = np.flatnonzero(signs)
@@ -86,7 +125,7 @@ def fit(X, y, lambdas, alpha, pf):
         lambdas=lambdas,
         alpha=alpha,
         penalty_factor=pf,
-        eps=1e-22,
+        eps=FIT_EPS,
         max_iter=100_000,
         n_threads=1,
     )
@@ -96,12 +135,6 @@ def theta_at(path, center, scale, k=-1):
     return standardized_theta(
         path.intercept[k], path.coef[:, [k]].toarray().ravel(), center, scale
     )
-
-
-def roundoff(y):
-    # Our designs have <=32 rows and <=5 parameters, of order one. Allow 256
-    # rounded operations at response scale for mapping and matrix products.
-    return 256 * np.finfo(float).eps * max(1.0, np.linalg.norm(y))
 
 
 @pytest.mark.parametrize("alpha", [0.25, 0.5, 1.0])
@@ -123,7 +156,7 @@ def test_multifeature_orthogonal_path_has_closed_form(alpha):
         expected = np.r_[3.0, beta]
         theta = theta_at(path, center, scale, k)
         residual = gaussian_subgradient_residual(Z, y, theta, lam, alpha, pf)
-        assert np.max(abs(residual)) <= 1e-6
+        assert np.max(abs(residual)) <= kkt_cap(Z, y)
         # Hessian diag(1, 1+lambda*(1-alpha)*pf) has least curvature 1.
         # Strong monotonicity bounds theta error by ||subgradient||/mu.
         allowance = np.linalg.norm(residual) + roundoff(y)
@@ -160,15 +193,16 @@ def correlated_problem(duplicate=False):
 
 def augmented_lasso(Z, y, lam, alpha, pf, *, wrong=None):
     n, p = len(y), len(pf)
+    weights = np.ones_like(pf) if wrong == "penalty weights" else pf
     # Eliminate the free intercept by centering. With u_j=pf_j*beta_j,
     # append sqrt(n*lambda*(1-alpha)/pf_j) ridge rows. Scaling BOTH arrays
     # by sqrt((n+p)/n) cancels sklearn's changed sample normalization.
     # fit_intercept=False prevents recentering the pseudo-observations;
     # sklearn Lasso does not standardize the augmented design.
-    ridge = np.sqrt(n * lam * (1 - alpha) / pf)
+    ridge = np.sqrt(n * lam * (1 - alpha) / weights)
     if wrong == "ridge":
         ridge /= np.sqrt(n)
-    A = np.vstack([Z[:, 1:] / pf, np.diag(ridge)])
+    A = np.vstack([Z[:, 1:] / weights, np.diag(ridge)])
     response = np.r_[y - y.mean(), np.zeros(p)]
     if wrong != "sample count":
         A *= np.sqrt((n + p) / n)
@@ -182,8 +216,10 @@ def augmented_lasso(Z, y, lam, alpha, pf, *, wrong=None):
     error = gradient + np.where(
         u != 0, lam * alpha * np.sign(u), np.clip(-gradient, -lam * alpha, lam * alpha)
     )
-    assert np.max(abs(error)) <= 1e-6
-    return np.r_[y.mean(), u / pf]
+    # Original beta-gradient = weights * augmented u-gradient. Demand the
+    # same declared accuracy budget after that change of coordinates.
+    assert np.max(abs(error)) <= kkt_cap(Z, y) / max(weights)
+    return np.r_[y.mean(), u / weights]
 
 
 @pytest.mark.parametrize("alpha", [0.2, 0.5, 0.8, 1.0])
@@ -199,7 +235,7 @@ def test_elastic_net_equals_independent_augmented_lasso(alpha, lam):
     assert np.linalg.norm(got - oracle) <= allowance
 
 
-@pytest.mark.parametrize("wrong", ["ridge", "sample count"])
+@pytest.mark.parametrize("wrong", ["ridge", "sample count", "penalty weights"])
 def test_augmented_oracle_rejects_wrong_normalization(wrong):
     _, y, Z, _, _, pf = correlated_problem()
     theta = augmented_lasso(Z, y, 0.5, 0.5, pf, wrong=wrong)
@@ -232,14 +268,19 @@ def test_cold_coarse_and_fine_paths_match_enumerated_optimum(duplicate, alpha):
             )
 
 
-def test_optimum_check_rejects_wrong_ridge_and_intercept():
-    X, y, Z, center, scale, pf = correlated_problem()
+def test_optimum_check_rejects_perturbed_coefficients_and_intercept():
+    _, y, Z, _, _, pf = correlated_problem()
     theta = enumerate_optimum(Z, y, 0.5, 0.5, pf)
     for perturbation in ([0.5, 0, 0, 0], [0, 0.25, 0, 0]):
         with pytest.raises(AssertionError):
             assert_optimal(Z, y, theta + perturbation, 0.5, 0.5, pf)
-    # Orthogonal closed form with an incorrect doubled ridge denominator.
+
+
+def test_two_column_optimum_accepts_correct_ridge_and_rejects_doubled_ridge():
     q = np.array(list(product((-1.0, 1.0), repeat=2)))
+    correct = np.r_[3.0, (2 - 0.25) / (1 + 0.25), 0.0]
+    assert_optimal(with_ones(q), 3 + 2 * q[:, 0], correct, 0.5, 0.5, np.ones(2))
+    # Same analytic problem with an incorrect doubled ridge denominator.
     wrong = np.r_[3.0, (2 - 0.25) / (1 + 0.5), 0.0]
     with pytest.raises(AssertionError):
         assert_optimal(with_ones(q), 3 + 2 * q[:, 0], wrong, 0.5, 0.5, np.ones(2))
