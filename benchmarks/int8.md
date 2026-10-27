@@ -31,11 +31,22 @@ Baseline source was `7cdd687`, candidate `2b03702`. The complete run contains
 30 settings at 1/4/8 threads, six timed fits per build; twelve settings are
 the int8 targets summarized above. This was a shared desktop with applications
 open and reported system load declining from 9.5 to 5.7, not an idle-machine
-measurement. Sanitized raw JSONL, the run script and load records are pending
-transfer; these figures are reported evidence, not a local raw-record audit.
+measurement. The sanitized [int8 records](results/int8-m1-pro-exploratory/int8-binomial.jsonl),
+[float64 binomial records](results/int8-m1-pro-exploratory/float64-binomial.jsonl)
+and [Gaussian records](results/int8-m1-pro-exploratory/float64-gaussian.jsonl)
+retain all 360 timed fits. The sender verified their SHA256s against the Mac
+manifest; the [transfer manifest](results/int8-m1-pro-exploratory/manifest.json)
+pins the unchanged files. Local auditing recomputed counts, medians, ratios
+and recorded hash consistency; it did not rerun the fits or observe the run.
+The [run script](results/int8-m1-pro-exploratory/run.sh),
+[provenance](results/int8-m1-pro-exploratory/README.txt) and
+[before](results/int8-m1-pro-exploratory/environment-before.txt)/[after](results/int8-m1-pro-exploratory/environment-after.txt)
+snapshots accompany them. The continuous `vm-stat.txt` referenced by the
+script was not transferred; these snapshots are not a per-fit load trace.
 
 These are **exploratory, shared-desktop** results. A subsequent quiet gate
-failed over thirty minutes: one-minute load had minimum 2.43, median 3.69 and
+failed over thirty minutes ([summary](results/int8-m1-pro-exploratory/quiet-gate-summary.json)):
+one-minute load had minimum 2.43, median 3.69 and
 maximum 7.17. There was no quiet rerun. The reported int8 regression persists
 under all three summaries of the six samples per build:
 
@@ -51,7 +62,7 @@ are bimodal, around 4.8 s and 7.3 s, with minima near parity. Hashes reportedly
 match across both builds, every repetition and all thread counts. These
 diagnostics support retaining the old ARM form, not a claim of controlled
 ARM performance or a universal slowdown magnitude. No summary replaces or
-discards the underlying repetitions; the complete lists remain pending here.
+discards the underlying repetitions; the complete lists remain in the files.
 
 Assembly probes cross-compiled with Rust 1.98 / LLVM 22.1.8 for
 `aarch64-apple-darwin` (`target-cpu=apple-m1`) and generic

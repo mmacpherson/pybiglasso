@@ -1,0 +1,13 @@
+{
+  "classification": "exploratory, shared desktop; ungated candidate",
+  "cpu": "Apple M1 Pro",
+  "settings": 30,
+  "timed_fits": 360,
+  "sha256": {
+    "int8-binomial.jsonl": "1c4ca3d378a57bfb72a5cd4c5de5f15891833a625bec08a1ab6fc8d0e461824b",
+    "float64-binomial.jsonl": "344db71bbf53bf6ef950a2b01dcbd5fa19f72125cb1e12857118a02871200cce",
+    "float64-gaussian.jsonl": "7ad6f3a1fb3c62818855fa4a25c89808ac1a013ac52b1b22b7708b28784644be"
+  },
+  "provenance": "Transferred sanitized JSONL; sender verified the three hashes against the original Mac manifest. Local record counts, medians, ratios and recorded path-hash consistency audited. No local fit rerun.",
+  "load_evidence": "Before/after snapshots and later failed quiet-gate summary. The continuous vm-stat.txt referenced in run.sh is not in this bundle."
+}

@@ -1,0 +1,22 @@
+Tue Oct 27 21:25:18 UTC 2026
+Apple M1 Pro
+8
+ProductName:		macOS
+ProductVersion:		26.7.2
+BuildVersion:		25G332
+rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)
+binary: rustc
+commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+commit-date: 2026-10-13
+host: aarch64-apple-darwin
+release: 1.99.1
+LLVM version: 23.1.3
+Python 3.13.13
+2b0370297e591c8624de532bf2335e32ae9b8ef2
+7cdd687957e49514a55366a3af95ab9c43445e07
+14:25  up 16 mins, 2 users, load averages: 9.46 36.05 45.06
+Now drawing from 'AC Power'
+ -InternalBattery-0 (battery identifier redacted)	100%; charged; 0:00 remaining present: true
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
