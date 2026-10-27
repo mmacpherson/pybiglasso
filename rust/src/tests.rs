@@ -6,6 +6,86 @@ use super::*;
 use ndarray::{Array2, ShapeBuilder};
 
 #[test]
+fn irls_matches_row_formulas_and_sequential_loss() {
+    for n in [7, CHUNK + 1, PAR_IRLS_ROWS - 1, PAR_IRLS_ROWS, PAR_IRLS_ROWS + 7, 40_003] {
+        let eta: Vec<f64> = (0..n).map(|i| [-10.25, -10.0, -0.7, 0.0, 0.7, 10.0, 10.25][i % 7]).collect();
+        let y: Vec<f64> = eta.iter().map(|&e| if e > 0.0 { 1.0 } else { 0.0 }).collect();
+        let mask: Vec<f64> = (0..n).map(|i| if i % 3 == 0 { 0.0 } else { 1.0 }).collect();
+        let array = Array2::<f64>::zeros((n, 1).f());
+        let x = ContigX::<f64, true> { x: array.view() };
+        let pf = [1.0];
+        let params = Params {
+            family: Family::Binomial,
+            alpha: 1.0,
+            lambdas: None,
+            nlambda: 2,
+            eps: 1e-7,
+            lambda_min: 0.05,
+            lambda_log_scale: true,
+            penalty_factor: &pf,
+            dfmax: 2,
+            max_iter: 100,
+            stop_on_saturation: true,
+            r_compatible: false,
+            ybar: 0.5,
+            null_deviance: 1.0,
+            on_lambda: None,
+        };
+        for masked in [false, true] {
+            let fit = Fit { x: &x, y: &y, params: &params, mask: masked.then_some(&mask), rows: None, n_fit: n };
+            for threads in [1, 2, 6] {
+                let mut st = State {
+                    eta: Rows::new(n, 0.0),
+                    irls_work: Rows::new(n, f64::NAN),
+                    w: Rows::new(n, f64::NAN),
+                    s: Rows::new(n, f64::NAN),
+                    r: Rows::new(n, f64::NAN),
+                    beta: vec![],
+                    active: vec![],
+                    strong: vec![],
+                    z: vec![],
+                    intercept: 0.0,
+                    sum_w_residuals: 0.0,
+                };
+                st.eta.copy_from_slice(&eta);
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+                let loss = pool.install(|| fit.update_irls(&mut st));
+                let mut expected_loss = 0.0;
+                for i in 0..n {
+                    let (w, s, r) = if masked && mask[i] == 0.0 {
+                        (0.0, 0.0, 0.0)
+                    } else {
+                        // The clipped Bernoulli row equations, independently
+                        // of the driver and its serial/parallel dispatch.
+                        let p = if eta[i] > 10.0 {
+                            1.0
+                        } else if eta[i] < -10.0 {
+                            0.0
+                        } else {
+                            let e = libm::exp(eta[i]);
+                            e / (1.0 + e)
+                        };
+                        let w = if eta[i].abs() > 10.0 { 0.0001 } else { p * (1.0 - p) };
+                        let s = y[i] - p;
+                        let term = if y[i] == 1.0 { libm::log(p) } else { libm::log(1.0 - p) };
+                        expected_loss += term;
+                        (w, s, s / w)
+                    };
+                    for (actual, expected) in [(st.w[i], w), (st.s[i], s), (st.r[i], r)] {
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "n={n}, row={i}, threads={threads}, masked={masked}"
+                        );
+                    }
+                }
+                assert_eq!(loss.to_bits(), (-expected_loss).to_bits());
+            }
+        }
+    }
+}
+
+#[test]
 fn null_model_counts_only_selected_rows() {
     let y = [0.0, 1.0, f64::NAN, 0.0];
     let rows = [1, 3, 1, 0];
