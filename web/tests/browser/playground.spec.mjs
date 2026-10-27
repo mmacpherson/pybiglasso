@@ -38,7 +38,9 @@ test("colon fits locally, lambda changes the model, and enet refits", async ({ p
   const last = await page.locator("#lambda").getAttribute("max");
   await page.locator("#lambda").fill(last);
   await expect(page.locator("#active-count")).not.toHaveText("0");
-  await page.locator('[data-alpha="0.5"]').click(); await page.locator("#fit").click();
+  // penalty changes refit on their own; the Fit button stays away while fits are quick
+  await page.locator('[data-alpha="0.2"]').click(); await page.locator('[data-alpha="0.5"]').click();
+  await expect(page.locator("#fit")).toBeHidden();
   await expect(page.locator("#path-title")).toContainText("α = 0.50");
   const result = await pathDownload(page);
   expect(result.features).toHaveLength(2000);
@@ -142,6 +144,9 @@ test("cross-validation chooses λ on held-out rows for both families", async ({ 
   await page.goto("/");
   for (const example of ["breast", "gaussian"]) {
     await page.locator("#example").selectOption(example);
+    const cvSwitch = page.getByLabel("Cross-validate to choose λ");
+    if (!await cvSwitch.isChecked()) await page.getByText("Cross-validate to choose λ").click();
+    await expect(cvSwitch).toBeChecked();
     await page.locator("#folds").selectOption("5");
     await page.locator("#load-example").click();
     await expect(page.locator("#model-results")).toBeVisible();
@@ -160,7 +165,30 @@ test("cross-validation chooses λ on held-out rows for both families", async ({ 
     await expect(page.locator("#active-count")).toHaveText(String(result.indices[cv.best].length));
     await expect(page.locator("#cv-note")).toContainText(example === "gaussian" ? "squared error" : "deviance");
   }
-  await page.locator("#folds").selectOption("0"); await page.locator("#fit").click();
+  await page.getByText("Cross-validate to choose λ").click();
+  await expect(page.getByLabel("Cross-validate to choose λ")).not.toBeChecked();
   await expect(page.locator("#cv-panel")).toBeHidden();
   expect(errors).toEqual([]);
+});
+
+test("metric explainers open on hover, focus and tap, and close on Escape", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#example").selectOption("breast");
+  await page.locator("#load-example").click();
+  await expect(page.locator("#model-results")).toBeVisible();
+  const tip = page.locator("#tip-rejections");
+  await expect(tip).toBeHidden();
+  await page.getByRole("button", { name: "About strong-rule rejections" }).hover();
+  await expect(tip).toBeVisible();
+  await expect(tip).toContainText("screening never changes the answer");
+  await page.mouse.move(0, 0);
+  await expect(tip).toBeHidden();
+  await page.getByRole("button", { name: "About training deviance" }).click();
+  await expect(page.locator("#tip-loss")).toBeVisible();
+  await expect(page.locator("#tip-loss")).toContainText("deviance");
+  await page.mouse.move(0, 0);
+  await expect(page.locator("#tip-loss")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.locator("h1").click();
+  await expect(page.locator("#tip-loss")).toBeHidden();
 });

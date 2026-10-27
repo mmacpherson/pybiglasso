@@ -27,23 +27,38 @@ function makeWorker() {
   worker.onerror = (event) => fail(event.message || "The computation worker stopped unexpectedly. Try a smaller dataset.");
 }
 
-function setBusy(next: boolean) {
+// Penalty settings refit on their own while fits feel immediate; once one
+// takes longer, the Fit button comes back instead.
+const AUTO_FIT_MS = 1500, SETTLE_MS = 300, REVEAL_MS = 400;
+const PENALTY = ["alpha", "nlambda", "eps", "cv", "folds", "go-best", "go-1se"];
+let lastFitMs = 0;
+let queued = false;
+let settle: ReturnType<typeof setTimeout> | undefined;
+let reveal: ReturnType<typeof setTimeout> | undefined;
+
+// During a fit the penalty controls stay live, and a change queues the next fit.
+function setBusy(next: boolean, fitting = false) {
   busy = next;
-  for (const id of ["load-example", "file", "example", "family", "alpha", "nlambda", "eps", "folds", "go-best", "go-1se", "target", "positive", "import"]) {
-    ($<HTMLInputElement>(id)).disabled = next;
+  for (const id of ["load-example", "file", "example", "family", "target", "positive", "import", ...PENALTY]) {
+    ($<HTMLInputElement>(id)).disabled = next && !(fitting && PENALTY.includes(id));
   }
+  $<HTMLSelectElement>("folds").disabled ||= !$<HTMLInputElement>("cv").checked;
   $("fit").toggleAttribute("disabled", next || !loaded);
-  document.querySelectorAll<HTMLButtonElement>("[data-alpha]").forEach((button) => { button.disabled = next; });
-  hide("cancel", !next); hide("progress", !next);
-  if (next) $<HTMLProgressElement>("progress").removeAttribute("value");
+  document.querySelectorAll<HTMLButtonElement>("[data-alpha]").forEach((button) => { button.disabled = next && !fitting; });
+  // a quick fit shouldn't flash the cancel button and progress bar
+  clearTimeout(reveal);
+  if (next) {
+    $<HTMLProgressElement>("progress").removeAttribute("value");
+    reveal = setTimeout(() => { hide("cancel", false); hide("progress", false); }, REVEAL_MS);
+  } else { hide("cancel"); hide("progress"); }
 }
 
-function post(request: Request) { setBusy(true); hide("error"); worker.postMessage(request); }
+function post(request: Request) { setBusy(true, request.kind === "fit"); hide("error"); worker.postMessage(request); }
 function status(message: string) { text("status", message); }
-function fail(message: string) { setBusy(false); automatic = false; text("error", message); hide("error", false); status("Could not complete that step."); }
+function fail(message: string) { setBusy(false); automatic = false; queued = false; text("error", message); hide("error", false); status("Could not complete that step."); }
 
 function clearModel() {
-  model = undefined; cv = undefined;
+  model = undefined; cv = undefined; lastFitMs = 0; hide("fit");
   hide("model-results"); hide("chart-panel"); hide("cv-panel"); hide("lambda-controls"); hide("empty", false);
   text("timing", "Ready when you are"); text("path-title", "From sparse to expressive.");
 }
@@ -103,8 +118,10 @@ function loadSelection() {
 }
 
 function fit() {
-  if (!loaded || busy) return;
-  pending = { alpha: Number(value("alpha")), nlambda: Number(value("nlambda")), eps: Number(value("eps")), folds: Number(value("folds")) };
+  if (!loaded) return;
+  if (busy) { queued = true; return; }
+  const folds = $<HTMLInputElement>("cv").checked ? Number(value("folds")) : 0;
+  pending = { alpha: Number(value("alpha")), nlambda: Number(value("nlambda")), eps: Number(value("eps")), folds };
   status("Starting the Rust solver…"); post({ kind: "fit", ...pending });
 }
 
@@ -133,6 +150,7 @@ function receive(reply: Reply) {
   } else {
     if (!reply.path.lambdas.length) { fail(reply.path.warnings.join("\n") || "The path stopped before producing a model."); return; }
     model = reply.path; cv = reply.cv; settings = pending;
+    lastFitMs = reply.milliseconds; hide("fit", lastFitMs <= AUTO_FIT_MS);
     hide("empty"); hide("chart-panel", false); hide("lambda-controls", false); hide("model-results", false);
     text("path-title", `${settings.alpha === 1 ? "Lasso" : "Elastic net"} · α = ${settings.alpha.toFixed(2)}`);
     text("timing", `${model.lambdas.length} models · ${reply.milliseconds < 1000 ? `${Math.round(reply.milliseconds)} ms` : `${(reply.milliseconds / 1000).toFixed(2)} s`}`);
@@ -142,6 +160,7 @@ function receive(reply: Reply) {
     text("lambda-max", `λ ${format(model.lambdas[0])}`); text("lambda-min", `λ ${format(model.lambdas.at(-1)!)}`);
     text("warnings", model.warnings.join("\n")); hide("warnings", model.warnings.length === 0);
     renderModel(); status(cv ? `Cross-validated over ${cv.folds} folds. Move the λ slider, or jump to λmin or λ1se.` : "Path ready. Move the λ slider to explore a model.");
+    if (queued) { queued = false; fit(); }
   }
 }
 
@@ -152,6 +171,7 @@ function renderModel() {
   text("active-count", String(model.indices[k].length)); text("iterations", model.iterations[k].toLocaleString());
   text("rejections", model.n_rejected[k].toLocaleString()); text("deviance", model.deviance[k].toFixed(2));
   text("loss-label", model.family === "gaussian" ? "Training RSS" : "Training deviance");
+  text("tip-loss", `How closely the model fits the rows it was trained on, as the ${model.family === "gaussian" ? "residual sum of squares" : "deviance"}; lower is closer. It always falls as λ shrinks, so it can't choose λ; cross-validation's held-out loss can.`);
   const body = $("coefficient-body"); body.replaceChildren();
   const append = (name: string, raw: number, std: number | undefined, index?: number) => {
     const row = document.createElement("tr"), feature = document.createElement("td");
@@ -232,15 +252,32 @@ for (const id of ["select-all", "select-none"]) $(id).addEventListener("click", 
 function alphaChanged() {
   text("alpha-value", Number(value("alpha")).toFixed(2));
   document.querySelectorAll<HTMLElement>("[data-alpha]").forEach((button) => button.classList.toggle("selected", Number(button.dataset.alpha) === Number(value("alpha"))));
-  if (model) status("Settings changed. Fit the path to apply them.");
+  settingsChanged();
+}
+function settingsChanged() {
+  if (!loaded) return;
+  clearTimeout(settle);
+  if (lastFitMs > AUTO_FIT_MS) { hide("fit", false); status("Settings changed. Fit the path to apply them."); return; }
+  settle = setTimeout(fit, SETTLE_MS);
 }
 $("alpha").addEventListener("input", alphaChanged);
 document.querySelectorAll<HTMLElement>("[data-alpha]").forEach((button) => button.addEventListener("click", () => { $<HTMLInputElement>("alpha").value = button.dataset.alpha!; alphaChanged(); }));
-for (const id of ["nlambda", "eps", "folds"]) $(id).addEventListener("change", () => { if (model) status("Settings changed. Fit the path to apply them."); });
+for (const id of ["nlambda", "eps", "folds"]) $(id).addEventListener("change", settingsChanged);
+$("cv").addEventListener("change", () => { $<HTMLSelectElement>("folds").disabled = !$<HTMLInputElement>("cv").checked; settingsChanged(); });
+// the explainers open on hover and focus (CSS) and on a tap, for touch screens
+document.querySelectorAll<HTMLButtonElement>(".info").forEach((button) => button.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const open = button.getAttribute("aria-expanded") !== "true";
+  document.querySelectorAll(".info").forEach((other) => other.setAttribute("aria-expanded", "false"));
+  button.setAttribute("aria-expanded", String(open));
+}));
+const closeTips = () => document.querySelectorAll(".info").forEach((button) => button.setAttribute("aria-expanded", "false"));
+document.addEventListener("click", closeTips);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTips(); });
 $("cancel").addEventListener("click", () => {
   exampleAbort?.abort(); exampleAbort = undefined;
   worker.onmessage = null; worker.onerror = null; worker.terminate(); makeWorker();
-  loaded = undefined; inspection = undefined; automatic = false;
+  loaded = undefined; inspection = undefined; automatic = false; queued = false; clearTimeout(settle);
   setBusy(false); clearModel(); hide("import-panel"); hide("dataset-summary"); status("Cancelled. Choose the example or file again to reload its data.");
 });
 $("download-csv").addEventListener("click", () => {
