@@ -50,8 +50,9 @@ requires-python = ">=3.11"
 version = "0.3.1"
 
 [project.optional-dependencies]
-all = ["pybiglasso[arrow,polars,pandas,sklearn,viz]"]
+all = ["pybiglasso[arrow,excel,polars,pandas,sklearn,viz]"]
 arrow = ["pyarrow"]
+excel = ["pybiglasso[arrow]", "openpyxl"]
 pandas = ["pandas"]
 polars = ["polars"]
 sklearn = ["scikit-learn>=1.6"]
