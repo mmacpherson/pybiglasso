@@ -41,7 +41,9 @@ class BiglassoPath:
     penalty_factor: np.ndarray
     feature_names: tuple
     alpha: float
-    family: str = "gaussian"
+    # Pickles from before families existed have no instance field, so they
+    # fall back here. New fits always record their actual family explicitly.
+    family: str = "binomial"
 
     def __len__(self):
         return len(self.lambdas)

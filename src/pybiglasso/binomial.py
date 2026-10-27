@@ -181,7 +181,11 @@ def biglasso(
     if family not in ("binomial", "gaussian"):
         raise NotImplementedError("Supported families are 'binomial' and 'gaussian'.")
     if family == "gaussian" and backend == "numba":
-        raise NotImplementedError("Gaussian endpoints require backend='rust'.")
+        raise NotImplementedError(
+            "Gaussian endpoints require backend='rust'. "
+            "The family now defaults to 'gaussian'; "
+            "pass family='binomial' for logistic regression with numba."
+        )
     if backend == "numba":
         _use_numba()
     if not np.isfortran(X):

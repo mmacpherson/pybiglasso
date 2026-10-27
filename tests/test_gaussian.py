@@ -1,6 +1,7 @@
 """Production Gaussian solver: outside R trajectories and independent optima."""
 
 import dataclasses
+import pickle
 
 import numpy as np
 import pytest
@@ -31,6 +32,19 @@ def test_gaussian_is_the_default_family():
     )
     assert implicit.family == "gaussian"
     assert_bitwise(implicit, explicit)
+    restored = pickle.loads(pickle.dumps(implicit))
+    assert restored.family == "gaussian"
+    assert_bitwise(restored, implicit)
+    np.testing.assert_array_equal(restored.predict(X), implicit.predict(X))
+
+
+def test_numba_default_family_error_explains_migration():
+    X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
+    with pytest.raises(
+        NotImplementedError,
+        match="family now defaults to 'gaussian'.*family='binomial'",
+    ):
+        bl.biglasso(X, [0.0, 0.0, 1.0, 1.0], backend="numba")
 
 
 @pytest.mark.parametrize("compatible", [False, True])

@@ -26,8 +26,9 @@ response on the selected rows. The numba backend raises `NotImplementedError`
 for Gaussian; the implementation is Rust only. Constant responses produce
 the intercept-only optimum; supplied lambdas allow a single fit.
 
-`BiglassoPath` has a `family` field defaulting to `"gaussian"`; internal constructors
-explicitly record the family actually fitted. Gaussian `predict()`
+`BiglassoPath` records the family actually fitted, including `"gaussian"` for
+default fits. Its dataclass field fallback stays `"binomial"` so paths pickled
+before families existed retain their classification behavior. Gaussian `predict()`
 and `decision_function()` return the linear prediction, with the existing
 shape `(nrow, nlambda)`. `predict_proba()` raises for Gaussian. Coefficients,
 intercepts, sparse exports and lambda selection keep their current formats.
