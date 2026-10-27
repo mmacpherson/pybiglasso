@@ -210,8 +210,47 @@ samples. The [attempt manifest](results/int8-zen4-followup-aborted.json) marks
 17 fit windows as potentially overlapping the new job. The next setting was
 interrupted before its repetitions were written, so it has no durable
 per-fit record. This is an incomplete, contaminated attempt, not a
-replacement control set. A coordinated quiet window is required before a
-complete control follow-up; no uncontaminated-control conclusion is drawn.
+replacement control set. At that point, a coordinated quiet window was still
+required; no uncontaminated-control conclusion is drawn from that attempt.
+
+### Completed timestamped control follow-up
+
+After a separately authorized quiet window, all twelve float64 settings were
+repeated at `df2f381`, using the same extension fingerprints and six fits per
+version (three complete AB/BA pairs). The
+[binomial](results/int8-zen4-controls-followup.jsonl) and
+[Gaussian](results/int8-zen4-gaussian-followup.jsonl) records retain all 144
+timed fits, with per-fit UTC epoch-nanosecond intervals. Every fit completes
+100 lambdas without disallowed warnings and reproduces its original
+before/after/thread path hash. Original and aborted records remain separate.
+
+Median seconds, baseline → candidate:
+
+| Family | Problem | Alpha | 1 thread | 6 threads |
+|---|---|---:|---:|---:|
+| Binomial | 5,000 × 1,000 | 1 | 3.155 → 3.144 | 3.232 → 3.319 |
+| Binomial | 5,000 × 1,000 | 0.5 | 2.190 → 2.178 | 2.118 → 2.135 |
+| Binomial | 2,000 × 20,000 | 1 | 1.474 → 1.456 | 1.024 → 1.028 |
+| Binomial | 2,000 × 20,000 | 0.5 | 1.534 → 1.554 | 1.096 → 1.097 |
+| Gaussian | 5,000 × 1,000 | 0.5 | 1.198 → 1.185 | 1.166 → 1.150 |
+| Gaussian | 2,000 × 20,000 | 0.5 | 2.232 → 2.214 | 1.843 → 1.843 |
+
+Baseline/candidate ratios span 0.974–1.012x for binomial and
+0.99995–1.01397x for Gaussian. The tall six-thread binomial lasso candidate
+is about 2.7% slower; no floating-storage neutrality or universal speedup is
+claimed. As above, generic code generation/layout can affect float64, and
+these small changes are not assumed to be noise.
+
+The [environment audit](results/int8-zen4-followup-environment.json) records
+unchanged mains/performance settings, versions and extension source revisions.
+No Docker build in retained BuildKit history overlaps this window, and sampled
+process checks observed no competing compiler/test worker. The agents held
+their builds/tests, while Java/CCH and ordinary desktop services remained.
+Persistent background I/O wait is not a quiet-machine claim: preflight idle
+CPU was 60–71%, with 22–30% iowait; postflight idle was 62–70%, with 24–32%
+iowait. The [timestamped load](results/int8-zen4-followup-load.csv) has 20
+preflight, 325 continuous and ten postflight samples, omitting each stream's
+since-boot average. Postflight overlaps the continuous stream's end.
 
 ## Reproduce
 
