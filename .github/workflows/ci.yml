@@ -9,12 +9,72 @@ on:
 permissions:
   contents: read
 
+# a new push to a pull request cancels its earlier run; main and tags run
+# every commit, so each of their runs gets a group of its own (a shared group
+# would still drop a pending run when a third arrived)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Every uv command uses uv.lock as committed, and fails if it is stale
 # (except the latest-deps job).
 env:
   UV_LOCKED: 1
 
 jobs:
+  hooks:
+    name: Pre-commit hooks
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+      with:
+        python-version: '3.14'
+    - run: make run-hooks-all-files
+
+  # the kernels don't depend on Python, so once per platform, beside the tests
+  rust-kernels:
+    name: Rust kernels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    # The Rust build, from main's last run, when the Rust sources are
+    # unchanged: the key hashes their contents, and only an exact hit restores.
+    # A checkout dates every file now, so cargo would rebuild; dating the
+    # sources before the restored build lets it reuse that build. The key
+    # names the compiler too, so a runner's new rustc saves a fresh build.
+    - name: Name the Rust compiler
+      id: rustc
+      shell: bash
+      run: |
+        echo "commit=$(rustc -vV | sed -n 's/^commit-hash: //p' | tr -d '\r' | cut -c1-12)" >> "$GITHUB_OUTPUT"
+    - name: Restore the Rust build, if its sources are unchanged
+      id: rust-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: rust-test-${{ matrix.os }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+    - name: Date the Rust sources before the restored build
+      if: steps.rust-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: git ls-files -z rust | xargs -0 touch -t 200001010000
+    - name: Bit for bit at every SIMD width this CPU runs
+      run: make test-rust
+    - name: Save the Rust build for later runs
+      if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+
   test:
     name: Python ${{ matrix.python }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -37,17 +97,38 @@ jobs:
     - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
       with:
         python-version: ${{ matrix.python }}
-    - name: Pre-commit hooks
-      if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
-      run: make run-hooks-all-files
+    # The Rust build, from main's last run, when the Rust sources are
+    # unchanged: the key hashes their contents, and only an exact hit restores.
+    # A checkout dates every file now, so cargo would rebuild; dating the
+    # sources before the restored build lets it reuse that build. The key
+    # names the compiler too, so a runner's new rustc saves a fresh build.
+    - name: Name the Rust compiler
+      id: rustc
+      shell: bash
+      run: |
+        echo "commit=$(rustc -vV | sed -n 's/^commit-hash: //p' | tr -d '\r' | cut -c1-12)" >> "$GITHUB_OUTPUT"
+    - name: Restore the Rust build, if its sources are unchanged
+      id: rust-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: rust-ext-${{ matrix.os }}-py${{ matrix.python }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+    - name: Date the Rust sources before the restored build
+      if: steps.rust-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: git ls-files -z rust | xargs -0 touch -t 200001010000
     - name: Tests (against stored R biglasso 1.7.2 output)
       run: make test
+    - name: Save the Rust build for later runs
+      if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: ${{ steps.rust-cache.outputs.cache-primary-key }}
     - name: Tests, numba backend (deprecated; goes in 0.3.0)
       run: make test
       env:
         PYBIGLASSO_BACKEND: numba
-    - name: Rust kernels, bit for bit at every SIMD width this CPU runs
-      run: make test-rust
     - name: Record fixed Rust fits for the cross-architecture check
       if: matrix.python == '3.14'
       shell: bash
