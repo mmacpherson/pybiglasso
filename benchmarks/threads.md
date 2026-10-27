@@ -59,10 +59,14 @@ Qualifications:
 - Zen 4: int8 targets finished before overlapping builds. Float64 evidence
   uses **only** the completed timestamped `controls-followup` and
   `gaussian-followup` files. Original overlapped controls and the aborted
-  follow-up are excluded, not reclassified as clean.
+  follow-up are excluded, not reclassified as clean. The completed follow-up
+  still had persistent 22–32% pre/post I/O wait and Java/desktop activity:
+  no recorded build overlap does **not** make it a quiet-machine run.
 - M1 Pro: the full shared-desktop exploratory baseline is retained, including
   noisy/unfavorable cases. It does not determine the cutoff; no clean M1 or
-  noise-free claim is made.
+  noise-free claim is made. A separate quiet baseline/ungated/gated run is
+  pending. Reassess the generic rule on ARM when those records arrive; this
+  draft does not claim quiet ARM validation or an ARM-specific calibration.
 - Mapped X: [out-of-core results](../README.md#performance) show that more
   threads need not help and can hurt with a tight page-cache budget. A memmap
   may fit RAM, but guessing its residency/available memory makes defaults
