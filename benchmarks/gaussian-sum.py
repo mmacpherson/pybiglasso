@@ -160,6 +160,13 @@ def main():
     )
     try:
         for case in args.case:
+            if case == "out-of-core":
+                cap = accounting()["memory_cap"]
+                n, p = CASES[case]
+                if cap is None or cap >= n * p * np.dtype(args.dtype).itemsize:
+                    parser.error(
+                        "Out-of-core requires a cgroup memory cap smaller than X."
+                    )
             with tempfile.TemporaryDirectory(
                 dir=args.scratch_dir, prefix="gaussian-sum-"
             ) as temporary:
@@ -171,12 +178,6 @@ def main():
                     gather=np.arange(0, n, 4),
                     repeated=np.r_[0, np.arange(0, n, 4)],
                 )[args.selection]
-                if filename:
-                    cap = accounting()["memory_cap"]
-                    if cap is None or cap >= X.nbytes:
-                        parser.error(
-                            "Out-of-core requires a cgroup memory cap smaller than X."
-                        )
                 for alpha in args.alpha:
                     hashes = set()
                     for threads in args.threads:
