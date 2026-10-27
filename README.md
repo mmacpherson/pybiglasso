@@ -29,7 +29,7 @@ solver, compiled to WebAssembly, in your browser, on example datasets or your
 own CSV or Parquet file, which never leaves your machine. It fits lasso and
 elastic-net paths for Gaussian or binomial responses, and can cross-validate them.
 
-It's also fast when the data does fit in memory. The benchmarks use binomial
+It's also fast when the data does fit in memory. The timings quoted here use binomial
 (logistic) fits. On a full 100-step lasso path
 over 5,000 samples by 50,000 features, it is 2.4x faster than R's glmnet, 2.5x
 faster than R biglasso, and 5.2x faster than skglm, the fastest of the other
@@ -225,7 +225,7 @@ make soak-hypothesis        # property tests, wide random search (part of soak)
 
 ## Performance
 
-These benchmarks measure speed only. Correctness is established separately,
+The binomial benchmarks below measure speed only. Correctness is established separately,
 against R biglasso and by checks independent of it (see
 [Validation](#validation)). Each solver fits the
 same problem along the same 100-value lambda path, at its own default
@@ -322,6 +322,30 @@ threads don't reliably help: they evict pages each other still need.
 - Not a solver: benchopt is a benchmarking framework; its logistic-regression
   benchmark fits without an intercept or standardization, which pybiglasso
   doesn't support yet.
+
+### Gaussian path benchmarks
+
+Gaussian timings are separate from the binomial results above. The runner
+[`benchmarks/run-gaussian.sh`](benchmarks/run-gaussian.sh) compares Rust,
+R biglasso's SSR solver and glmnet's generic `gaussian()` family on the same
+100 supplied lambdas. The grid comes from the standardized score formula,
+not a pybiglasso fit. All receive raw X and standardize it during the fit;
+data generation, imports, container startup and R `big.matrix` construction
+are outside the timers. Each repetition uses a fresh process. Raw results
+record every time, input fingerprints, versions, warnings, fitted path length,
+first-principles KKT residuals and objective differences versus glmnet.
+
+The generic glmnet family is intentional: its fast `family="gaussian"` path
+rescales y, changing the effective elastic-net ridge penalty. These timings
+are not a speed comparison against that optimized, differently scaled path.
+The solvers retain their default tolerances, so accuracy accompanies timing;
+the KKT residual is measured, not an `eps`-to-accuracy promise.
+
+```bash
+benchmarks/run-gaussian.sh
+# Quick adapter/timing smoke (not a reportable benchmark):
+DATASETS=smoke-500-100 THREADS=1 REPEATS=1 benchmarks/run-gaussian.sh /tmp/gaussian-smoke.jsonl
+```
 
 ## Differences from R biglasso
 

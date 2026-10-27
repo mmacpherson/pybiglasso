@@ -1,4 +1,4 @@
-# Fit glmnet's logistic path for benchmarks/path.py.
+# Fit glmnet's binomial or generic Gaussian path for benchmarks/path.py.
 #
 # Usage: Rscript fit_glmnet.R CASE_DIR [CASE_DIR ...]
 #
@@ -21,11 +21,19 @@ fit_case <- function(case_dir) {
   X <- matrix(readBin(file.path(case_dir, "X.bin"), "double", n * p), n, p)
   y <- readBin(file.path(case_dir, "y.bin"), "double", n)
 
+  # Generic gaussian() keeps the supplied response units and ridge penalty.
+  # The optimized character-family path rescales y and solves a different
+  # elastic-net objective; its timing is not presented as an equivalent fit.
+  warns <- character()
   elapsed <- system.time(
-    fit <- glmnet(
-      X, y, family = "binomial", alpha = prm$alpha, lambda = prm$lambdas,
+    fit <- withCallingHandlers(glmnet(
+      X, y, family = if (identical(prm$family, "gaussian")) gaussian() else "binomial",
+      alpha = prm$alpha, lambda = prm$lambdas,
       standardize = TRUE, intercept = TRUE
-    )
+    ), warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    })
   )[["elapsed"]]
 
   beta <- as.matrix(fit$beta)
@@ -37,6 +45,8 @@ fit_case <- function(case_dir) {
       intercept = as.vector(fit$a0),
       beta = as.vector(beta),
       beta_dim = dim(beta),
+      warnings = warns,
+      jerr = fit$jerr,
       seconds = elapsed
     ), digits = NA, auto_unbox = TRUE),
     file.path(case_dir, "out.json")
