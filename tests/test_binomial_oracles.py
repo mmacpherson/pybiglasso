@@ -3,6 +3,8 @@
 The tiny oracle enumerates signed active sets and solves their full smooth
 stationarity systems with scipy. It has no IRLS, coordinate descent, screening
 or warm start. Analytic examples also cover grouping and nonunique lasso fits.
+These new oracles deliberately exercise Rust only, not the deprecated numba
+backend; a global numba selection does not change that scope.
 """
 
 import warnings
@@ -41,21 +43,38 @@ def curvature(Z, lam, alpha, pf):
     return lower
 
 
-def residual_and_radius(Z, y, theta, lam, alpha, pf):
-    assert np.max(abs(Z @ theta)) <= 4, "outside the declared curvature domain"
-    mu = curvature(Z, lam, alpha, pf)
-    residual = subgradient_residual(Z, y, theta, lam, alpha, pf)
-    rounding = residual_rounding(Z, y, theta, lam, alpha, pf)
+def stationarity_cap(Z, lam, alpha, pf):
     # ||g||_2 <= sqrt(d)*||g||_inf. Strong monotonicity on the segment
     # gives ||a-b|| <= (||g(a)||+||g(b)||)/mu for ANY two compared points;
     # we do not assume the unknown exact optimum lies in the bounded domain.
     # Reserve a factor four for the other endpoint and rounding. This cap is
     # fixed by the requested accuracy and problem curvature, never fit output.
-    cap = mu * COEFFICIENT_ACCURACY / (4 * np.sqrt(Z.shape[1]))
+    return (
+        curvature(Z, lam, alpha, pf) * COEFFICIENT_ACCURACY / (4 * np.sqrt(Z.shape[1]))
+    )
+
+
+def residual_and_radius(Z, y, theta, lam, alpha, pf):
+    assert np.max(abs(Z @ theta)) <= 4, "outside the declared curvature domain"
+    mu = curvature(Z, lam, alpha, pf)
+    residual = subgradient_residual(Z, y, theta, lam, alpha, pf)
+    rounding = residual_rounding(Z, y, theta, lam, alpha, pf)
+    cap = stationarity_cap(Z, lam, alpha, pf)
     assert np.max(abs(residual)) <= cap
     radius = (np.linalg.norm(residual) + np.linalg.norm(rounding)) / mu
     assert radius <= COEFFICIENT_ACCURACY / 2
     return residual, radius
+
+
+def assert_duplicate_lasso_stationarity(Z, y, theta, lam):
+    # The duplicated problem has no coefficient-distance radius. Still cap
+    # EVERY original KKT equation, using the identifiable reduced problem's
+    # accuracy budget. Collapsing alone would admit opposite-sign duplicates:
+    # the same logits but excess L1 penalty, hence not another optimum.
+    np.testing.assert_array_equal(Z[:, 1], Z[:, 2])
+    cap = stationarity_cap(Z[:, :2], lam, 1.0, np.ones(1))
+    residual = subgradient_residual(Z, y, theta, lam, 1.0)
+    assert np.max(abs(residual)) <= cap
 
 
 def assert_same_optimum(Z, y, actual, expected, lam, alpha, pf):
@@ -138,7 +157,7 @@ def enumerate_optimum(Z, y, lam, alpha, pf):
         # scipy's success flag is not an accuracy certificate. Independently
         # check every active equation and every inactive inequality instead.
         residual = subgradient_residual(Z, y, theta, lam, alpha, pf)
-        cap = curvature(Z, lam, alpha, pf) * COEFFICIENT_ACCURACY / (4 * np.sqrt(p + 1))
+        cap = stationarity_cap(Z, lam, alpha, pf)
         if np.max(abs(residual)) <= cap:
             residual_and_radius(Z, y, theta, lam, alpha, pf)
             candidates.append(theta)
@@ -172,6 +191,8 @@ def test_one_feature_lasso_path_has_closed_form(direction, penalty):
             <= (1 + center[0] / scale[0]) * allowance
         )
         if lam * penalty >= 0.25:
+            # Here q, y, scale, lambda*pf and the null probabilities (1/2)
+            # are dyadic: the null score 1/4 and its threshold tie are exact.
             assert path.coef[0, k] == 0
         # Both groups have the same signed-label loss. Binary deviance is
         # twice NLL (the saturated Bernoulli log likelihood is zero).
@@ -242,6 +263,8 @@ def test_elastic_net_groups_equal_and_near_equal_columns(separation, alpha):
     # Subtract the two active KKT equations: the common L1 term cancels.
     # Cauchy-Schwarz gives l2*|b1-b2| <= ||z1-z2||*||y-p||/n.
     # Use the difference norm directly, avoiding cancellation in 2*(1-rho).
+    # This is an explicit check of the grouping consequence, not an additional
+    # independent oracle: the KKT cap above already implies the inequality.
     residual, radius = residual_and_radius(Z, y, theta, lam, alpha, pf)
     difference = np.linalg.norm(Z[:, 1] - Z[:, 2])
     score_norm = np.linalg.norm(y - expit(Z @ theta))
@@ -302,12 +325,15 @@ def test_duplicate_lasso_has_distinct_optima_but_unique_predictions(lam):
         np.testing.assert_allclose(
             Z @ theta, q * total, rtol=0, atol=np.finfo(float).eps * total
         )
-        assert abs(theta[1:]).sum() == total
+        # Two rounded products and their sum: gamma_3 bounds the L1 error.
+        unit = np.finfo(float).eps
+        assert abs(abs(theta[1:]).sum() - total) <= 3 * unit / (1 - 3 * unit) * total
     reduced = with_ones(q[:, None])
     expected = np.array([0.0, total])
     for grid in ([0.5, 0.25, lam], [0.5, 0.25, 0.2, 0.15, lam], [lam]):
         path = fit(X, y, grid)
         theta = theta_at(path, center, scale, len(grid) - 1)
+        assert_duplicate_lasso_stationarity(Z, y, theta, lam)
         collapsed = np.array([theta[0], theta[1] + theta[2]])
         allowance = assert_same_optimum(
             reduced, y, collapsed, expected, lam, 1.0, np.ones(1)
@@ -316,6 +342,31 @@ def test_duplicate_lasso_has_distinct_optima_but_unique_predictions(lam):
             np.linalg.norm(path.decision_function(X)[:, -1] - q * total)
             <= np.sqrt(len(y)) * allowance
         )
+
+
+@pytest.mark.parametrize("lam", [0.0625, 0.125])
+def test_duplicate_lasso_check_rejects_opposite_signs_with_the_same_predictions(lam):
+    q = np.repeat([-1.0, 1.0], 8)
+    y = np.r_[np.ones(2), np.zeros(6), np.ones(6), np.zeros(2)]
+    Z = with_ones(np.column_stack([q, q]))
+    total = logit(0.75 - lam)
+    correct = np.array([0.0, total, 0.0])
+    # c=total in (t+c, -c): doubling and subsequent subtraction are exact.
+    wrong = np.array([0.0, 2 * total, -total])
+    assert_duplicate_lasso_stationarity(Z, y, correct, lam)
+    np.testing.assert_array_equal(Z @ correct, Z @ wrong)
+    # The OLD reduced/prediction check admits this non-optimal point.
+    assert_same_optimum(
+        Z[:, :2],
+        y,
+        np.array([wrong[0], wrong[1] + wrong[2]]),
+        np.array([0.0, total]),
+        lam,
+        1.0,
+        np.ones(1),
+    )
+    with pytest.raises(AssertionError):
+        assert_duplicate_lasso_stationarity(Z, y, wrong, lam)
 
 
 def test_oracle_checks_reject_missing_penalty_weight_and_wrong_ridge():
@@ -361,6 +412,8 @@ def test_ridge_grouping_check_rejects_a_lasso_style_unequal_split():
     correct = np.array([0.0, total / 2, total / 2])
     wrong = np.array([0.0, total, 0.0])
     residual_and_radius(Z, y, correct, lam, alpha, pf)
+    # q is +/-1 and total/2 is exact binary halving. Adding the two identical
+    # contributions reconstructs total exactly (no overflow or subnormals).
     np.testing.assert_array_equal(Z @ correct, Z @ wrong)
     with pytest.raises(AssertionError):
         residual_and_radius(Z, y, wrong, lam, alpha, pf)
