@@ -31,6 +31,32 @@ PROBLEMS = {
 }
 
 
+def cpu_model() -> str:
+    """CPU-only metadata, without requiring Linux's proc filesystem."""
+    system = platform.system()
+    if system == "Linux":
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip() == "model name" and value.strip():
+                    return value.strip()
+        except OSError:
+            pass
+    elif system == "Darwin":
+        try:
+            model = subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            ).strip()
+            if model:
+                return model
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return platform.processor().strip() or platform.machine().strip() or "unknown"
+
+
 def checked_fit(X, response, *, nlambda=100, **options):
     """Time only a fit; reject warning-bearing or incomplete paths before use."""
     with warnings.catch_warnings():
@@ -123,13 +149,8 @@ def main():
     # Every order for a three-way control balances position/predecessor effects.
     # With two variants this is the familiar AB/BA sequence.
     orders = list(itertools.permutations(variants.items()))
-    cpu = next(
-        line.split(":", 1)[1].strip()
-        for line in Path("/proc/cpuinfo").read_text().splitlines()
-        if line.startswith("model name")
-    )
     metadata = dict(
-        cpu=cpu,
+        cpu=cpu_model(),
         python=platform.python_version(),
         numpy=np.__version__,
         source_commit=subprocess.check_output(
@@ -169,6 +190,7 @@ def main():
                             fit, _ = checked_fit(X, response, **options)
                             hashes[name].add(path_hash(fit))
                         times = {name: [] for name in variants}
+                        fit_intervals = []
                         for repeat in range(args.repeats):
                             order = orders[repeat % len(orders)]
                             for name, module in order:
@@ -176,7 +198,20 @@ def main():
                                 options["backend"] = (
                                     "numba" if name == "numba" else "rust"
                                 )
+                                # Wall-clock bookends are outside checked_fit's
+                                # measured region. They locate interference in
+                                # load/build logs without changing the clock.
+                                start_unix_ns = time.time_ns()
                                 fit, seconds = checked_fit(X, response, **options)
+                                end_unix_ns = time.time_ns()
+                                fit_intervals.append(
+                                    dict(
+                                        repeat=repeat,
+                                        variant=name,
+                                        start_unix_ns=start_unix_ns,
+                                        end_unix_ns=end_unix_ns,
+                                    )
+                                )
                                 times[name].append(seconds)
                                 hashes[name].add(path_hash(fit))
                                 trajectories[name] = dict(
@@ -202,6 +237,7 @@ def main():
                             alpha=alpha,
                             threads=threads,
                             times=times,
+                            fit_intervals=fit_intervals,
                             median_seconds=medians,
                             speedup=medians["baseline"] / medians["candidate"],
                             path_hash=next(iter(hashes["candidate"])),

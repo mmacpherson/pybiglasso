@@ -129,10 +129,10 @@ baseline → candidate:
 | 5,000 × 50,000 | 1 | 8.003 → 5.865 | 4.185 → 3.085 |
 | 5,000 × 50,000 | 0.5 | 7.007 → 5.198 | 3.728 → 2.714 |
 
-The int8 gain spans 1.30–1.46x. Float64 controls use tall 5,000 × 1,000 and
-wide 2,000 × 20,000 problems at both thread counts:
+The int8 gain spans 1.30–1.46x. The original float64 controls use tall
+5,000 × 1,000 and wide 2,000 × 20,000 problems at both thread counts:
 
-| Control | Baseline/candidate time range |
+| Original control (build-overlapped; see correction below) | Baseline/candidate time range |
 |---|---:|
 | [Binomial](results/int8-zen4-controls.jsonl), alpha 1 and 0.5 | 0.998–1.047x |
 | [Gaussian](results/int8-zen4-gaussian.jsonl), alpha 0.5 | 1.006–1.028x |
@@ -145,17 +145,112 @@ control range is an observation, not a statistical bound on that variation.
 
 [Environment records](results/int8-zen4-environment.json) capture mains,
 governor, versions and source revisions before and after; all are unchanged.
-Java/CCH and ordinary desktop/agent services remained running. The two
-pybiglasso agents held builds and tests during the timing window. There was
-nevertheless elevated background I/O wait: preflight idle CPU was 55–66%
+Java/CCH and ordinary desktop/agent services remained running. The original
+claim that both pybiglasso agents held all builds/tests was incorrect (see
+the independently recovered build history below). There was also elevated
+background I/O wait: preflight idle CPU was 55–66%
 with 25–32% iowait; postflight idle was 61–71% with 23–32% iowait. These are
 in-memory, paired shared-workstation measurements, not quiet-machine or
-out-of-core claims. No samples were dropped or rerun.
+out-of-core claims. All original samples remain unchanged.
 
 The [load record](results/int8-zen4-load.csv) retains 692 continuous one-second
 samples, plus ten preflight and ten postflight samples. The bookend streams
 overlap the continuous stream; each omits its initial since-boot average.
 All 20 settings and 240 timed fits are retained in the three JSONL files.
+
+### Build-overlap correction
+
+Docker BuildKit's retained history and logs subsequently established two
+overlaps, both after the last int8 target had finished at 21:01:06 UTC:
+
+| Build | UTC interval | Work observed in its logs |
+|---|---|---|
+| bigstatsr | 21:02:31–21:02:51 | Binary-package installation; no source compilation |
+| snpnet | 21:04:53–21:06:13 | Package installation including source compilation |
+
+Subsequently supplied command-execution records corroborate those build
+intervals and identify three additional jobs. These are reported whole-command
+bounds, not independently verified per-stage or fit timings:
+
+| Reported command | UTC interval | Conservative continuous-load samples |
+|---|---|---:|
+| Dependency sync / ruff | 21:01:17.271–21:01:17.883 | 366–371 |
+| Python CV smoke | 21:04:54.484–21:05:00.414 | 584–593 |
+| Targeted pytest / ruff | 21:05:58.983–21:06:01.426 | 648–654 |
+
+All also start after the final int8 target. They reinforce the controls'
+contaminated status without changing the follow-up scope.
+
+These overlap the original float64 binomial and Gaussian controls, so their
+small differences above cannot establish an uncontaminated floating-control
+result. The int8 targets preceded both builds; they are not rerun on this
+evidence. The [overlap manifest](results/int8-zen4-overlap.json) preserves the
+precise Docker timestamps and original result endpoints.
+
+The [load annotations](results/int8-zen4-overlap.csv) conservatively mark
+continuous samples 441–464 for bigstatsr and 582–666 for snpnet. Original
+vmstat output has no timestamps: annotations use each log's creation time
+plus its sample index, with a two-second expansion for scheduling uncertainty.
+They do not claim exact per-fit attribution. Original JSONL also has no fit
+wall-clock bookends, so all twelve control settings are scheduled for one
+balanced follow-up, not selected individual fast/slow repetitions. The
+harness now records per-fit UTC epoch-nanosecond bookends outside the measured
+region, to allow direct attribution in the follow-up. Original times, hashes,
+and load samples are preserved, not replaced.
+
+The first timestamped follow-up was aborted rather than used as clean
+evidence. Its twenty-second preflight passed (median user+system 8%, maximum
+19%, no compiler/test process observed), but a new unrelated multi-core
+Python job started at 21:27:10 UTC. Only the benchmark worker and its own
+monitor were stopped; the unrelated job was not changed. The
+[two completed settings](results/int8-zen4-controls-followup-aborted.jsonl)
+retain all 24 recorded timed fits, and the
+[timestamped load](results/int8-zen4-followup-aborted-load.csv) retains 123
+samples. The [attempt manifest](results/int8-zen4-followup-aborted.json) marks
+17 fit windows as potentially overlapping the new job. The next setting was
+interrupted before its repetitions were written, so it has no durable
+per-fit record. This is an incomplete, contaminated attempt, not a
+replacement control set. At that point, a coordinated quiet window was still
+required; no uncontaminated-control conclusion is drawn from that attempt.
+
+### Completed timestamped control follow-up
+
+After a separately authorized quiet window, all twelve float64 settings were
+repeated at `df2f381`, using the same extension fingerprints and six fits per
+version (three complete AB/BA pairs). The
+[binomial](results/int8-zen4-controls-followup.jsonl) and
+[Gaussian](results/int8-zen4-gaussian-followup.jsonl) records retain all 144
+timed fits, with per-fit UTC epoch-nanosecond intervals. Every fit completes
+100 lambdas without disallowed warnings and reproduces its original
+before/after/thread path hash. Original and aborted records remain separate.
+
+Median seconds, baseline → candidate:
+
+| Family | Problem | Alpha | 1 thread | 6 threads |
+|---|---|---:|---:|---:|
+| Binomial | 5,000 × 1,000 | 1 | 3.155 → 3.144 | 3.232 → 3.319 |
+| Binomial | 5,000 × 1,000 | 0.5 | 2.190 → 2.178 | 2.118 → 2.135 |
+| Binomial | 2,000 × 20,000 | 1 | 1.474 → 1.456 | 1.024 → 1.028 |
+| Binomial | 2,000 × 20,000 | 0.5 | 1.534 → 1.554 | 1.096 → 1.097 |
+| Gaussian | 5,000 × 1,000 | 0.5 | 1.198 → 1.185 | 1.166 → 1.150 |
+| Gaussian | 2,000 × 20,000 | 0.5 | 2.232 → 2.214 | 1.843 → 1.843 |
+
+Baseline/candidate ratios span 0.974–1.012x for binomial and
+0.99995–1.01397x for Gaussian. The tall six-thread binomial lasso candidate
+is about 2.7% slower; no floating-storage neutrality or universal speedup is
+claimed. As above, generic code generation/layout can affect float64, and
+these small changes are not assumed to be noise.
+
+The [environment audit](results/int8-zen4-followup-environment.json) records
+unchanged mains/performance settings, versions and extension source revisions.
+No Docker build in retained BuildKit history overlaps this window, and sampled
+process checks observed no competing compiler/test worker. The agents held
+their builds/tests, while Java/CCH and ordinary desktop services remained.
+Persistent background I/O wait is not a quiet-machine claim: preflight idle
+CPU was 60–71%, with 22–30% iowait; postflight idle was 62–70%, with 24–32%
+iowait. The [timestamped load](results/int8-zen4-followup-load.csv) has 20
+preflight, 325 continuous and ten postflight samples, omitting each stream's
+since-boot average. Postflight overlaps the continuous stream's end.
 
 ## Reproduce
 

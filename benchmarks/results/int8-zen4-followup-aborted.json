@@ -1,0 +1,274 @@
+{
+  "status": "Aborted; not used as control-performance evidence.",
+  "reason": "A new unrelated multi-core Python process appeared after quiet preflight, observed at roughly 3\u20134 cores of execution. Only the benchmark worker and its own monitor were stopped; the unrelated process was not altered.",
+  "external_job_start_utc": "2026-10-27T21:27:10+00:00",
+  "external_job_time_note": "Process start was independently read from ps lstart (one-second precision). Possible overlap marks all subsequent samples/windows; no process end time is inferred.",
+  "preflight": "20 one-second samples, median user+system 8%, maximum 19%; no compiler/test process observed by the guard. Preflight passed before the new process started.",
+  "environment_before": {
+    "cpu": "AMD Ryzen 5 7640U w/ Radeon 760M Graphics",
+    "physical_cores": 6,
+    "logical_cpus": 12,
+    "mains_online": true,
+    "governor": "performance",
+    "energy_preference": "performance",
+    "simd_dispatch": "AVX-512 (pulp V4)",
+    "python": "3.15.0",
+    "numpy": "2.5.4",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "baseline_source": "378df636beb7bb3826b75100ac3cb59db591e139",
+    "candidate_source": "467d8373851e56e553146c8303e0041afa5bd3b0",
+    "repetitions_per_variant": 6,
+    "complete_ab_ba_pairs": 3,
+    "threads": [
+      1,
+      6
+    ]
+  },
+  "load_samples": 123,
+  "load_end_utc": "2026-10-27T21:28:21+00:00",
+  "recorded_settings": 2,
+  "recorded_timed_fits": 24,
+  "incomplete_setting_note": "Two full settings were written before termination. The next setting was interrupted; any in-memory repetitions not yet written by the harness have no durable per-fit record. No complete-run or clean-timing claim is made.",
+  "recorded_fit_windows": [
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 0,
+      "variant": "baseline",
+      "start_unix_ns": 1793136404778472050,
+      "end_unix_ns": 1793136407960062045,
+      "possible_external_job_overlap": false
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 0,
+      "variant": "candidate",
+      "start_unix_ns": 1793136407960489923,
+      "end_unix_ns": 1793136411552382996,
+      "possible_external_job_overlap": false
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 1,
+      "variant": "candidate",
+      "start_unix_ns": 1793136411552778973,
+      "end_unix_ns": 1793136414731500989,
+      "possible_external_job_overlap": false
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 1,
+      "variant": "baseline",
+      "start_unix_ns": 1793136414731923856,
+      "end_unix_ns": 1793136417940113768,
+      "possible_external_job_overlap": false
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 2,
+      "variant": "baseline",
+      "start_unix_ns": 1793136417940519453,
+      "end_unix_ns": 1793136421174951565,
+      "possible_external_job_overlap": false
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 2,
+      "variant": "candidate",
+      "start_unix_ns": 1793136421175351810,
+      "end_unix_ns": 1793136424277209341,
+      "possible_external_job_overlap": false
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 3,
+      "variant": "candidate",
+      "start_unix_ns": 1793136424277595198,
+      "end_unix_ns": 1793136427388376976,
+      "possible_external_job_overlap": false
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 3,
+      "variant": "baseline",
+      "start_unix_ns": 1793136427388776189,
+      "end_unix_ns": 1793136430577395343,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 4,
+      "variant": "baseline",
+      "start_unix_ns": 1793136430577803132,
+      "end_unix_ns": 1793136434251001557,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 4,
+      "variant": "candidate",
+      "start_unix_ns": 1793136434251467807,
+      "end_unix_ns": 1793136437934467364,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 5,
+      "variant": "candidate",
+      "start_unix_ns": 1793136437934916431,
+      "end_unix_ns": 1793136441609228065,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 1,
+      "repeat": 5,
+      "variant": "baseline",
+      "start_unix_ns": 1793136441609700566,
+      "end_unix_ns": 1793136445266800501,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 0,
+      "variant": "baseline",
+      "start_unix_ns": 1793136452590096878,
+      "end_unix_ns": 1793136457431291796,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 0,
+      "variant": "candidate",
+      "start_unix_ns": 1793136457431857593,
+      "end_unix_ns": 1793136461747931900,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 1,
+      "variant": "candidate",
+      "start_unix_ns": 1793136461748363554,
+      "end_unix_ns": 1793136465594609539,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 1,
+      "variant": "baseline",
+      "start_unix_ns": 1793136465595183882,
+      "end_unix_ns": 1793136469413439256,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 2,
+      "variant": "baseline",
+      "start_unix_ns": 1793136469413880038,
+      "end_unix_ns": 1793136473277860137,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 2,
+      "variant": "candidate",
+      "start_unix_ns": 1793136473278337337,
+      "end_unix_ns": 1793136476976650129,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 3,
+      "variant": "candidate",
+      "start_unix_ns": 1793136476977067416,
+      "end_unix_ns": 1793136480493774407,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 3,
+      "variant": "baseline",
+      "start_unix_ns": 1793136480494203466,
+      "end_unix_ns": 1793136484355495785,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 4,
+      "variant": "baseline",
+      "start_unix_ns": 1793136484356077853,
+      "end_unix_ns": 1793136488003512496,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 4,
+      "variant": "candidate",
+      "start_unix_ns": 1793136488004091629,
+      "end_unix_ns": 1793136491812019875,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 5,
+      "variant": "candidate",
+      "start_unix_ns": 1793136491812512164,
+      "end_unix_ns": 1793136495466886917,
+      "possible_external_job_overlap": true
+    },
+    {
+      "problem": "tall-5k-1k",
+      "alpha": 1.0,
+      "threads": 6,
+      "repeat": 5,
+      "variant": "baseline",
+      "start_unix_ns": 1793136495467387371,
+      "end_unix_ns": 1793136499196850002,
+      "possible_external_job_overlap": true
+    }
+  ]
+}
