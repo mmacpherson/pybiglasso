@@ -33,7 +33,12 @@ def test_default_fits_analytic_log_odds_above_ten(backend):
     Z, center, scale = standardize(X)
     Z = with_ones(Z)
     paths = []
-    for threads in (1, 6):
+    parallel_threads = 6
+    if backend == "numba":
+        # Numba cannot exceed the pool created at import (four on some CI
+        # runners), even though Rust may explicitly request more workers.
+        parallel_threads = min(6, pytest.importorskip("numba").config.NUMBA_NUM_THREADS)
+    for threads in (1, parallel_threads):
         # Any non-convergence warning is a failure, rather than a way to
         # obtain a loose distance bound from a truncated fit.
         with warnings.catch_warnings():
