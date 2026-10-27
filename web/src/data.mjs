@@ -45,7 +45,7 @@ export function binaryClasses(labels, positive) {
   return [classes.find((c) => c !== positive), positive];
 }
 
-export function syntheticCsv() {
+export function syntheticCsv(family = "binomial") {
   let state = 17;
   const random = () => {
     state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
@@ -54,7 +54,8 @@ export function syntheticCsv() {
   const lines = ["response," + Array.from({ length: 48 }, (_, j) => `group_${Math.floor(j / 8) + 1}_${j % 8 + 1}`).join(",")];
   for (let i = 0; i < 160; i++) {
     const groups = Array.from({ length: 6 }, () => random() % 3);
-    const y = groups[0] + groups[1] + (random() % 5) > 4 ? 1 : 0;
+    const noise = random() % 5;
+    const y = family === "gaussian" ? 2.5 + 2 * groups[0] - groups[1] + noise / 5 : Number(groups[0] + groups[1] + noise > 4);
     const x = Array.from({ length: 48 }, (_, j) => groups[Math.floor(j / 8)] + (random() % 4 === 0 ? (random() % 3) - 1 : 0));
     lines.push([y, ...x].join(","));
   }

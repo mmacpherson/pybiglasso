@@ -42,7 +42,7 @@ jobs:
       run: make run-hooks-all-files
     - name: Tests (against stored R biglasso 1.7.2 output)
       run: make test
-    - name: Tests, numba backend (deprecated; goes in 0.3.0)
+    - name: Tests, numba backend (deprecated; goes in 0.4.0)
       run: make test
       env:
         PYBIGLASSO_BACKEND: numba

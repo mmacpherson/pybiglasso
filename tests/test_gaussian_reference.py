@@ -1,4 +1,4 @@
-"""Gaussian's outside oracle, before porting the production kernel."""
+"""Gaussian's plain numpy reference, held to outside R and analytic optima."""
 
 import numpy as np
 import pytest

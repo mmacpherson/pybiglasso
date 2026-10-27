@@ -13,6 +13,7 @@ const ready = init({ module_or_path: wasmUrl });
 let file: File | undefined;
 let inspection: Inspection | undefined;
 let dataset: Dataset | undefined;
+let family: "binomial" | "gaussian" = "binomial";
 let busy = false;
 
 function parquetFile(input: File) {
@@ -78,7 +79,7 @@ async function csvRows(input: File, onChunk: (rows: Record<string, string>[]) =>
   });
 }
 
-async function load(target: string, features: string[], positive: string): Promise<Loaded> {
+async function load(target: string, features: string[], positive: string, selectedFamily: "binomial" | "gaussian"): Promise<Loaded> {
   if (!file || !inspection) throw new Error("Choose a file first.");
   if (!inspection.columns.includes(target) || !features.length || features.includes(target)
       || new Set(features).size !== features.length || features.some((c) => !inspection!.columns.includes(c))) {
@@ -93,9 +94,10 @@ async function load(target: string, features: string[], positive: string): Promi
     await csvRows(file, (chunk) => {
       rows += chunk.length;
       checkSize(Math.max(2, rows), features.length);
-      for (const row of chunk) {
+      for (const [i, row] of chunk.entries()) {
+        if (selectedFamily === "gaussian") { numericValue(row[target], target, rows - chunk.length + i); continue; }
         labels.add(responseValue(row[target]));
-        if (labels.size > 2) throw new Error("The response must have exactly two classes. Continuous outcomes need a Gaussian solver.");
+        if (labels.size > 2) throw new Error("The response must have exactly two classes. Choose Gaussian for continuous outcomes.");
       }
     });
   }
@@ -108,7 +110,8 @@ async function load(target: string, features: string[], positive: string): Promi
       await parquetRead({ file: parquetFile(file), columns: [...features, target], compressors,
         onChunk(chunk) {
           if (chunk.columnName === target) {
-            const values = Float64Array.from(chunk.columnData, (value: unknown) => {
+            const values = Float64Array.from(chunk.columnData, (value: unknown, i: number) => {
+              if (selectedFamily === "gaussian") return numericValue(value, target, chunk.rowStart + i);
               const label = responseValue(value); labels.add(label);
               if (labels.size > 2) throw new Error("The response must have exactly two classes.");
               const y = Number(label === positive); positives += y; return y;
@@ -127,16 +130,18 @@ async function load(target: string, features: string[], positive: string): Promi
         for (const [j, name] of features.entries()) {
           next.write_column(j, start, Float64Array.from(chunk, (r, i) => numericValue(r[name], name, start + i)));
         }
-        next.write_response(start, Float64Array.from(chunk, (row) => {
+        next.write_response(start, Float64Array.from(chunk, (row, i) => {
+          if (selectedFamily === "gaussian") return numericValue(row[target], target, start + i);
           const y = Number(responseValue(row[target]) === positive); positives += y; return y;
         }));
         start += chunk.length;
         send({ kind: "progress", message: `Reading ${start.toLocaleString()} of ${rows.toLocaleString()} rows` });
       });
     }
-    const classes = binaryClasses(labels, positive) as [string, string];
+    const classes: [string, string] = selectedFamily === "binomial" ? binaryClasses(labels, positive) as [string, string] : ["", ""];
+    family = selectedFamily;
     dataset = next;
-    return { rows, features, classes, positives, bytes };
+    return { family, rows, features, classes, positives, bytes };
   } catch (error) { next.free(); throw error; }
 }
 
@@ -150,11 +155,11 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       inspection = await inspect(file);
       send({ kind: "inspected", info: inspection });
     } else if (request.kind === "load") {
-      send({ kind: "loaded", info: await load(request.target, request.features, request.positive) });
+      send({ kind: "loaded", info: await load(request.target, request.features, request.positive, request.family) });
     } else {
       if (!dataset) throw new Error("Load the selected columns first.");
       const start = performance.now();
-      const path = dataset.fit({ alpha: request.alpha, nlambda: request.nlambda, eps: request.eps }) as ModelPath;
+      const path = dataset.fit({ family, alpha: request.alpha, nlambda: request.nlambda, eps: request.eps }) as ModelPath;
       send({ kind: "result", path, milliseconds: performance.now() - start });
     }
   } catch (error) {

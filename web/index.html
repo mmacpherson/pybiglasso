@@ -14,7 +14,7 @@
   </header>
   <main>
     <section class="intro">
-      <div><p class="eyebrow">LOGISTIC LASSO + ELASTIC NET</p><h1>Follow the regularization path.</h1><p class="lead">Watch features enter a model as the penalty relaxes. The Rust solver runs right here, in your browser.</p></div>
+      <div><p class="eyebrow">LASSO + ELASTIC NET</p><h1>Follow the regularization path.</h1><p class="lead">Watch features enter a model as the penalty relaxes. The Rust solver runs right here, in your browser.</p></div>
       <div class="local-badge"><span class="status-dot"></span><div><strong>Your data stays here.</strong><span>Local computation · no file uploads</span></div></div>
     </section>
     <div class="workspace">
@@ -22,12 +22,13 @@
         <section class="control-section">
           <div class="section-heading"><span class="step">01</span><h2>Choose your data</h2></div>
           <label for="example">An example to explore</label>
-          <select id="example"><option value="colon">Colon gene expression · 62 × 2,000</option><option value="breast">Breast cancer · 569 × 30</option><option value="synthetic">Correlated features · 160 × 48</option></select>
+          <select id="example"><option value="colon">Colon gene expression · 62 × 2,000</option><option value="breast">Breast cancer · 569 × 30</option><option value="synthetic">Correlated features · 160 × 48</option><option value="gaussian">Continuous response · 160 × 48</option></select>
           <p id="example-description" class="hint">Tumor versus normal tissue. A high-dimensional example shipped with R biglasso.</p>
           <button id="load-example" class="button secondary">Load example <span aria-hidden="true">↗</span></button>
           <div class="or"><span>or bring your own</span></div>
           <label class="dropzone" id="dropzone" for="file"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose or drop a file</strong><span>CSV or Parquet · numeric features</span><input id="file" type="file" accept=".csv,.parquet"></label>
-          <p class="hint small">Binary outcomes only. Up to 128 MiB of decoded predictors; parsing and results need additional memory.</p>
+          <label for="family">Response family</label><select id="family"><option value="binomial">Binomial · two classes</option><option value="gaussian">Gaussian · continuous</option></select>
+          <p class="hint small">Up to 128 MiB of decoded predictors; parsing and results need additional memory.</p>
           <div id="dataset-summary" class="dataset-summary" hidden></div>
         </section>
         <section class="control-section">
@@ -48,8 +49,8 @@
       <div class="results-area">
         <section id="import-panel" class="card import-panel" hidden aria-labelledby="import-title">
           <p class="eyebrow">LOCAL FILE</p><h2 id="import-title">Tell us what to fit.</h2><p id="file-name" class="hint"></p>
-          <div class="settings-row"><div><label for="target">Response column</label><select id="target"></select></div><div><label for="positive">Positive class (1)</label><input id="positive" type="text" list="class-options" autocomplete="off"><datalist id="class-options"></datalist></div></div>
-          <p class="hint">All other response labels map to 0; the complete column must contain exactly two classes.</p>
+          <div class="settings-row"><div><label for="target">Response column</label><select id="target"></select></div><div id="positive-field"><label for="positive">Positive class (1)</label><input id="positive" type="text" list="class-options" autocomplete="off"><datalist id="class-options"></datalist></div></div>
+          <p id="class-hint" class="hint">All other response labels map to 0; the complete column must contain exactly two classes.</p>
           <details class="feature-picker"><summary id="feature-count">Choose predictors</summary><label class="sr-only" for="feature-search">Filter predictor names</label><input id="feature-search" type="search" placeholder="Filter column names…"><div class="feature-actions"><button id="select-all" type="button">Select numeric</button><button id="select-none" type="button">Clear</button></div><div id="features" class="features"></div></details>
           <div class="preview-wrap"><table id="preview-table" class="preview-table"></table></div>
           <p class="hint small">Preview of the first rows. Every selected value is checked during import. Missing values and categorical predictors need preprocessing.</p>
@@ -63,13 +64,13 @@
           <div id="lambda-controls" class="lambda-controls" hidden><div class="label-row"><label for="lambda">Explore λ</label><output id="lambda-value" for="lambda"></output></div><input id="lambda" type="range" min="0" max="99" value="0"><div class="range-labels"><span id="lambda-max"></span><span id="lambda-min"></span></div></div>
         </section>
         <div id="model-results" hidden>
-          <div class="metrics"><div><span>Active features</span><strong id="active-count">—</strong></div><div><span>Coordinate sweeps</span><strong id="iterations">—</strong></div><div><span>Strong-rule rejections</span><strong id="rejections">—</strong></div><div><span>Training deviance</span><strong id="deviance">—</strong></div></div>
+          <div class="metrics"><div><span>Active features</span><strong id="active-count">—</strong></div><div><span>Coordinate sweeps</span><strong id="iterations">—</strong></div><div><span>Strong-rule rejections</span><strong id="rejections">—</strong></div><div><span id="loss-label">Training deviance</span><strong id="deviance">—</strong></div></div>
           <div id="warnings" class="warnings" hidden></div>
           <section class="card coefficient-card"><div class="card-heading"><div><p class="eyebrow">THE SELECTED MODEL</p><h2>Coefficients on your data’s scale.</h2></div><div class="downloads"><button id="download-csv" class="text-button">Coefficients ↓ CSV</button><button id="download-json" class="text-button">Full path ↓ JSON</button></div></div><p class="hint">Sorted by absolute coefficient. These magnitudes depend on feature units; the plot above uses standardized coefficients.</p><div class="table-wrap"><table><thead><tr><th>Feature</th><th>Coefficient</th><th>Standardized</th></tr></thead><tbody id="coefficient-body"></tbody></table></div><p id="table-note" class="hint small"></p><p class="hint small">These are training fits, not an estimate of predictive performance. This playground does not yet run cross-validation.</p></section>
         </div>
       </div>
     </div>
-    <footer><p>Built with <a href="https://github.com/mmacpherson/pybiglasso">pybiglasso</a>, a port of R <a href="https://pbreheny.github.io/biglasso/">biglasso</a>. <a href="./examples/README.txt">Dataset sources</a> · <a href="https://github.com/mmacpherson/pybiglasso/blob/main/LICENSE">GPL-3.0-or-later</a></p><p>Gaussian regression examples—diabetes and riboflavin—will follow when that solver family is available.</p></footer>
+    <footer><p>Built with <a href="https://github.com/mmacpherson/pybiglasso">pybiglasso</a>, a port of R <a href="https://pbreheny.github.io/biglasso/">biglasso</a>. <a href="./examples/README.txt">Dataset sources</a> · <a href="https://github.com/mmacpherson/pybiglasso/blob/main/LICENSE">GPL-3.0-or-later</a></p><p>Choose binomial for two classes or Gaussian for a continuous response.</p></footer>
   </main>
   <script type="module" src="/src/main.ts"></script>
 </body>

@@ -249,7 +249,13 @@ def make_case_data(case, workdir):
     if case.family == "gaussian":
         weights = np.random.default_rng(case.seed + 4).normal(size=case.ncol)
         weights[min(5, case.ncol) :] = 0
-        y = 2.5 + Xbin @ weights + rng.normal(size=case.nrow)
+        # Fixture digests must survive different BLAS implementations and
+        # CPUs. Each multiplication and addition happens separately in a
+        # fixed column order, rather than an architecture-dependent GEMV.
+        y = np.full(case.nrow, 2.5)
+        for j in range(min(5, case.ncol)):
+            y += Xbin[:, j] * weights[j]
+        y += rng.normal(size=case.nrow)
     elif case.response != "logistic":
         if case.data != "normal":
             raise ValueError("imbalanced responses are for normal data")
@@ -366,6 +372,7 @@ def fit_py(case, data, lambdas=None):
             data["y"],
             alpha=case.alpha,
             family=case.family,
+            backend="rust" if case.family == "gaussian" else None,
             nlambda=case.nlambda,
             lambdas=lambdas,
             eps=EPS,
@@ -430,8 +437,8 @@ def prepare_case(case, workdir, lambdas=None, *, fit_python=True):
     elif lambdas is not None:
         lambdas = np.asarray(lambdas, dtype=np.float64)
     elif case.family == "gaussian":
-        # A prescribed grid from the problem itself, before a Gaussian solver
-        # exists. Never obtain fixture expectations from the implementation.
+        # Prescribe the Gaussian grid from the problem itself, independently
+        # of the implementation. Fixture expectations always come from R.
         X, y = data["X"], data["y"]
         if data["row_indices"] is not None:
             X, y = X[data["row_indices"]], y[data["row_indices"]]

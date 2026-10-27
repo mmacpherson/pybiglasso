@@ -102,6 +102,15 @@ pf[:12] = 0
 path = bl.biglasso(X, y, penalty_factor=pf)
 ```
 
+### Gaussian regression
+
+Pass `family="gaussian"` for least-squares lasso or elastic net. This uses the
+shared Rust solver in Python and WASM; the deprecated numba backend supports
+binomial fits only. Gaussian paths predict continuous responses and report
+residual sum of squares as `deviance`; scoring also accepts `"mse"` and `"r2"`.
+`BiglassoRegressor` and `BiglassoRegressorCV` provide sklearn's regression API.
+The default family remains binomial until the separate 0.3.0 default switch.
+
 ### scikit-learn
 
 pybiglasso also offers a scikit-learn interface: `BiglassoClassifier` fits at
@@ -328,6 +337,17 @@ with a comment beginning "Differs from R biglasso".
   occasionally be infinite. `r_compatible=True` keeps R's version.
 - **Saturation.** `stop_on_saturation=False`, an option R doesn't have, fits
   every lambda, even past R's saturation cutoff.
+- **Gaussian constant responses.** R's strict convergence comparison against
+  a zero null loss uses the full iteration budget for a constant response.
+  pybiglasso stops once the coefficients no longer change;
+  `r_compatible=True` retains R's comparison.
+- **Gaussian zero maximum penalty.** R's logarithmic grid calculation can
+  produce non-finite values when the maximum penalty is zero. pybiglasso
+  returns a finite all-zero grid, whose fits solve the unpenalized problem.
+- **Gaussian loss after an iteration limit.** R can leave `loss` at zero when
+  the budget ends with outstanding KKT violations. pybiglasso reports the
+  returned model's residual sum of squares; `r_compatible=True` retains R's
+  bookkeeping.
 
 ## Threads, cross-validation, and storage
 
@@ -423,7 +443,7 @@ The deprecated numba backend (`backend="numba"`) is in
 
 ## Scope
 
-- Binomial (logistic) family only; R's Gaussian and Cox families are not ported.
+- Binomial (logistic) and Gaussian (least-squares) families; Cox is not ported.
 - SSR (sequential strong rule) screening only. R uses its newer Hybrid and
   Adaptive rules only for the plain lasso without penalty factors, and they
   were no faster than SSR on our benchmarks.

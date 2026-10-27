@@ -11,7 +11,7 @@ METRICS = ("deviance", "auc", "accuracy")
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class BiglassoPath:
-    """A penalized logistic regression fit along a decreasing sequence of lambdas.
+    """A binomial or Gaussian regression fit along decreasing lambdas.
 
     Coefficients are on the original (unstandardized) scale of X.
 
@@ -19,14 +19,15 @@ class BiglassoPath:
       lambdas: (nlambda,) penalty strengths, decreasing
       intercept: (nlambda,) intercept at each lambda
       coef: (ncol, nlambda) sparse coefficients, one column per lambda
-      deviance: (nlambda,) training deviance, -2 log-likelihood, of the model at
-        each lambda (with r_compatible=True, R's pre-final-sweep value, doubled)
+      deviance: (nlambda,) training deviance: RSS for Gaussian, twice negative
+        log likelihood for binomial. r_compatible=True retains R's loss bookkeeping.
       iterations: (nlambda,) coordinate-descent iterations at each lambda
       n_rejected: (nlambda,) columns excluded by the strong rule at each lambda
       center, scale: (ncol,) column means and standard deviations of X
       penalty_factor: (ncol,) per-column penalty multipliers
       feature_names: (ncol,) column names
       alpha: elastic-net mixing parameter (1 is the lasso)
+      family: "binomial" or "gaussian"
     """
 
     lambdas: np.ndarray
@@ -40,6 +41,7 @@ class BiglassoPath:
     penalty_factor: np.ndarray
     feature_names: tuple
     alpha: float
+    family: str = "binomial"
 
     def __len__(self):
         return len(self.lambdas)
@@ -73,7 +75,7 @@ class BiglassoPath:
         return index
 
     def decision_function(self, X, lambdas=None, row_indices=None):
-        """Linear predictor (log-odds), shape (nrow, nlambda).
+        """Linear predictor (log-odds for binomial), shape (nrow, nlambda).
 
         Only the columns of X with a nonzero coefficient somewhere among the
         selected lambdas are read, which matters when X is a large memmap.
@@ -90,24 +92,39 @@ class BiglassoPath:
 
     def predict_proba(self, X, lambdas=None, row_indices=None):
         """Probability that y == 1, shape (nrow, nlambda)."""
+        if self.family != "binomial":
+            raise ValueError("predict_proba is only available for binomial paths.")
         return _expit(self.decision_function(X, lambdas, row_indices))
 
     def predict(self, X, lambdas=None, row_indices=None):
-        """Predicted class (0 or 1), shape (nrow, nlambda)."""
+        """Predicted class or Gaussian response, shape (nrow, nlambda)."""
+        if self.family == "gaussian":
+            return self.decision_function(X, lambdas, row_indices)
         return (self.decision_function(X, lambdas, row_indices) > 0).astype(np.int8)
 
     def score(self, X, y, metric="deviance", lambdas=None, row_indices=None):
         """Evaluate the path on held-out data; one value per lambda.
 
-        `metric` is "deviance" (lower is better), "auc", or "accuracy".
+        Binomial metrics are "deviance", "auc", and "accuracy"; Gaussian
+        metrics are "deviance" (RSS), "mse", and "r2".
         `y` covers all rows of X; with `row_indices`, only those rows are scored.
         """
-        if metric not in METRICS:
-            raise ValueError(f"metric must be one of {METRICS}, not {metric!r}")
+        metrics = ("deviance", "mse", "r2") if self.family == "gaussian" else METRICS
+        if metric not in metrics:
+            raise ValueError(f"metric must be one of {metrics}, not {metric!r}")
         y = np.asarray(y, dtype=np.float64)
         if row_indices is not None:
             y = y[row_indices]
-        return score_logits(y, self.decision_function(X, lambdas, row_indices), metric)
+        eta = self.decision_function(X, lambdas, row_indices)
+        if self.family == "gaussian":
+            rss = np.square(eta - y[:, None]).sum(axis=0)
+            if metric == "deviance":
+                return rss
+            if metric == "mse":
+                return rss / len(y)
+            total = np.square(y - y.mean()).sum()
+            return 1 - rss / total if total > 0 else (rss == 0).astype(float)
+        return score_logits(y, eta, metric)
 
     def _frames(self):
         """Column data for the dataframe exports."""

@@ -28,7 +28,7 @@ function makeWorker() {
 
 function setBusy(next: boolean) {
   busy = next;
-  for (const id of ["load-example", "file", "example", "alpha", "nlambda", "eps", "target", "positive", "import"]) {
+  for (const id of ["load-example", "file", "example", "family", "alpha", "nlambda", "eps", "target", "positive", "import"]) {
     ($<HTMLInputElement>(id)).disabled = next;
   }
   $("fit").toggleAttribute("disabled", next || !loaded);
@@ -62,6 +62,8 @@ function updateFeatureCount() { text("feature-count", `Choose predictors · ${ch
 
 function populateColumns() {
   if (!inspection) return;
+  hide("positive-field", value("family") === "gaussian");
+  hide("class-hint", value("family") === "gaussian");
   const target = value("target");
   const targetIndex = inspection.columns.indexOf(target);
   const classes = [...new Set(inspection.preview.map((r) => r[targetIndex]).filter((v) => v.trim() !== ""))].sort();
@@ -96,7 +98,7 @@ function loadSelection() {
   const features = chosenFeatures();
   if (!features.length) { fail("Select at least one numeric predictor."); return; }
   status("Loading selected columns…");
-  post({ kind: "load", target: value("target"), features, positive: value("positive").trim() });
+  post({ kind: "load", target: value("target"), features, positive: value("positive").trim(), family: value("family") as "binomial" | "gaussian" });
 }
 
 function fit() {
@@ -124,7 +126,8 @@ function receive(reply: Reply) {
     else { hide("import-panel", false); status("Choose a response and predictors, then load the columns."); }
   } else if (reply.kind === "loaded") {
     loaded = reply.info;
-    text("dataset-summary", `${loaded.rows.toLocaleString()} rows × ${loaded.features.length.toLocaleString()} predictors · ${(loaded.bytes / 1024 ** 2).toFixed(2)} MiB\nPositive class: ${loaded.classes[1]} (${loaded.positives.toLocaleString()} rows)`);
+    const response = loaded.family === "gaussian" ? "Gaussian · continuous response" : `Positive class: ${loaded.classes[1]} (${loaded.positives.toLocaleString()} rows)`;
+    text("dataset-summary", `${loaded.rows.toLocaleString()} rows × ${loaded.features.length.toLocaleString()} predictors · ${(loaded.bytes / 1024 ** 2).toFixed(2)} MiB\n${response}`);
     hide("dataset-summary", false); hide("import-panel"); fit();
   } else {
     if (!reply.path.lambdas.length) { fail(reply.path.warnings.join("\n") || "The path stopped before producing a model."); return; }
@@ -145,6 +148,7 @@ function renderModel() {
   text("lambda-value", format(model.lambdas[k]));
   text("active-count", String(model.indices[k].length)); text("iterations", model.iterations[k].toLocaleString());
   text("rejections", model.n_rejected[k].toLocaleString()); text("deviance", model.deviance[k].toFixed(2));
+  text("loss-label", model.family === "gaussian" ? "Training RSS" : "Training deviance");
   const body = $("coefficient-body"); body.replaceChildren();
   const append = (name: string, raw: number, std: number | undefined, index?: number) => {
     const row = document.createElement("tr"), feature = document.createElement("td");
@@ -171,7 +175,8 @@ $("load-example").addEventListener("click", async () => {
   const controller = new AbortController(); exampleAbort = controller;
   try {
     const key = value("example");
-    if (key === "synthetic") { await inspectFile(new File([syntheticCsv()], "correlated-features.csv"), true); return; }
+    $<HTMLSelectElement>("family").value = key === "gaussian" ? "gaussian" : "binomial";
+    if (key === "synthetic" || key === "gaussian") { await inspectFile(new File([syntheticCsv(key === "gaussian" ? "gaussian" : "binomial")], "correlated-features.csv"), true); return; }
     setBusy(true); status("Loading example…");
     const name = key === "colon" ? "colon.csv" : "breast-cancer.csv";
     const response = await fetch(new URL(`examples/${name}`, document.baseURI), { signal: controller.signal });
@@ -187,6 +192,7 @@ $("example").addEventListener("change", () => {
     colon: "Tumor versus normal tissue. A high-dimensional example shipped with R biglasso.",
     breast: "Malignant versus benign tumors. A small example with 30 measured features; 1 means malignant.",
     synthetic: "Six groups of correlated predictors. Compare lasso with elastic net to explore how coefficients are shared.",
+    gaussian: "A continuous response with six groups of correlated predictors. Explore least-squares lasso and elastic net.",
   };
   text("example-description", descriptions[value("example")]);
 });
@@ -195,6 +201,12 @@ $("dropzone").addEventListener("dragover", (event) => { event.preventDefault(); 
 $("dropzone").addEventListener("dragleave", () => $("dropzone").classList.remove("dragging"));
 $("dropzone").addEventListener("drop", (event) => { event.preventDefault(); $("dropzone").classList.remove("dragging"); const file = event.dataTransfer?.files[0]; if (file) void inspectFile(file); });
 $("target").addEventListener("change", populateColumns);
+$("family").addEventListener("change", () => {
+  loaded = undefined; clearModel(); hide("dataset-summary");
+  $("fit").toggleAttribute("disabled", true);
+  if (inspection) { populateColumns(); hide("import-panel", false); }
+  status("Choose the response and reload columns for the selected family.");
+});
 $("import").addEventListener("click", loadSelection);
 $("fit").addEventListener("click", fit);
 $("lambda").addEventListener("input", renderModel);
@@ -227,7 +239,7 @@ $("download-csv").addEventListener("click", () => {
 });
 $("download-json").addEventListener("click", () => {
   if (!model || !loaded) return;
-  download("pybiglasso-path.json", JSON.stringify({ format_version: 1, family: "binomial", source: sourceName, response: value("target"), features: loaded.features, classes: loaded.classes, settings, selected_index: Number(value("lambda")), ...model }, null, 2), "application/json");
+  download("pybiglasso-path.json", JSON.stringify({ format_version: 1, source: sourceName, response: value("target"), features: loaded.features, classes: loaded.family === "binomial" ? loaded.classes : undefined, settings, selected_index: Number(value("lambda")), ...model }, null, 2), "application/json");
 });
 new ResizeObserver(() => { if (model) renderModel(); }).observe($("chart-panel"));
 makeWorker();

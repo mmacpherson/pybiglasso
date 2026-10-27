@@ -51,6 +51,21 @@ def glmnet_penalty_factor(case, penalty_factor):
     return penalty_factor * case.ncol / penalty_factor.sum()
 
 
+def gaussian_grid():
+    """Gaussian generic-family fits of the unscaled-response objective."""
+    Case = rcompare.Case
+    cases = [
+        Case(n, p, family="gaussian", alpha=alpha, nlambda=8)
+        for n, p in ((100, 10), (40, 60))
+        for alpha in (1.0, 0.5)
+    ]
+    cases += [
+        Case(100, 10, family="gaussian", alpha=0.5, nlambda=8, penalty=penalty)
+        for penalty in ("varied", "zeros")
+    ]
+    return cases
+
+
 def prepare_case(case, workdir):
     """Write a case's inputs for glmnet; return (fit inputs, data digest)."""
     workdir = pathlib.Path(workdir)
@@ -63,6 +78,7 @@ def prepare_case(case, workdir):
         nrow=case.nrow,
         ncol=case.ncol,
         alpha=case.alpha,
+        family=case.family,
         nlambda=case.nlambda,
         lambda_min_ratio=case.resolved_lambda_min,
         thresh=THRESH,

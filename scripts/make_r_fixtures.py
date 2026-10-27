@@ -32,11 +32,7 @@ def main():
         for case in cases:
             d = pathlib.Path(tmp) / case.name
             lambdas = previous.get(case.name, (None, None, None))[1]
-            prepared.append(
-                rcompare.prepare_case(
-                    case, d, lambdas, fit_python=case.family == "binomial"
-                )
-            )
+            prepared.append(rcompare.prepare_case(case, d, lambdas))
             dirs.append(d)
         r_outputs = rcompare.run_r(dirs)
 
@@ -58,8 +54,6 @@ def main():
 
     failures = 0
     for case, (py, _, _), r in zip(cases, prepared, r_outputs, strict=True):
-        if py is None:
-            continue
         problems = rcompare.compare(py, r)
         if problems:
             failures += 1
@@ -83,7 +77,7 @@ def main():
 
 
 def glmnet_fixtures():
-    cases = rglmnet.glmnet_grid()
+    cases = rglmnet.glmnet_grid() + rglmnet.gaussian_grid()
     with tempfile.TemporaryDirectory() as tmp:
         dirs = [pathlib.Path(tmp) / c.name for c in cases]
         digests = [

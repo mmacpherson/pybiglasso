@@ -18,6 +18,7 @@ extern "C" {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
+    family: String,
     alpha: f64,
     nlambda: usize,
     eps: f64,
@@ -32,6 +33,7 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            family: "binomial".into(),
             alpha: 1.0,
             nlambda: 100,
             eps: 1e-7,
@@ -47,6 +49,7 @@ impl Default for Options {
 
 #[derive(Serialize)]
 struct ModelPath {
+    family: String,
     lambdas: Vec<f64>,
     intercept: Vec<f64>,
     indices: Vec<Vec<usize>>,
@@ -95,10 +98,8 @@ impl Dataset {
     }
 
     pub fn write_response(&mut self, start: usize, values: &[f64]) -> Result<(), JsValue> {
-        if start.checked_add(values.len()).is_none_or(|end| end > self.nrow)
-            || values.iter().any(|&y| y != 0.0 && y != 1.0)
-        {
-            return Err(JsValue::from_str("The response must be binary, with one value per row."));
+        if start.checked_add(values.len()).is_none_or(|end| end > self.nrow) || values.iter().any(|y| !y.is_finite()) {
+            return Err(JsValue::from_str("The response must be finite, with one value per row."));
         }
         self.y[start..start + values.len()].copy_from_slice(values);
         Ok(())
@@ -138,8 +139,10 @@ impl Dataset {
         if self.x.iter().any(|v| !v.is_finite()) {
             return Err("Every selected feature must be completely loaded with finite numeric values.".into());
         }
-        let (ybar, null_deviance) = null_model(&self.y, None).map_err(str::to_owned)?;
+        let family = Family::parse(&options.family).map_err(str::to_owned)?;
+        let (ybar, null_deviance) = family.null_model(&self.y, None).map_err(str::to_owned)?;
         let params = Params {
+            family,
             alpha: options.alpha,
             lambdas: options.lambdas.as_deref(),
             nlambda,
@@ -202,6 +205,7 @@ impl Dataset {
             })
             .collect();
         let result = ModelPath {
+            family: options.family,
             lambdas: fitted.iter().map(|&k| path.lambda[k]).collect(),
             intercept,
             indices,
@@ -211,7 +215,10 @@ impl Dataset {
             scale: path.scale,
             iterations: fitted.iter().map(|&k| path.iters[k]).collect(),
             n_rejected: fitted.iter().map(|&k| path.n_reject[k]).collect(),
-            deviance: fitted.iter().map(|&k| 2.0 * path.deviance[k]).collect(),
+            deviance: fitted
+                .iter()
+                .map(|&k| (if family == Family::Binomial { 2.0 } else { 1.0 }) * path.deviance[k])
+                .collect(),
             warnings,
         };
         serde_wasm_bindgen::to_value(&result).map_err(|e| e.to_string())

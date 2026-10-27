@@ -186,7 +186,7 @@ use Stop::{Fail, Fallback};
 /// Fit a binomial path; arguments and result as the numba backend's
 /// fit_path. Null-model statistics use the same portable math as the fit.
 #[pyfunction]
-#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, n_threads, boundscheck, row_path = "auto", on_lambda = None))]
+#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, n_threads, boundscheck, row_path = "auto", on_lambda = None, family = "binomial"))]
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
@@ -208,6 +208,7 @@ fn fit_path<'py>(
     boundscheck: bool,
     row_path: &str,
     on_lambda: Option<Bound<'py, PyAny>>,
+    family: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
     if !["auto", "gather", "mask"].contains(&row_path) {
         return Err(PyValueError::new_err("row_path must be 'auto', 'gather' or 'mask'."));
@@ -248,7 +249,8 @@ fn fit_path<'py>(
         }
         None => None,
     };
-    let (ybar, null_deviance) = null_model(y_all, idx.as_deref()).map_err(PyValueError::new_err)?;
+    let family = Family::parse(family).map_err(PyValueError::new_err)?;
+    let (ybar, null_deviance) = family.null_model(y_all, idx.as_deref()).map_err(PyValueError::new_err)?;
     let nrow_x = shape[0];
     // row_indices with no repeats, naming at least MASK_SHARE of X's rows, are
     // fit through a mask (row_path forces either path, for tests)
@@ -302,6 +304,7 @@ fn fit_path<'py>(
         })
     };
     let params = Params {
+        family,
         alpha,
         lambdas: lambdas_vec.as_deref(),
         nlambda,
