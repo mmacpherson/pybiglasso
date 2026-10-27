@@ -10,7 +10,8 @@ margin forces them, and iteration counts not at all (they are compared against
 R on the R grid).
 
 KKT is tested only in default mode, on overlapping-label, well-conditioned
-designs, with no saturation, exhausted iteration budget, or |eta| > 10 clamp.
+designs, with |eta| < 10 (inside both modes' probability cutoffs), no saturation
+and no exhausted iteration budget.
 It is not a universal property of every input the solver accepts. In particular
 alpha=0 raises NotImplementedError; it is not an invalid-input ValueError.
 
@@ -192,7 +193,7 @@ def theta_and_residuals(path, X, y):
         ]
     )
     eta = Z @ theta
-    assert np.max(np.abs(eta)) < 10, "outside the unclipped KKT domain"
+    assert np.max(np.abs(eta)) < 10, "outside the smooth fixture domain"
     residual = subgradient_residual(
         Z,
         y,

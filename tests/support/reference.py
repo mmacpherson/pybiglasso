@@ -34,6 +34,9 @@ MIN_SCALE = 1e-6
 # beyond this linear predictor, IRLS takes p as exactly 0 or 1, with a small
 # fixed weight
 ETA_MAX, MIN_WEIGHT = 10.0, 1e-4
+# glmnet's probability boundary; the working-residual representation also
+# needs a positive boundary weight (glmnet can represent zero curvature).
+P_MIN = 1e-9
 # the path stops once the loss falls below this fraction of the null loss
 SATURATED = 0.01
 
@@ -431,12 +434,17 @@ def update_irls(problem, state):
     `cdfit_binomial_lambda_core`.
     """
     eta, y = state.eta, problem.y
-    clipped = np.abs(eta) > ETA_MAX
+    eta_max = ETA_MAX if problem.r_compatible else np.log(1 / P_MIN - 1)
+    min_weight = MIN_WEIGHT if problem.r_compatible else P_MIN * (1 - P_MIN)
+    clipped = np.abs(eta) > eta_max
     # p is exactly 0 or 1 where clipped, so the loss there can be infinite
     with np.errstate(divide="ignore"):
-        p = np.where(clipped, (eta > 0).astype(float), np.exp(eta) / (1 + np.exp(eta)))
+        p = np.empty_like(eta)
+        p[clipped] = (eta[clipped] > 0).astype(float)
+        e = np.exp(eta[~clipped])
+        p[~clipped] = e / (1 + e)
         state.loss = -np.where(y == 1, np.log(p), np.log(1 - p)).sum()
-    state.weights = np.where(clipped, MIN_WEIGHT, p * (1 - p))
+    state.weights = np.where(clipped, min_weight, p * (1 - p))
     state.residual = y - p
     state.working_residual = state.residual / state.weights
 

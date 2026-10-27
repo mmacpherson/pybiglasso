@@ -57,6 +57,32 @@ const SCALE_MIN: f64 = 1e-6;
 const ETA_MAX: f64 = 10.0;
 const W_MIN: f64 = 0.0001;
 
+fn irls_limits(r_compatible: bool) -> (f64, f64) {
+    if r_compatible {
+        (ETA_MAX, W_MIN)
+    } else {
+        // Differs from R biglasso: use glmnet's pmin boundary instead of
+        // |eta| > 10 to reduce clipping's score bias. Retain positive boundary
+        // curvature: our working residual s/w needs it, unlike glmnet's
+        // undivided residual, which allows zero weights.
+        let p_min = 1e-9;
+        (log(1.0 / p_min - 1.0), p_min * (1.0 - p_min))
+    }
+}
+
+#[inline(always)]
+fn irls_probability_weight(eta: f64, eta_max: f64, w_min: f64) -> (f64, f64) {
+    if eta > eta_max {
+        (1.0, w_min)
+    } else if eta < -eta_max {
+        (0.0, w_min)
+    } else {
+        let e = exp(eta);
+        let probability = e / (1.0 + e);
+        (probability, probability * (1.0 - probability))
+    }
+}
+
 // Element types and column access
 
 pub(crate) trait Elem: Copy + Send + Sync {
@@ -786,28 +812,18 @@ impl<D: Design> Fit<'_, D> {
     }
 
     /// w, s, r from eta; returns -log-likelihood with probabilities clipped
-    /// as R does. Rows can run independently, but the loss sum stays serial.
+    /// at the mode's boundary. Rows are independent; the loss sum stays serial.
     fn update_irls(&self, st: &mut State) -> f64 {
         if st.eta.len() >= PAR_IRLS_ROWS && rayon::current_num_threads() > 1 {
             return self.update_irls_parallel(st);
         }
+        let (eta_max, w_min) = irls_limits(self.params.r_compatible);
         for i in 0..st.eta.len() {
             if !self.fits(i) {
                 (st.irls_work[i], st.w[i], st.s[i], st.r[i]) = (0.0, 0.0, 0.0, 0.0);
                 continue;
             }
-            let e = st.eta[i];
-            if e > ETA_MAX {
-                st.irls_work[i] = 1.0;
-                st.w[i] = W_MIN;
-            } else if e < -ETA_MAX {
-                st.irls_work[i] = 0.0;
-                st.w[i] = W_MIN;
-            } else {
-                let ee = exp(e);
-                st.irls_work[i] = ee / (1.0 + ee);
-                st.w[i] = st.irls_work[i] * (1.0 - st.irls_work[i]);
-            }
+            (st.irls_work[i], st.w[i]) = irls_probability_weight(st.eta[i], eta_max, w_min);
             st.s[i] = self.y_at(i) - st.irls_work[i];
             st.r[i] = st.s[i] / st.w[i];
         }
@@ -823,24 +839,14 @@ impl<D: Design> Fit<'_, D> {
     // single-thread fits in the before/after measurements.
     #[inline(never)]
     fn update_irls_parallel(&self, st: &mut State) -> f64 {
+        let (eta_max, w_min) = irls_limits(self.params.r_compatible);
         let update = |i: usize, (((w, s), r), loss): (((&mut f64, &mut f64), &mut f64), &mut f64)| {
             if !self.fits(i) {
                 (*w, *s, *r, *loss) = (0.0, 0.0, 0.0, 0.0);
                 return;
             }
-            let e = st.eta[i];
-            let probability = if e > ETA_MAX {
-                *w = W_MIN;
-                1.0
-            } else if e < -ETA_MAX {
-                *w = W_MIN;
-                0.0
-            } else {
-                let ee = exp(e);
-                let probability = ee / (1.0 + ee);
-                *w = probability * (1.0 - probability);
-                probability
-            };
+            let (probability, weight) = irls_probability_weight(st.eta[i], eta_max, w_min);
+            *w = weight;
             *s = self.y_at(i) - probability;
             *r = *s / *w;
             *loss = if self.y_at(i) == 1.0 { log(probability) } else { log(1.0 - probability) };
