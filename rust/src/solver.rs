@@ -1247,3 +1247,7 @@ fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "kernel_tests.rs"]
+mod kernel_tests;
