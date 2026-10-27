@@ -1115,6 +1115,11 @@ impl<D: Design> Fit<'_, D> {
             } else {
                 path.lambda.copy_from_slice(&linspace(lambda_max, p.lambda_min * lambda_max, nl));
             }
+            // Differs from R biglasso, which fits a grid that overflowed (at a
+            // tiny alpha, say) and returns its nonfinite penalties
+            if path.lambda.iter().any(|value| !value.is_finite()) {
+                return Err("The automatic lambda grid must be finite; increase alpha or supply a finite grid.".into());
+            }
             Self::record(&mut path, &st, 0);
             if !p.r_compatible {
                 path.deviance[0] = self.final_loss(&st);
