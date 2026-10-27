@@ -355,20 +355,33 @@ The table uses the same AMD Ryzen 5 5600X (6 cores, 12 threads) as the
 binomial benchmarks, with pybiglasso 0.3.0, Python 3.14.0, NumPy 2.5.4,
 R 4.6.1, biglasso 1.7.2 and glmnet 5.1. Times are seconds, the median of
 three runs; both thread counts are shown rather than choosing the faster one.
+The CPU was 96–97% idle across twelve ten-second samples before the run;
+load was sampled throughout and returned to 95–97% idle afterward.
 
-Native-glmnet timing rows are being regenerated; the previous generic-path
-timings are not a comparison with glmnet's optimized Gaussian solver.
+| Dataset | Penalty | pybiglasso, 1 thread | pybiglasso, 6 threads | R biglasso, 1 thread | R biglasso, 6 threads | Native glmnet, 1 thread |
+|---|---|---|---|---|---|---|
+| 5,000 x 1,000 | lasso | 0.52 | 0.47 | 0.90 | 0.70 | 0.25 |
+| 5,000 x 1,000 | elastic net (α=0.5) | 0.55 | 0.51 | 0.94 | 0.73 | 0.27 |
+| 2,000 x 20,000 | lasso | 0.92 | 0.76 | 2.80 | 0.92 | 1.67 |
+| 2,000 x 20,000 | elastic net (α=0.5) | 0.95 | 0.75 | 2.84 | 0.94 | 1.70 |
 
 Shapes are requested sizes; dropping generated constant columns leaves 973
 and 19,199 features respectively. Accuracy and warnings describe each row's
-final repetition. The KKT diagnostic is an absolute subgradient residual in
-response units (the columns have unit variance). Raw records also divide it
-by the smallest L1 penalty, λ_min α; it is not a relative error in the
-coefficients. Pairwise objective differences are not certified suboptimality
-bounds. Regenerate the table with `python benchmarks/gaussian-table.py
-benchmarks/results/path-gaussian.jsonl`.
+final repetition. All 20 paths contain 100 lambdas with no warnings.
+The KKT diagnostic is an absolute subgradient residual in response units
+(the columns have unit variance). The largest residuals are about 1.0e-4
+for Rust/R biglasso and 1.1e-4 for native glmnet. On tall data the smallest
+L1 penalty λ_min α is 1.50e-3: the largest path-wide residual is therefore
+about 7% of that threshold at default tolerances. On wide data λ_min α is
+0.0762, and the corresponding ratio is about 0.01%. Raw records report
+this conservative path-wide ratio; it is not a relative coefficient error.
+The largest relative objective difference versus native glmnet is 1.9e-6;
+this pairwise difference is not a certified suboptimality bound.
+Regenerate the table with:
 
 ```bash
+python benchmarks/gaussian-table.py benchmarks/results/path-gaussian.jsonl
+make r-image R_VERSION=4.6.1  # once, before the timing run
 benchmarks/run-gaussian.sh
 # Quick adapter/timing smoke (not a reportable benchmark):
 DATASETS=smoke-500-100 THREADS=1 REPEATS=1 benchmarks/run-gaussian.sh /tmp/gaussian-smoke.jsonl
