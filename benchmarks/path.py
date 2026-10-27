@@ -280,7 +280,9 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial"):
         if family == "gaussian":
             params["lambdas"] = list(lambdas)
         (d / "params.json").write_text(json.dumps(params))
-        (r,) = rcompare.run_r([d])
+        (r,) = rcompare.run_r(
+            [d], env=r_thread_limits(threads) if family == "gaussian" else None
+        )
     if "error" in r:
         raise RuntimeError(r["error"])
     beta, scale, center = r["beta"], r["scale"], r["center"]
@@ -312,6 +314,16 @@ def fit_r_adaptive(X, Xs, y, lambdas, alpha, threads):
     return _fit_r(X, Xs, y, lambdas, alpha, threads, "Adaptive")
 
 
+def r_thread_limits(threads):
+    # Docker does not inherit the parent's limits. Keep BLAS sequential while
+    # allowing biglasso's explicit ncores to control its OpenMP work.
+    return {
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": str(threads),
+    }
+
+
 def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads, family="binomial"):
     """Fit in R's glmnet; returns (coef, intercept, R's own fit seconds,
     glmnet's version). glmnet gets raw X and standardizes it itself, as its
@@ -333,7 +345,12 @@ def fit_r_glmnet(X, Xs, y, lambdas, alpha, threads, family="binomial"):
             nrow=nrow, ncol=ncol, alpha=alpha, lambdas=list(lambdas), family=family
         )
         (d / "params.json").write_text(json.dumps(params))
-        (r,) = rcompare.run_r([d], script=HERE / "r" / "fit_glmnet.R", load=load)
+        (r,) = rcompare.run_r(
+            [d],
+            script=HERE / "r" / "fit_glmnet.R",
+            load=load,
+            env=r_thread_limits(threads) if family == "gaussian" else None,
+        )
     if "error" in r:
         raise RuntimeError(r["error"])
     coef = np.array(r["beta"], dtype=np.float64).reshape(r["beta_dim"], order="F").T
@@ -699,6 +716,8 @@ def main():
                         **env_info,
                         **versions,
                     )
+                    if args.family == "gaussian" and solver in R_SOLVERS:
+                        record["r_thread_limits"] = r_thread_limits(t)
                     fp.write(json.dumps(record) + "\n")
 
 

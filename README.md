@@ -29,8 +29,8 @@ solver, compiled to WebAssembly, in your browser, on example datasets or your
 own CSV or Parquet file, which never leaves your machine. It fits lasso and
 elastic-net paths for Gaussian or binomial responses, and can cross-validate them.
 
-It's also fast when the data does fit in memory. The timings quoted here use binomial
-(logistic) fits. On a full 100-step lasso path
+It's also fast when the data does fit in memory. The timings quoted here use
+binomial (logistic) fits. On a full 100-step lasso path
 over 5,000 samples by 50,000 features, it is 2.4x faster than R's glmnet, 2.5x
 faster than R biglasso, and 5.2x faster than skglm, the fastest of the other
 Python solvers we tested. Across the four benchmark problems, with 1,000 to
@@ -225,8 +225,8 @@ make soak-hypothesis        # property tests, wide random search (part of soak)
 
 ## Performance
 
-The binomial benchmarks below measure speed only. Correctness is established separately,
-against R biglasso and by checks independent of it (see
+The binomial benchmarks below measure speed only. Correctness is established
+separately, against R biglasso and by checks independent of it (see
 [Validation](#validation)). Each solver fits the
 same problem along the same 100-value lambda path, at its own default
 tolerance, and its accuracy is reported alongside its time. Machine: AMD Ryzen 5
@@ -335,6 +335,8 @@ data generation, imports, container startup and R `big.matrix` construction
 are outside the timers. Each repetition uses a fresh process. Raw results
 record every time, input fingerprints, versions, warnings, fitted path length,
 first-principles KKT residuals and objective differences versus glmnet.
+R's BLAS is limited to one thread inside the container; biglasso's explicit
+thread count controls its own parallel work.
 
 The generic glmnet family is intentional: its fast `family="gaussian"` path
 rescales y, changing the effective elastic-net ridge penalty. These timings

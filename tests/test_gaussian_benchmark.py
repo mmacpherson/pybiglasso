@@ -55,6 +55,30 @@ def test_benchmark_default_objective_remains_binomial(benchmark, orthogonal):
     assert benchmark.objective(X, y, 0.5, 0.5, np.zeros(2), 0.0) == math.log(2)
 
 
+@pytest.mark.parametrize("container", [None, "docker", "podman"])
+def test_benchmark_r_thread_limits_cross_container_boundary(
+    benchmark, monkeypatch, tmp_path, container
+):
+    if container:
+        monkeypatch.setenv("CONTAINER", container)
+    else:
+        monkeypatch.delenv("CONTAINER", raising=False)
+    calls = []
+    monkeypatch.setattr(
+        rcompare.subprocess, "run", lambda cmd, **kwargs: calls.append((cmd, kwargs))
+    )
+    limits = benchmark.r_thread_limits(6)
+    rcompare.run_r([tmp_path], load=lambda _: {}, env=limits)
+    cmd, kwargs = calls[0]
+    assert kwargs["env"]["OPENBLAS_NUM_THREADS"] == "1"
+    assert kwargs["env"]["MKL_NUM_THREADS"] == "1"
+    assert kwargs["env"]["OMP_NUM_THREADS"] == "6"
+    if container:
+        for key, value in limits.items():
+            index = cmd.index(f"{key}={value}")
+            assert cmd[index - 1] == "--env"
+
+
 @pytest.mark.r
 @pytest.mark.skipif(not rcompare.r_available(), reason="R not available")
 @pytest.mark.parametrize("solver", ["pybiglasso", "r-biglasso-ssr", "r-glmnet"])

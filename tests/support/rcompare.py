@@ -506,11 +506,12 @@ def r_available():
     return shutil.which(os.environ.get("RSCRIPT", "Rscript")) is not None
 
 
-def run_r(case_dirs, script=R_SCRIPT, load=None):
+def run_r(case_dirs, script=R_SCRIPT, load=None, env=None):
     """Fit every case directory in a single R session; return parsed outputs.
 
     `script` runs another fit in the same image (the benchmarks' glmnet), with
-    `load` reading its out.json.
+    `load` reading its out.json. Optional environment overrides also cross the
+    container boundary (for example, benchmark BLAS thread limits).
     """
     case_dirs = [pathlib.Path(d).absolute() for d in case_dirs]
     container = os.environ.get("CONTAINER")
@@ -519,12 +520,18 @@ def run_r(case_dirs, script=R_SCRIPT, load=None):
         cmd = [container, "run", "--rm"]
         if pathlib.Path(container).name == "docker":
             cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
+        for key, value in (env or {}).items():
+            cmd += ["--env", f"{key}={value}"]
         for mount in sorted({script.parent, *{d.parent for d in case_dirs}}):
             cmd += ["-v", f"{mount}:{mount}"]
         cmd += [image, "Rscript"]
     else:
         cmd = [os.environ.get("RSCRIPT", "Rscript")]
-    subprocess.run([*cmd, str(script), *map(str, case_dirs)], check=True)
+    subprocess.run(
+        [*cmd, str(script), *map(str, case_dirs)],
+        check=True,
+        env=dict(os.environ, **env) if env else None,
+    )
     return [(load or load_r_output)(d / "out.json") for d in case_dirs]
 
 
