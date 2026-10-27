@@ -1,8 +1,8 @@
 import "./style.css";
 import Papa from "papaparse";
-import { drawPath, featureColor } from "./chart";
+import { drawCv, drawPath, featureColor } from "./chart";
 import { syntheticCsv } from "./data.mjs";
-import type { Inspection, Loaded, ModelPath, Reply, Request } from "./types";
+import type { CrossValidation, Inspection, Loaded, ModelPath, Reply, Request } from "./types";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const hide = (id: string, value = true) => { $(id).hidden = value; };
@@ -14,9 +14,10 @@ let busy = false;
 let loaded: Loaded | undefined;
 let inspection: Inspection | undefined;
 let model: ModelPath | undefined;
+let cv: CrossValidation | undefined;
 let sourceName = "";
 let automatic = false;
-let settings = { alpha: 1, nlambda: 100, eps: 1e-7 };
+let settings = { alpha: 1, nlambda: 100, eps: 1e-7, folds: 0 };
 let pending = settings;
 let exampleAbort: AbortController | undefined;
 
@@ -28,7 +29,7 @@ function makeWorker() {
 
 function setBusy(next: boolean) {
   busy = next;
-  for (const id of ["load-example", "file", "example", "family", "alpha", "nlambda", "eps", "target", "positive", "import"]) {
+  for (const id of ["load-example", "file", "example", "family", "alpha", "nlambda", "eps", "folds", "go-best", "go-1se", "target", "positive", "import"]) {
     ($<HTMLInputElement>(id)).disabled = next;
   }
   $("fit").toggleAttribute("disabled", next || !loaded);
@@ -42,8 +43,8 @@ function status(message: string) { text("status", message); }
 function fail(message: string) { setBusy(false); automatic = false; text("error", message); hide("error", false); status("Could not complete that step."); }
 
 function clearModel() {
-  model = undefined;
-  hide("model-results"); hide("chart-panel"); hide("lambda-controls"); hide("empty", false);
+  model = undefined; cv = undefined;
+  hide("model-results"); hide("chart-panel"); hide("cv-panel"); hide("lambda-controls"); hide("empty", false);
   text("timing", "Ready when you are"); text("path-title", "From sparse to expressive.");
 }
 
@@ -103,7 +104,7 @@ function loadSelection() {
 
 function fit() {
   if (!loaded || busy) return;
-  pending = { alpha: Number(value("alpha")), nlambda: Number(value("nlambda")), eps: Number(value("eps")) };
+  pending = { alpha: Number(value("alpha")), nlambda: Number(value("nlambda")), eps: Number(value("eps")), folds: Number(value("folds")) };
   status("Starting the Rust solver…"); post({ kind: "fit", ...pending });
 }
 
@@ -131,14 +132,16 @@ function receive(reply: Reply) {
     hide("dataset-summary", false); hide("import-panel"); fit();
   } else {
     if (!reply.path.lambdas.length) { fail(reply.path.warnings.join("\n") || "The path stopped before producing a model."); return; }
-    model = reply.path; settings = pending;
+    model = reply.path; cv = reply.cv; settings = pending;
     hide("empty"); hide("chart-panel", false); hide("lambda-controls", false); hide("model-results", false);
     text("path-title", `${settings.alpha === 1 ? "Lasso" : "Elastic net"} · α = ${settings.alpha.toFixed(2)}`);
     text("timing", `${model.lambdas.length} models · ${reply.milliseconds < 1000 ? `${Math.round(reply.milliseconds)} ms` : `${(reply.milliseconds / 1000).toFixed(2)} s`}`);
-    const slider = $<HTMLInputElement>("lambda"); slider.max = String(model.lambdas.length - 1); slider.value = String(Math.floor((model.lambdas.length - 1) * .6));
+    const slider = $<HTMLInputElement>("lambda"); slider.max = String(model.lambdas.length - 1); slider.value = String(cv ? cv.oneSe : Math.floor((model.lambdas.length - 1) * .6));
+    hide("cv-panel", !cv);
+    text("training-note", cv ? `Cross-validated over ${cv.folds} folds: the slider starts at λ1se, the largest penalty whose held-out loss is within one standard error of the lowest.` : "These are training fits, not an estimate of predictive performance. Turn on cross-validation for one.");
     text("lambda-max", `λ ${format(model.lambdas[0])}`); text("lambda-min", `λ ${format(model.lambdas.at(-1)!)}`);
     text("warnings", model.warnings.join("\n")); hide("warnings", model.warnings.length === 0);
-    renderModel(); status("Path ready. Move the λ slider to explore a model.");
+    renderModel(); status(cv ? `Cross-validated over ${cv.folds} folds. Move the λ slider, or jump to λmin or λ1se.` : "Path ready. Move the λ slider to explore a model.");
   }
 }
 
@@ -161,7 +164,13 @@ function renderModel() {
   const entries = model.indices[k].map((j, i) => ({ j, b: model!.coefficients[k][i], s: model!.standardized_coefficients[k][i] })).sort((a, b) => Math.abs(b.b) - Math.abs(a.b));
   for (const entry of entries.slice(0, 100)) append(loaded.features[entry.j], entry.b, entry.s, entry.j);
   text("table-note", entries.length === 0 ? "All feature coefficients are zero at this lambda." : entries.length > 100 ? `Showing 100 of ${entries.length.toLocaleString()} active features. Download all coefficients below.` : `${entries.length.toLocaleString()} active features of ${loaded.features.length.toLocaleString()}.`);
-  drawPath($<HTMLCanvasElement>("chart"), model, k);
+  drawPath($<HTMLCanvasElement>("chart"), model, k, cv);
+  if (cv) {
+    drawCv($<HTMLCanvasElement>("cv-chart"), model, cv, k);
+    const loss = model.family === "gaussian" ? "squared error" : "deviance";
+    text("cv-note", (k < cv.mean.length ? `Held-out ${loss} per row at this λ: ${format(cv.mean[k])} ± ${format(cv.se[k])}. ` : "Not every fold reached this λ. ")
+      + `Lowest at λmin = ${format(model.lambdas[cv.best])} (${model.indices[cv.best].length} features); λ1se = ${format(model.lambdas[cv.oneSe])} (${model.indices[cv.oneSe].length} features). Solid orange marks λmin, dashed orange λ1se, and dotted black the λ shown; bars are ±1 standard error across folds.`);
+  }
 }
 
 function download(name: string, content: string, type: string) {
@@ -210,6 +219,9 @@ $("family").addEventListener("change", () => {
 $("import").addEventListener("click", loadSelection);
 $("fit").addEventListener("click", fit);
 $("lambda").addEventListener("input", renderModel);
+for (const [id, pick] of [["go-best", (c: CrossValidation) => c.best], ["go-1se", (c: CrossValidation) => c.oneSe]] as const) {
+  $(id).addEventListener("click", () => { if (cv) { $<HTMLInputElement>("lambda").value = String(pick(cv)); renderModel(); } });
+}
 $("feature-search").addEventListener("input", () => {
   const query = value("feature-search").toLowerCase();
   document.querySelectorAll<HTMLElement>("#features label").forEach((label) => { label.hidden = !label.dataset.name!.includes(query); });
@@ -224,7 +236,7 @@ function alphaChanged() {
 }
 $("alpha").addEventListener("input", alphaChanged);
 document.querySelectorAll<HTMLElement>("[data-alpha]").forEach((button) => button.addEventListener("click", () => { $<HTMLInputElement>("alpha").value = button.dataset.alpha!; alphaChanged(); }));
-for (const id of ["nlambda", "eps"]) $(id).addEventListener("change", () => { if (model) status("Settings changed. Fit the path to apply them."); });
+for (const id of ["nlambda", "eps", "folds"]) $(id).addEventListener("change", () => { if (model) status("Settings changed. Fit the path to apply them."); });
 $("cancel").addEventListener("click", () => {
   exampleAbort?.abort(); exampleAbort = undefined;
   worker.onmessage = null; worker.onerror = null; worker.terminate(); makeWorker();
@@ -239,7 +251,7 @@ $("download-csv").addEventListener("click", () => {
 });
 $("download-json").addEventListener("click", () => {
   if (!model || !loaded) return;
-  download("pybiglasso-path.json", JSON.stringify({ format_version: 1, source: sourceName, response: value("target"), features: loaded.features, classes: loaded.family === "binomial" ? loaded.classes : undefined, settings, selected_index: Number(value("lambda")), ...model }, null, 2), "application/json");
+  download("pybiglasso-path.json", JSON.stringify({ format_version: 1, source: sourceName, response: value("target"), features: loaded.features, classes: loaded.family === "binomial" ? loaded.classes : undefined, settings, selected_index: Number(value("lambda")), ...model, cross_validation: cv }, null, 2), "application/json");
 });
 new ResizeObserver(() => { if (model) renderModel(); }).observe($("chart-panel"));
 makeWorker();

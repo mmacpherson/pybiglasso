@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { numericValue, checkSize, responseValue, binaryClasses, syntheticCsv } from "../src/data.mjs";
+import { numericValue, checkSize, responseValue, binaryClasses, syntheticCsv, assignFolds, chooseLambda } from "../src/data.mjs";
 
 test("import preserves finite values and rejects lossy integers and missing data", () => {
   for (const [input, expected] of [["1.25", 1.25], ["-2e-3", -.002], ["0", 0], [3n, 3]]) {
@@ -34,4 +34,32 @@ test("synthetic input is reproducible with the documented shape and both classes
   assert.equal(lines.length, 161);
   assert(lines.every((r) => r.length === 49));
   assert.deepEqual([...new Set(lines.slice(1).map((r) => r[0]))].sort(), ["0", "1"]);
+});
+
+test("folds partition the rows, balance sizes, and stratify the classes", () => {
+  const y = Array.from({ length: 23 }, (_, i) => Number(i % 3 === 0));
+  const fold = assignFolds(y, 5, true);
+  const sizes = [0, 0, 0, 0, 0], positives = [0, 0, 0, 0, 0];
+  fold.forEach((f, i) => { sizes[f]++; positives[f] += y[i]; });
+  assert(Math.max(...sizes) - Math.min(...sizes) <= 1);
+  assert(Math.max(...positives) - Math.min(...positives) <= 1);
+  assert.deepEqual(assignFolds(y, 5, true), fold);
+  assert.notDeepEqual(assignFolds(y, 5, true, 2), fold);
+  assert.throws(() => assignFolds([0, 0, 0, 1], 2, true), /Each class/);
+  assert.throws(() => assignFolds([1, 2, 3], 4, false), /at least 4 rows/);
+  assert.throws(() => assignFolds([1, 2, 3], 1, false));
+});
+
+test("lambda choice: the minimum, the one-standard-error rule, and incomplete folds", () => {
+  // fold losses at four lambdas; the third fold's path stopped after three
+  const holdout = [[4, 2, 1.0, 0.5], [4, 2.2, 1.4], [4, 1.8, 1.0]];
+  const { mean, se, best, oneSe } = chooseLambda(holdout, 4);
+  assert.equal(mean.length, 3);
+  assert.equal(best, 2);
+  // losses 1, 1.4, 1 at the best: mean 1.4/1.2, sd 0.2309.., se 0.1333..
+  assert(Math.abs(se[2] - 0.4 / Math.sqrt(3) / Math.sqrt(3)) < 1e-15);
+  assert.equal(oneSe, 2);
+  assert.equal(chooseLambda([[3, 1.05, 1], [3, 1.05, 1]], 3).oneSe, 2);
+  assert.equal(chooseLambda([[3, 1.1, 1], [3, 0.9, 1.2]], 3).oneSe, 1);
+  assert.throws(() => chooseLambda([[NaN], [1]], 1), /every fold/);
 });

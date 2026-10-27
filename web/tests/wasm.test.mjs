@@ -110,3 +110,58 @@ test("default elastic net satisfies independent one-feature logistic KKT", () =>
     assert(Math.max(Math.abs(interceptGradient), Math.abs(betaGradient)) < 1e-6);
   } finally { d.free(); }
 });
+
+function design(nrow, ncol, family) {
+  let state = 5;
+  const random = () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return (state >>> 0) / 2 ** 32; };
+  const x = Array.from({ length: ncol }, () => Float64Array.from({ length: nrow }, () => 4 * random() - 2));
+  const y = Float64Array.from({ length: nrow }, (_, i) => {
+    const signal = 1.5 * x[0][i] - x[1][i] + random() - .5;
+    return family === "gaussian" ? 3 + signal : Number(signal > 0);
+  });
+  return { x, y };
+}
+
+function dataset({ x, y }, rows) {
+  const d = new Dataset(rows.length, x.length);
+  x.forEach((column, j) => d.write_column(j, 0, Float64Array.from(rows, (i) => column[i])));
+  d.write_response(0, Float64Array.from(rows, (i) => y[i]));
+  return d;
+}
+
+for (const family of ["binomial", "gaussian"]) {
+  test(`a ${family} fold fits its training rows alone and scores the held-out rows`, () => {
+    const data = design(60, 6, family), all = [...Array(60).keys()];
+    const train = all.filter((i) => i % 4 !== 1), test = all.filter((i) => i % 4 === 1);
+    const whole = dataset(data, all), part = dataset(data, train);
+    try {
+      const lambdas = whole.fit({ family, alpha: .8, nlambda: 20 }).lambdas;
+      const fold = whole.fit({ family, alpha: .8, lambdas, train_rows: train, test_rows: test });
+      const alone = part.fit({ family, alpha: .8, lambdas });
+      assert.deepEqual(fold.indices, alone.indices);
+      assert.deepEqual(fold.iterations, alone.iterations);
+      fold.coefficients.forEach((b, k) => b.forEach((v, i) => assert(Math.abs(v - alone.coefficients[k][i]) <= 1e-12 * (1 + Math.abs(v)))));
+      // the held-out loss, from the returned coefficients
+      assert.equal(fold.holdout.length, fold.lambdas.length);
+      fold.holdout.forEach((loss, k) => {
+        const losses = test.map((i) => {
+          const eta = fold.intercept[k] + fold.indices[k].reduce((s, j, n) => s + data.x[j][i] * fold.coefficients[k][n], 0);
+          return family === "gaussian" ? (data.y[i] - eta) ** 2 : 2 * (Math.log1p(Math.exp(eta)) - data.y[i] * eta);
+        });
+        const expected = losses.reduce((a, b) => a + b, 0) / test.length;
+        assert(Math.abs(loss - expected) <= 1e-12 * expected, `${loss} vs ${expected}`);
+      });
+      assert.equal(alone.holdout, undefined);
+    } finally { whole.free(); part.free(); }
+  });
+}
+
+test("fold rows out of range, repeated, or empty are clean errors", () => {
+  const d = sample();
+  try {
+    for (const rows of [[8], [0, 0, 1], []]) {
+      assert.throws(() => d.fit({ lambdas: [.1], train_rows: rows }), /Fold rows/);
+      assert.throws(() => d.fit({ lambdas: [.1], test_rows: rows }), /Fold rows/);
+    }
+  } finally { d.free(); }
+});

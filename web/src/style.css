@@ -74,6 +74,9 @@ progress { width: 100%; accent-color: var(--green); height: 5px; }
 .empty-state h3 { font-size: 14px; font-weight: 550; margin: 5px 0 0; }
 .empty-state p { font-size: 12px; color: var(--muted); }
 #chart { width: 100%; height: 330px; display: block; margin-top: 20px; }
+#cv-panel { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 14px; }
+#cv-panel .presets { margin: 0; }
+#cv-chart { width: 100%; height: 190px; display: block; margin-top: 8px; }
 .chart-caption { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; }
 .lambda-controls { border-top: 1px solid var(--line); padding-top: 17px; margin-top: 19px; }
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 10px; background: #ecefe5; margin: 0 0 18px; }

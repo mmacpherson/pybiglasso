@@ -3,8 +3,16 @@
 The Python package and this app share `rust/src/solver.rs`. The browser adapter
 ingests selected columns once into a retained float64 dataset, then borrows it
 for every fit. Parsing, fitting and result export run in one dedicated Web
-Worker. No selected file is sent to a server. The UI does not run cross-validation;
-the displayed deviance is a training statistic.
+Worker. No selected file is sent to a server. The displayed deviance is a
+training statistic.
+
+Cross-validation, when chosen, refits the full data's lambdas once per fold, as
+`BiglassoClassifierCV` and `BiglassoRegressorCV` do. A fold is a 0/1 weight
+over the same retained dataset, so X is not copied; folds come from a seeded
+shuffle, stratified by class for binomial responses. Each fold scores its
+held-out rows (deviance or squared error per row), and the page marks the
+lambda with the lowest mean loss and the largest within one standard error of
+it.
 
 The first examples are colon (R biglasso's 62x2000 binary gene-expression
 dataset), Wisconsin breast cancer and deterministic correlated features. Sources
