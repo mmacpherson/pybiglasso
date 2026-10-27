@@ -23,6 +23,12 @@ Save the matrix as a numpy memmap and pybiglasso fits the whole regularization
 path, with cross-validation to choose the penalty, without loading it into
 memory.
 
+To try it without installing anything, open the
+[playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
+solver, compiled to WebAssembly, in your browser, on example datasets or your
+own CSV or Parquet file, which never leaves your machine. It fits lasso and
+elastic-net paths, and can cross-validate them.
+
 It's also fast when the data does fit in memory. On a full 100-step lasso path
 over 5,000 samples by 50,000 features, it is 2.4x faster than R's glmnet, 2.5x
 faster than R biglasso, and 5.2x faster than skglm, the fastest of the other
