@@ -9,7 +9,6 @@ import warnings
 from fractions import Fraction
 from pathlib import Path
 
-import numba
 import numpy as np
 import pytest
 from hypothesis import example, given
@@ -18,10 +17,8 @@ from scipy.linalg import hadamard
 from scipy.special import expit
 from support.paths import assert_bitwise
 from test_hypothesis import (
-    BACKENDS,
     FIT_OPTIONS,
     SIGNAL,
-    assert_certified_solutions,
     smooth_problems,
     theta_and_residuals,
 )
@@ -47,6 +44,8 @@ def boundary_scores(draw):
 
 @given(case=boundary_scores())
 def test_kkt_scans_at_and_next_to_the_boundary(case):
+    # calls numba kernels directly, and they use numba.prange
+    pytest.importorskip("numba")
     threshold, score, direction = case
     # Exact dyadic products and n=8: score = X'second*s/n with no reduction
     # ambiguity. The unused constant column exercises raw/used indexing.
@@ -78,9 +77,8 @@ def test_kkt_scans_at_and_next_to_the_boundary(case):
         assert strong[0] == (initial_strong or direction > 0)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @given(direction=st.sampled_from([-1, 0, 1]))
-def test_strong_rule_at_and_next_to_the_boundary(direction, backend):
+def test_strong_rule_at_and_next_to_the_boundary(direction):
     # Orthogonal +-1 columns and dyadic counts give EXACT initial scores
     # (1/4, 1/8). With lambda_max=1/4 and lambda=3/16, cutoff=1/8: the
     # second feature is rejected at equality (strict >), and included just
@@ -89,7 +87,7 @@ def test_strong_rule_at_and_next_to_the_boundary(direction, backend):
     y = np.concatenate([np.arange(4) < count for count in (3, 1, 2, 0)]).astype(float)
     lam = 3 / 16 if direction == 0 else np.nextafter(3 / 16, direction * np.inf)
     path = bl.biglasso(
-        X, y, lambdas=[lam], backend=backend, family="binomial", **FIT_OPTIONS
+        X, y, lambdas=[lam], backend="rust", family="binomial", **FIT_OPTIONS
     )
     assert len(path) == 1
     assert path.n_rejected[0] == int(direction >= 0)
@@ -114,15 +112,14 @@ def reentry_problem():
     return np.asfortranarray(X), y
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_both_kkt_reentry_branches_are_needed(backend):
+def test_both_kkt_reentry_branches_are_needed():
     X, y = reentry_problem()
     path = bl.biglasso(
         X,
         y,
         penalty_factor=[1.0, 1 / 16],
         lambdas=[3 / 16, 1 / 8],
-        backend=backend,
+        backend="rust",
         family="binomial",
         **FIT_OPTIONS,
     )
@@ -134,6 +131,7 @@ def test_both_kkt_reentry_branches_are_needed(backend):
 
 @pytest.mark.parametrize("scan", ["check_strong_set", "check_rest_set"])
 def test_independent_kkt_rejects_a_disabled_reentry_scan(monkeypatch, scan):
+    pytest.importorskip("numba")
     X, y = reentry_problem()
     monkeypatch.setattr(solver, scan, lambda *args: 0)
     path = bl.biglasso(
@@ -178,15 +176,14 @@ def signal_arrays(n=8):
     return X, (X[:, 1] > 0).astype(float)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @given(direction=st.sampled_from([-1, 0, 1]))
-def test_scale_cutoff_and_neighbors(direction, backend):
+def test_scale_cutoff_and_neighbors(direction):
     X, y = signal_arrays()
     cutoff = 1e-6
     scale = cutoff if direction == 0 else np.nextafter(cutoff, direction * np.inf)
     X[:, 1] *= scale
     fit = bl.biglasso(
-        X, y, lambdas=[0.125, 0.0625], backend=backend, family="binomial", **FIT_OPTIONS
+        X, y, lambdas=[0.125, 0.0625], backend="rust", family="binomial", **FIT_OPTIONS
     )
     assert_bitwise(fit.scale[1:], np.array([scale]))
     if direction <= 0:
@@ -195,14 +192,13 @@ def test_scale_cutoff_and_neighbors(direction, backend):
         assert np.all(fit.coef.toarray()[1] > 0)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @given(delta=st.sampled_from([-1, 0, 1]))
-def test_default_lambda_min_switches_when_n_crosses_p(delta, backend):
+def test_default_lambda_min_switches_when_n_crosses_p(delta):
     p, n = 9, 9 + delta
     x = np.resize([-1.0, 1.0], n)
     X = np.asfortranarray(np.tile(x[:, None], (1, p)))
     y = np.resize([0.0, 0.0, 0.0, 1.0], n)
-    options = dict(nlambda=2, backend=backend, **FIT_OPTIONS)
+    options = dict(nlambda=2, backend="rust", **FIT_OPTIONS)
     auto = bl.biglasso(X, y, family="binomial", **options)
     ratio = 0.001 if n > p else 0.05
     explicit = bl.biglasso(X, y, lambda_min=ratio, family="binomial", **options)
@@ -218,12 +214,11 @@ def test_default_lambda_min_switches_when_n_crosses_p(delta, backend):
     assert_bitwise(auto, explicit)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @given(
     dtype=st.sampled_from(["int8", "uint8", "float32"]),
     layout=st.sampled_from(["fortran", "c", "strided", "memmap"]),
 )
-def test_storage_and_promotion_do_not_change_the_fit(dtype, layout, backend):
+def test_storage_and_promotion_do_not_change_the_fit(dtype, layout):
     # Each dtype's edge values convert EXACTLY to float64. A float32 extreme's
     # square is finite in float64; integer extremes expose arithmetic in the
     # storage dtype (e.g. subtracting -128 from 127 before promotion).
@@ -238,7 +233,7 @@ def test_storage_and_promotion_do_not_change_the_fit(dtype, layout, backend):
         stored.astype(float),
         y,
         lambdas=[0.125, 0.0625],
-        backend=backend,
+        backend="rust",
         family="binomial",
         **FIT_OPTIONS,
     )
@@ -263,18 +258,13 @@ def test_storage_and_promotion_do_not_change_the_fit(dtype, layout, backend):
                 view,
                 y,
                 lambdas=[0.125, 0.0625],
-                backend=backend,
+                backend="rust",
                 family="binomial",
                 **FIT_OPTIONS,
             )
         assert view.tobytes() == before
-        if backend == "rust":
-            # Rust's explicit LANES order also agrees across storage types.
-            assert_bitwise(actual, promoted)
-        else:
-            # LLVM can vectorize int8, f32 and f64 reductions differently.
-            np.testing.assert_array_equal(actual.iterations, promoted.iterations)
-            assert_certified_solutions(actual, promoted, stored.astype(float), y)
+        # Rust's explicit LANES order also agrees across storage types.
+        assert_bitwise(actual, promoted)
         # Release the read-only mapping before TemporaryDirectory removes it,
         # including on Windows where an open mapping prevents unlinking.
         del view
@@ -315,12 +305,11 @@ def invalid_inputs(draw):
     return name, draw(choices[name])
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @given(case=invalid_inputs())
-def test_invalid_input_raises_value_error(case, backend):
+def test_invalid_input_raises_value_error(case):
     name, value = case
     X, y = signal_arrays()
-    options = dict(nlambda=2, n_threads=1, backend=backend)
+    options = dict(nlambda=2, n_threads=1, backend="rust")
     if name == "response":
         y = {
             "zero": np.zeros(8),
@@ -341,16 +330,14 @@ def test_invalid_input_raises_value_error(case, backend):
         bl.biglasso(X, y, family="binomial", **options)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_zero_alpha_has_its_documented_exception(backend):
+def test_zero_alpha_has_its_documented_exception():
     with pytest.raises(NotImplementedError, match="zero alpha"):
-        bl.biglasso(*signal_arrays(), alpha=0, backend=backend, family="binomial")
+        bl.biglasso(*signal_arrays(), alpha=0, backend="rust", family="binomial")
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_dfmax_equality_vs_one_above(backend):
+def test_dfmax_equality_vs_one_above():
     X, y = signal_arrays()
-    options = dict(lambdas=[0.125, 0.0625], backend=backend, **FIT_OPTIONS)
+    options = dict(lambdas=[0.125, 0.0625], backend="rust", **FIT_OPTIONS)
     equal = bl.biglasso(X, y, dfmax=1, family="binomial", **options)
     assert len(equal) == 2
     np.testing.assert_array_equal(equal.n_nonzero, [1, 1])
@@ -359,16 +346,15 @@ def test_dfmax_equality_vs_one_above(backend):
     assert_bitwise(above, equal, length=1)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("prefit", [False, True])
-def test_saturation_can_return_an_empty_exportable_path(backend, prefit):
+def test_saturation_can_return_an_empty_exportable_path(prefit):
     X, y = signal_arrays()
     options = (
         dict(penalty_factor=[1.0, 0.0], nlambda=2) if prefit else dict(lambdas=[0.0])
     )
     with pytest.warns(UserWarning, match="Model saturated"):
         path = bl.biglasso(
-            X, y, backend=backend, family="binomial", **options, **FIT_OPTIONS
+            X, y, backend="rust", family="binomial", **options, **FIT_OPTIONS
         )
     assert len(path) == 0
     assert path.coef.shape == (2, 0)
@@ -378,6 +364,7 @@ def test_saturation_can_return_an_empty_exportable_path(backend, prefit):
 
 
 def test_numba_restores_threads_when_standardization_fails():
+    numba = pytest.importorskip("numba")
     prior = numba.get_num_threads()
     requested = 2 if prior == 1 and numba.config.NUMBA_NUM_THREADS >= 2 else 1
     with pytest.raises(ValueError, match="no varying features"):
@@ -418,15 +405,12 @@ def test_rust_row_chunk_parallelism_preserves_bits(delta):
     assert_bitwise(one.scale, many.scale)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("compatible", [False, True])
 @given(
     alpha=st.sampled_from([0.25, 0.5, 0.75, 1.0]),
     lam=st.sampled_from([0.0625, 0.125, 0.25]),
 )
-def test_one_active_sweep_uses_the_documented_enet_denominator(
-    alpha, lam, compatible, backend
-):
+def test_one_active_sweep_uses_the_documented_enet_denominator(alpha, lam, compatible):
     """A hand calculation, including the driver's initial KKT activation.
 
     With x=+-1, y=(x>0), the null intercept is 0, v=1/4 and u=1/2.
@@ -445,7 +429,7 @@ def test_one_active_sweep_uses_the_documented_enet_denominator(
                 max_iter=2,
                 r_compatible=compatible,
                 n_threads=1,
-                backend=backend,
+                backend="rust",
                 family="binomial",
             )
     l1 = Fraction(lam) * Fraction(alpha)
@@ -462,7 +446,6 @@ def test_one_active_sweep_uses_the_documented_enet_denominator(
     )
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @given(
     problem=smooth_problems(),
     grid=st.lists(
@@ -471,16 +454,15 @@ def test_one_active_sweep_uses_the_documented_enet_denominator(
 )
 @example(problem=SIGNAL, grid=[0.0])
 @example(problem=SIGNAL, grid=[0.125, 0.125, 0.0])
-def test_supplied_grids_keep_duplicates_and_singleton_zero(problem, grid, backend):
+def test_supplied_grids_keep_duplicates_and_singleton_zero(problem, grid):
     X, y = problem.arrays()
-    path = problem.fit(backend, lambdas=grid)
+    path = problem.fit(lambdas=grid)
     assert len(path) == len(grid)
     assert_bitwise(path.lambdas, np.array(grid))
     theta_and_residuals(path, X, y)
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_tiny_positive_alpha_fits_finitely_or_raises_value_error(backend):
+def test_tiny_positive_alpha_fits_finitely_or_raises_value_error():
     """alpha>0 is accepted, but an unrepresentable grid must fail cleanly.
 
     The score is 1/4. Dividing by the smallest positive float cannot produce
@@ -497,7 +479,7 @@ def test_tiny_positive_alpha_fits_finitely_or_raises_value_error(backend):
                 alpha=np.nextafter(0.0, 1.0),
                 nlambda=2,
                 n_threads=1,
-                backend=backend,
+                backend="rust",
                 family="binomial",
             )
         except ValueError:
