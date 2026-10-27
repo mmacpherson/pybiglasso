@@ -4,7 +4,8 @@
 the fixed array by value can make LLVM unpack byte fields from a temporary
 integer before converting them to doubles. Indexing the borrowed array with
 `from_fn` exposes packed sign-extension loads instead. Aarch64 retains the
-original array mapping: indexed conversion is slower there. Each element still
+original array mapping: indexed conversion was slower in the M1 Pro runs below.
+Each element still
 undergoes the same conversion; no floating-point expression, lane assignment,
 sum order, allocation or matrix access policy changes.
 
@@ -15,54 +16,81 @@ identical bytes, including centering/scaling, losses and iteration/rejection
 counts, across the before/after extensions and thread counts. The hashes below
 check that relation; they are not stored expected solver values.
 
+## CPU-idle-gated M1 Pro three-build run
+
+On the measured int8 problems, aarch64-gated median durations range from
+0.38% longer to 2.53% shorter than baseline. The
+ungated indexed form is 6.65–11.69% longer in all eight settings. The small
+gated differences are retained, not assumed to be noise or a universal
+neutrality guarantee. The x86 gains on two Ryzen chips are recorded below.
+
+The [provenance](results/int8-m1-pro-quiet/provenance.json) records Apple M1
+Pro (eight performance cores), macOS 26.7.2, arm64 Python 3.13.13, NumPy 2.5.4
+and Homebrew rustc 1.99.1 (`58cf8f9c3`, LLVM 23.1.3). Baseline is `eeff8da`,
+ungated is `2b03702`, and gated is `352c6ac` (including the gate in `f61a985`).
+All three extensions were built before the gate; their SHA256s are recorded.
+No custom `RUSTFLAGS` or `target-cpu` was reported.
+
+The [start gate](results/int8-m1-pro-quiet/gate.jsonl) samples the second CPU
+sample of `top -l 2 -n 0 -s 5` every fifteen seconds, requiring idle at least
+90% and one-minute load below 3 for at least 180 seconds of qualifying samples.
+It [passed](results/int8-m1-pro-quiet/gate-passed.json) at 22:44:29 UTC on
+2026-10-27 after 195 seconds, with idle 90.7% and load 1.13. Timing bookends
+are 22:44:34–23:09:21 UTC. This is a start-gate-admitted run, not continuous
+idle gating during fits: ordinary macOS services remained. Core residency
+was not measured or pinned, and there is no high-QoS claim. The
+[per-set bookends](results/int8-m1-pro-quiet/set-environment.jsonl) retain
+load, power and thermal reports: all twenty power snapshots show AC/100%,
+with no recorded thermal/performance warnings. Load goes from 1.44 before the
+first set to 3.80 after the last; post-set load includes benchmark work.
+
+One Python wrapper loads the three actual extensions and fits the same
+seed-1 read-only Fortran array at 1 and 8 threads. Each setting uses all six
+permutations of baseline/ungated/gated once, giving six timed fits per build
+with each build twice in each position. All 20 settings, 360 timed fits and
+60 warm-ups are retained. Every fit completes all 100 lambdas; the
+[executed harness](results/int8-m1-pro-quiet/int8-threeway.py) rejects warnings
+other than the unused optional numba control's deprecation. Generation,
+warm-up, hashing and UTC bookkeeping are outside the fit clock. Hashes agree
+across builds, repetitions and thread counts.
+
+Median seconds, B = baseline, U = ungated, G = gated:
+
+| Int8 problem | Alpha | Threads | B | U | G |
+|---|---:|---:|---:|---:|---:|
+| 2,000 × 20,000 | 1 | 1 | 1.699684 | 1.876271 | 1.702690 |
+| 2,000 × 20,000 | 1 | 8 | 0.871508 | 0.935604 | 0.874795 |
+| 2,000 × 20,000 | 0.5 | 1 | 1.817221 | 2.000411 | 1.813093 |
+| 2,000 × 20,000 | 0.5 | 8 | 0.993310 | 1.059359 | 0.990480 |
+| 5,000 × 50,000 | 1 | 1 | 10.194382 | 11.369099 | 10.098489 |
+| 5,000 × 50,000 | 1 | 8 | 4.676605 | 5.223508 | 4.618729 |
+| 5,000 × 50,000 | 0.5 | 1 | 11.218697 | 12.393641 | 10.934378 |
+| 5,000 × 50,000 | 0.5 | 8 | 5.385018 | 6.006070 | 5.380967 |
+
+The [raw int8 lists](results/int8-m1-pro-quiet/binomial-int8.jsonl) also give
+minima: gated durations are about 0.1–3.0% shorter than baseline, whereas the
+ungated minima remain longer. Fastest-three medians in the
+[complete report](results/int8-m1-pro-quiet/report.txt) are a uniform
+sensitivity summary, not mode classification or proof of performance-core
+execution. No sample is dropped or selected for a replacement run.
+
+[Wide float64 binomial](results/int8-m1-pro-quiet/binomial-float64.jsonl)
+and [Gaussian controls](results/int8-m1-pro-quiet/gaussian-float64.jsonl) have
+gated median durations within 0.7% of baseline. Tall float64 binomial controls
+still have distinct timing bands, despite the start gate: baseline/gated
+median ratios span 0.914–1.331. Minima do not solve unequal sampling of those
+bands: at alpha 0.5 and one thread, baseline has no observation near 3.2 s,
+while gated has five. This does not establish stable tall-control parity or
+identify the cause; all samples remain in the records.
+
+The [manifest](results/int8-m1-pro-quiet/manifest.json) pins all thirteen
+original evidence files byte-for-byte, including the report, scripts,
+[execution notes](results/int8-m1-pro-quiet/execution.txt) and harness patch.
+Local auditing verified every hash/byte count, record count, permutation,
+median, ratio, timestamp order and recorded path identity without rerunning
+the benchmarks. Earlier exploratory M1 records remain only in Git history.
+
 ## Architecture gate
-
-The indexed form improves the measured int8 targets on both AMD Ryzen 5 5600X
-(Zen 3) and Ryzen 5 7640U (Zen 4), as recorded below. An independent Apple M1 Pro
-run reports baseline/candidate ratios of 0.847–0.952 across all twelve int8
-settings, with identical path hashes: the ungated candidate is slower on every
-setting. These measurements predate the gate and must not be read as timings
-of the final gated ARM build.
-
-The reported M1 Pro run used macOS 26.7.2, arm64 Python 3.13.13, NumPy 2.5.4
-and Homebrew rustc 1.99.1 (`58cf8f9c3`, LLVM 23.1.3), targeting
-`aarch64-apple-darwin`, with no custom `RUSTFLAGS` or `target-cpu` reported.
-Baseline source was `7cdd687`, candidate `2b03702`. The complete run contains
-30 settings at 1/4/8 threads, six timed fits per build; twelve settings are
-the int8 targets summarized above. This was a shared desktop with applications
-open and reported system load declining from 9.5 to 5.7, not an idle-machine
-measurement. The sanitized [int8 records](results/int8-m1-pro-exploratory/int8-binomial.jsonl),
-[float64 binomial records](results/int8-m1-pro-exploratory/float64-binomial.jsonl)
-and [Gaussian records](results/int8-m1-pro-exploratory/float64-gaussian.jsonl)
-retain all 360 timed fits. The sender verified their SHA256s against the Mac
-manifest; the [transfer manifest](results/int8-m1-pro-exploratory/manifest.json)
-pins the unchanged files. Local auditing recomputed counts, medians, ratios
-and recorded hash consistency; it did not rerun the fits or observe the run.
-The [run script](results/int8-m1-pro-exploratory/run.sh),
-[provenance](results/int8-m1-pro-exploratory/README.txt) and
-[before](results/int8-m1-pro-exploratory/environment-before.txt)/[after](results/int8-m1-pro-exploratory/environment-after.txt)
-snapshots accompany them. The continuous `vm-stat.txt` referenced by the
-script was not transferred; these snapshots are not a per-fit load trace.
-
-These are **exploratory, shared-desktop** results. A subsequent quiet gate
-failed over thirty minutes ([summary](results/int8-m1-pro-exploratory/quiet-gate-summary.json)):
-one-minute load had minimum 2.43, median 3.69 and
-maximum 7.17. There was no quiet rerun. The reported int8 regression persists
-under all three summaries of the six samples per build:
-
-| Summary | Baseline/candidate time ratio range |
-|---|---:|
-| Minima | 0.8497–0.9606 |
-| Medians | 0.847–0.952 |
-| Medians of the fastest three | 0.851–0.937 |
-
-The report finds no bimodality in single-thread int8 samples. Wide float64
-controls are near parity (0.993–1.004), while tall float64 binomial controls
-are bimodal, around 4.8 s and 7.3 s, with minima near parity. Hashes reportedly
-match across both builds, every repetition and all thread counts. These
-diagnostics support retaining the old ARM form, not a claim of controlled
-ARM performance or a universal slowdown magnitude. No summary replaces or
-discards the underlying repetitions; the complete lists remain in the files.
 
 Assembly probes cross-compiled with Rust 1.98 / LLVM 22.1.8 for
 `aarch64-apple-darwin` (`target-cpu=apple-m1`) and generic

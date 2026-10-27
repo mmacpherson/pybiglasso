@@ -1,0 +1,15 @@
+SETUP / EXECUTION (unique scratch directory normalized to /tmp/pybiglasso-m1; source SHAs are exact):
+Existing clone at /tmp/pybiglasso-m1/repo; existing ungated worktree /tmp/pybiglasso-m1/candidate pinned to 2b0370297e591c8624de532bf2335e32ae9b8ef2.
+cd /tmp/pybiglasso-m1/repo
+git fetch origin
+git worktree add --detach /tmp/pybiglasso-m1/quiet-v2/baseline origin/main
+git worktree add --detach /tmp/pybiglasso-m1/quiet-v2/gated origin/int8-kernels
+# Resolved SHAs recorded in provenance.json: baseline eeff8da; gated 352c6ac.
+(cd /tmp/pybiglasso-m1/quiet-v2/baseline && uv sync --group bench)
+(cd /tmp/pybiglasso-m1/quiet-v2/gated && uv sync --group bench)
+(cd /tmp/pybiglasso-m1/candidate && uv sync --group bench)
+python3 /tmp/pybiglasso-m1/quiet-v2/gate.py
+# Only after gate PASSED, CCH notification was sent and this command started:
+/usr/bin/caffeinate -i python3 /tmp/pybiglasso-m1/quiet-v2/run.py > /tmp/pybiglasso-m1/quiet-v2/run.log 2>&1
+
+All scripts below are exact executed sources. run.py derives scratch paths from its own location. Its Python executable/wrapper is gated/.venv/bin/python; it loads baseline and ungated extensions explicitly. int8-threeway.py includes the sysctl metadata substitution, three-extension permutations, and UTC bookkeeping. harness.patch shows all edits against the pinned ungated source harness.

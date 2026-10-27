@@ -1,5 +1,6 @@
 """Whole-path timing must reject unconverged or silently shortened fits."""
 
+import hashlib
 import importlib
 import json
 import subprocess
@@ -10,6 +11,20 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+
+
+def test_quiet_m1_evidence_matches_original_manifest():
+    # These are external measurements, not regenerated solver expectations.
+    # Preserve executed sources too: formatting them would break provenance.
+    directory = (
+        Path(__file__).resolve().parents[1] / "benchmarks/results/int8-m1-pro-quiet"
+    )
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert len(manifest) == 13
+    for name, expected in manifest.items():
+        data = (directory / name).read_bytes()
+        assert len(data) == expected["bytes"], name
+        assert hashlib.sha256(data).hexdigest() == expected["sha256"], name
 
 
 @pytest.fixture
