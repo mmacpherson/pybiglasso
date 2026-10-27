@@ -201,7 +201,7 @@ upstream changes.
   gap, to about 1e-5 on wide data (all but the wide lasso, whose optimum
   need not be unique). glmnet's path is stored from a pinned release and
   checked at every lambda, including rare-response fits whose log-odds exceed
-  R biglasso's probability cutoff of 10. In the benchmarks, glum reaches
+  R biglasso's log-odds cutoff of 10. In the benchmarks, glum reaches
   the same elastic-net objective as well.
 - **Gaussian checks.** Six pinned glmnet paths use its generic `gaussian()`
   family, avoiding the response scaling of its fast Gaussian path. Independent

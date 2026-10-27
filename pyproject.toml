@@ -47,7 +47,7 @@ license-files = ["LICENSE"]
 name = "pybiglasso"
 readme = "README.md"
 requires-python = ">=3.11"
-version = "0.3.0"
+version = "0.3.1"
 
 [project.optional-dependencies]
 all = ["pybiglasso[polars,pandas,sklearn,viz]"]
