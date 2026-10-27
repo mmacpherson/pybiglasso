@@ -139,5 +139,6 @@ No competing build or test process was observed during this short run. Absolute
 times differ from the earlier experiment, so these are within-run comparisons,
 not evidence that the earlier serial trade-off has disappeared. Smaller cases
 were near the timing noise floor. All fit hashes matched across both versions,
-repetitions and thread counts. Dedicated-runner confirmation remains necessary
-before making a general performance claim.
+repetitions and thread counts. The dedicated CPU comparison above includes
+this follow-up: its benefit is small and is not consistent across problems,
+so this experiment does not support a general performance claim.
