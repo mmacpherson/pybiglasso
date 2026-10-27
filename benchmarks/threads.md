@@ -23,7 +23,8 @@ in the named files are included, not just favorable cases. These are #49's
 **baseline** times, not its unmerged conversion optimization. Existing Ryzen
 IRLS files use the merged post-IRLS/weight-sum build.
 
-For non-exploratory six-thread records, a gain below 10% is insufficient to
+For retained six-thread x86 and start-gated eight-thread M1 records, excluding
+the banded M1 tall-binomial controls, a gain below 10% is insufficient to
 automatically use more cores. This declared material-gain margin avoids
 interpreting near-neutral changes as general parallel wins. The largest
 workload with any gain below the margin is 5,000,000 entries. The smallest
@@ -42,14 +43,18 @@ Representative within-build median ratios (one thread / multiple threads):
 | Ryzen 5 7640U | 5k × 1k, f64 binomial | 6 | 0.976–1.034 |
 | Ryzen 5 7640U | 2k × 20k, f64 binomial | 6 | 1.400–1.439 |
 | Ryzen 5 7640U | 2k × 20k, f64 Gaussian | 6 | 1.211 |
-| M1 Pro (exploratory) | 5k × 1k, f64 binomial | 8 | 0.861–1.097 |
-| M1 Pro (exploratory) | 2k × 20k, f64 binomial | 8 | 1.456–1.496 |
-| M1 Pro (exploratory) | 2k × 20k, f64 Gaussian | 8 | 1.301 |
+| M1 Pro (start-gated, banded) | 5k × 1k, f64 binomial | 8 | 0.887–1.107 |
+| M1 Pro (start-gated) | 5k × 1k, f64 Gaussian | 8 | 1.011 |
+| M1 Pro (start-gated) | 2k × 20k, f64 binomial | 8 | 1.460–1.492 |
+| M1 Pro (start-gated) | 2k × 20k, f64 Gaussian | 8 | 1.291 |
 
 SMT has no general advantage: the Ryzen 50k × 100 IRLS case is 1.063 at six
 threads but 0.774 at twelve. Hence physical cores, not logical CPUs. M1 data
-covers four/eight workers, not a verified physical-core census; it supports
-the direction of the size rule, not an unmeasured count or a P/E-core policy.
+uses one/eight workers; its provenance reports eight performance cores, not
+a total physical-core census including efficiency cores. Worker residency was
+not pinned. It supports the direction of the size rule, not an unmeasured
+total-core count or a P/E-core policy. The generic macOS default still counts
+all physical cores, so exact performance at that count is not established here.
 
 Qualifications:
 
@@ -62,11 +67,16 @@ Qualifications:
   follow-up are excluded, not reclassified as clean. The completed follow-up
   still had persistent 22–32% pre/post I/O wait and Java/desktop activity:
   no recorded build overlap does **not** make it a quiet-machine run.
-- M1 Pro: the full shared-desktop exploratory baseline is retained, including
-  noisy/unfavorable cases. It does not determine the cutoff; no clean M1 or
-  noise-free claim is made. A separate quiet baseline/ungated/gated run is
-  pending. Reassess the generic rule on ARM when those records arrive; this
-  draft does not claim quiet ARM validation or an ARM-specific calibration.
+- M1 Pro: the start-gated three-build bundle replaces the earlier exploratory
+  extract. All 20 baseline settings and six samples per setting are retained;
+  the source bundle's thirteen manifest entries were checked for exact byte
+  counts and SHA256. Only baseline samples enter this report. The idle/load
+  gate admitted the run **before** timing, not during fits. Core residency and
+  QoS were unmeasured. Tall float64 binomial still has distinct timing bands:
+  both alpha settings are reported, but neither calibrates the cutoff. The
+  Gaussian tall control remains near-neutral and wide cases favor threads,
+  supporting the same coarse cutoff without changing it. This is not a
+  noise-free or universally fastest ARM claim.
 - Mapped X: [out-of-core results](../README.md#performance) show that more
   threads need not help and can hurt with a tight page-cache budget. A memmap
   may fit RAM, but guessing its residency/available memory makes defaults

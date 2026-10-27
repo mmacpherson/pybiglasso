@@ -53,11 +53,13 @@ def comparisons(path=EVIDENCE):
 
 
 def cutoff(rows):
-    # Declared 10% material-gain margin. Keep exploratory M1 and SMT counts
-    # in the report, but neither calibrates the physical-core cutoff.
+    # Declared 10% material-gain margin. Keep banded M1 tall-binomial and
+    # SMT counts in the report, but neither calibrates the cutoff.
     by_work = collections.defaultdict(list)
     for row in rows:
-        if row["quality"] == "retained" and row["threads"] == 6:
+        if (row["quality"] == "retained" and row["threads"] == 6) or (
+            row["quality"] == "start-gated" and row["threads"] == 8
+        ):
             by_work[row["work"]].append(row["speedup"])
     small = max(work for work, ratios in by_work.items() if min(ratios) < 1.1)
     large = min(work for work, ratios in by_work.items() if min(ratios) >= 1.1)
