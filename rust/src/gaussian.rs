@@ -6,6 +6,8 @@ use super::*;
 
 struct GaussianState {
     residual: Rows,
+    // Exactly seqsum(residual), not an algebraically updated running total.
+    residual_sum: f64,
     beta: Vec<f64>,
     active: Vec<bool>,
     strong: Vec<bool>,
@@ -23,9 +25,8 @@ impl<D: Design> Fit<'_, D> {
             let jj = path.col_map[j];
             let column = self.x.col(jj);
             let (center, scale) = (path.center[jj], path.scale[jj]);
-            let score =
-                standardized_score(&column, &st.residual, seqsum(&st.residual), center, scale, self.n_fit as f64)
-                    + st.beta[j];
+            let score = standardized_score(&column, &st.residual, st.residual_sum, center, scale, self.n_fit as f64)
+                + st.beta[j];
             st.scores[j] = score;
             let l1 = lam * p.alpha * p.penalty_factor[jj];
             let l2 = lam * (1.0 - p.alpha) * p.penalty_factor[jj];
@@ -33,11 +34,16 @@ impl<D: Design> Fit<'_, D> {
             let shift = value - st.beta[j];
             if shift != 0.0 {
                 largest = largest.max(shift * shift);
+                // Keep seqsum's exact left-to-right order over the updated
+                // values, including masked zeros, without a second row pass.
+                let mut sum = 0.0;
                 for i in 0..st.residual.len() {
                     if self.fits(i) {
                         st.residual[i] -= shift * ((column.at(i) - center) / scale);
                     }
+                    sum += st.residual[i];
                 }
+                st.residual_sum = sum;
                 st.beta[j] = value;
             }
         }
@@ -45,7 +51,7 @@ impl<D: Design> Fit<'_, D> {
     }
 
     fn gaussian_scan(&self, path: &Path, st: &mut GaussianState, lam: f64, strong_only: bool) -> usize {
-        let sum = seqsum(&st.residual);
+        let sum = st.residual_sum;
         let p = self.params;
         let residual = &st.residual;
         let beta = &st.beta;
@@ -165,6 +171,7 @@ impl<D: Design> Fit<'_, D> {
         let nc = mult.len();
         let mut st = GaussianState {
             scores: self.compute_z(&path, &residual),
+            residual_sum: seqsum(&residual),
             residual,
             beta: vec![0.0; nc],
             active: vec![false; nc],
@@ -253,5 +260,94 @@ impl<D: Design> Fit<'_, D> {
             }
         }
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::{Array2, ShapeBuilder};
+
+    #[test]
+    fn cached_sum_matches_updated_residual_in_row_order() {
+        for n in [9, CHUNK + 1] {
+            for masked in [false, true] {
+                for offset in [0.0, 1e9] {
+                    let x = Array2::from_shape_fn((n, 3).f(), |(i, j)| {
+                        offset + ((i * 17 + j * 7) % 31) as f64 * 0.123456789
+                    });
+                    let design = ContigX::<_, true> { x: x.view() };
+                    let mask: Vec<f64> = (0..n).map(|i| if masked && i % 3 == 1 { 0.0 } else { 1.0 }).collect();
+                    let rows: Vec<usize> = (0..n).filter(|&i| mask[i] != 0.0).collect();
+                    let y = vec![0.0; n];
+                    let params = Params {
+                        family: Family::Gaussian,
+                        alpha: 0.5,
+                        lambdas: None,
+                        nlambda: 1,
+                        eps: 1e-7,
+                        lambda_min: 0.01,
+                        lambda_log_scale: true,
+                        penalty_factor: &[0.0, 1.0, 2.0],
+                        dfmax: 3,
+                        max_iter: 1000,
+                        stop_on_saturation: false,
+                        r_compatible: false,
+                        ybar: 0.0,
+                        null_deviance: 1.0,
+                        on_lambda: None,
+                    };
+                    let fit = Fit {
+                        x: &design,
+                        y: &y,
+                        params: &params,
+                        mask: Some(&mask),
+                        rows: Some(&rows),
+                        n_fit: rows.len(),
+                    };
+                    let (center, scale, _) = fit.center_scale().unwrap();
+                    let path = Path {
+                        center,
+                        scale,
+                        col_map: vec![0, 1, 2],
+                        lambda: vec![1.0],
+                        intercept: vec![0.0],
+                        coef_rows: vec![None],
+                        coef_vals: vec![None],
+                        iters: vec![0],
+                        deviance: vec![0.0],
+                        n_reject: vec![0],
+                        events: vec![],
+                    };
+                    let mut residual = Rows::new(n, 0.0);
+                    for i in 0..n {
+                        if fit.fits(i) {
+                            residual[i] = ((i * 13) % 19) as f64 * 0.314159265 - 2.0;
+                        }
+                    }
+                    let mut state = GaussianState {
+                        residual_sum: seqsum(&residual),
+                        residual,
+                        beta: vec![0.0; 3],
+                        active: vec![true; 3],
+                        strong: vec![true; 3],
+                        scores: vec![0.0; 3],
+                    };
+                    for lambda in [1.0, 0.1, 0.0, 1e20, 1e20] {
+                        fit.gaussian_sweep(&path, &mut state, lambda);
+                        let expected = state.residual.iter().fold(0.0, |sum, &value| sum + value);
+                        assert_eq!(state.residual_sum.to_bits(), expected.to_bits());
+                        for i in (0..n).filter(|&i| !fit.fits(i)) {
+                            assert_eq!(state.residual[i].to_bits(), 0.0f64.to_bits());
+                        }
+                    }
+                    // No selected coordinates must retain the valid cache.
+                    state.active.fill(false);
+                    let before = state.residual_sum.to_bits();
+                    assert_eq!(fit.gaussian_sweep(&path, &mut state, 0.0), 0.0);
+                    assert_eq!(state.residual_sum.to_bits(), before);
+                }
+            }
+        }
     }
 }
