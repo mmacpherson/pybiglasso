@@ -29,7 +29,9 @@ NROW, NCOL = 20_000, 2_000  # 40 MB as int8; 320 MB as float64
 
 CHILD = textwrap.dedent(
     """
-    import ctypes, json, resource, sys
+    import ctypes, json, resource, sys, threading
+    # and Python's threads (CV's fold pool) likewise: 8 MiB stacks by default
+    threading.stack_size(1 << 20)
     import numpy as np
     import pybiglasso as bl
 
@@ -41,20 +43,20 @@ CHILD = textwrap.dedent(
         nrow = X.shape[0]
         gaussian = y + np.arange(nrow) % 7  # any continuous response
         if case == "binomial":
-            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2)
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, n_threads=2)
         elif case == "gaussian":
-            bl.biglasso(X, gaussian, family="gaussian", nlambda=8, lambda_min=0.2)
+            bl.biglasso(X, gaussian, family="gaussian", nlambda=8, lambda_min=0.2, n_threads=2)
         elif case == "most rows":  # read through a mask
             rows = np.arange(0, nrow, 5)
             rows = np.setdiff1d(np.arange(nrow), rows)
-            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, row_indices=rows)
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, n_threads=2, row_indices=rows)
         elif case == "few rows":  # read through the row indices
             rows = np.arange(0, nrow, 5)
-            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, row_indices=rows)
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, n_threads=2, row_indices=rows)
         elif case == "copy the rows":  # a control: the selected rows, copied
             rows = np.arange(0, nrow, 5)
             keep.append(np.array(X[rows], order="F"))
-            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, row_indices=rows)
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, n_threads=2, row_indices=rows)
         elif case == "cross-validation":
             from pybiglasso.sklearn import BiglassoClassifierCV
             BiglassoClassifierCV(n_alphas=6, alpha_min_ratio=0.2, cv=3, n_jobs=1).fit(X, y)
@@ -62,13 +64,13 @@ CHILD = textwrap.dedent(
         # and an allocation of X's size, as Rust's would be, before a fit
         elif case == "copy X":
             keep.append(np.array(X))
-            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2)
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, n_threads=2)
         elif case == "malloc X":
             libc = ctypes.CDLL(None)
             libc.malloc.restype = ctypes.c_void_p
             if not libc.malloc(ctypes.c_size_t(X.nbytes)):
                 raise MemoryError("malloc")
-            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2)
+            bl.biglasso(X, y, family="binomial", nlambda=8, lambda_min=0.2, n_threads=2)
 
     def private_bytes():
         with open("/proc/self/status") as status:
@@ -123,6 +125,11 @@ def run_child(memmap, case):
         "MALLOC_ARENA_MAX": "1",
         "PYTHONWARNINGS": "ignore",
         "PYBIGLASSO_BACKEND": "rust",
+        # Each fit builds its own thread pool. Rust's default 2 MiB thread
+        # stacks are private memory the cap counts, and whether the C library
+        # reuses the warm-up's stacks varies (CI runners didn't), so keep them
+        # small: two threads per fit (CV's folds use one) at 256 KiB each.
+        "RUST_MIN_STACK": str(256 * 1024),
     }
     result = subprocess.run(
         [sys.executable, "-c", CHILD, *map(str, memmap), case],
