@@ -206,6 +206,11 @@ impl<D: Design> Fit<'_, D> {
                 st.scores = self.compute_z(&path, &st.residual);
                 lambda_max = maximum(&st.scores);
             }
+            // Differs from R biglasso: reject unrepresentable automatic grids
+            // rather than propagating nonfinite penalties into the fit.
+            if !lambda_max.is_finite() {
+                return Err("The automatic lambda grid must be finite; increase alpha or supply a finite grid.".into());
+            }
             if lambda_max == 0.0 {
                 // Differs from R biglasso: its logarithmic grid can be
                 // nonfinite at zero; retain the finite unpenalized problem.
@@ -217,6 +222,9 @@ impl<D: Design> Fit<'_, D> {
                 }
             } else {
                 path.lambda = linspace(lambda_max, p.lambda_min * lambda_max, nl);
+            }
+            if path.lambda.iter().any(|value| !value.is_finite()) {
+                return Err("The automatic lambda grid must be finite; increase alpha or supply a finite grid.".into());
             }
             path.deviance[0] = self.gaussian_loss(&st);
             path.n_reject[0] = nc as i64;

@@ -22,6 +22,28 @@ def fixtures():
     return rcompare.load_fixtures()
 
 
+@pytest.mark.parametrize("compatible", [False, True])
+@pytest.mark.parametrize("log_scale", [False, True])
+def test_gaussian_unrepresentable_automatic_grid_rejected(compatible, log_scale):
+    X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
+    y = 1 + X[:, 0]
+    options = dict(
+        family="gaussian",
+        alpha=np.nextafter(0.0, 1.0),
+        r_compatible=compatible,
+        lambda_log_scale=log_scale,
+        eps=1e-14,
+    )
+    with pytest.raises(ValueError, match="automatic.*finite"):
+        _fit(X, y, nlambda=3, **options)
+    # The unrepresentable automatic maximum must not invalidate supplied grids.
+    fit = _fit(X, y, lambdas=[1.0, 0.5], **options)
+    np.testing.assert_array_equal(fit.lambdas, [1.0, 0.5])
+    np.testing.assert_allclose(fit.coef.toarray(), [[0.5, 2 / 3], [0, 0]])
+    np.testing.assert_array_equal(fit.intercept, 1)
+    assert np.isfinite(fit.deviance).all()
+
+
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("case", rcompare.gaussian_grid(), ids=lambda c: c.name)
 def test_gaussian_matches_stored_r(case, fixtures, tmp_path):

@@ -72,6 +72,25 @@ test("one dataset can fit lasso and enet repeatedly without changing its input",
   } finally { d.free(); }
 });
 
+test("Gaussian rejects an overflowing automatic grid but accepts finite supplied penalties", () => {
+  const d = new Dataset(4, 2);
+  try {
+    d.write_column(0, 0, Float64Array.of(-1, -1, 1, 1));
+    d.write_column(1, 0, Float64Array.of(-1, 1, -1, 1));
+    d.write_response(0, Float64Array.of(0, 0, 2, 2));
+    for (const r_compatible of [false, true]) {
+      const options = { family: "gaussian", alpha: Number.MIN_VALUE, eps: 1e-14, r_compatible };
+      assert.throws(() => d.fit({ ...options, nlambda: 3 }));
+      const p = d.fit({ ...options, lambdas: [1, .5] });
+      assert.deepEqual(p.lambdas, [1, .5]);
+      assert.deepEqual(p.intercept, [1, 1]);
+      assert.deepEqual(p.indices, [[0], [0]]);
+      assert(Math.abs(p.coefficients[0][0] - .5) <= 8 * Number.EPSILON);
+      assert(Math.abs(p.coefficients[1][0] - 2 / 3) <= 8 * Number.EPSILON);
+    }
+  } finally { d.free(); }
+});
+
 test("default elastic net satisfies independent one-feature logistic KKT", () => {
   const d = new Dataset(8, 1);
   try {

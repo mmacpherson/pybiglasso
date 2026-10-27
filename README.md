@@ -344,6 +344,10 @@ with a comment beginning "Differs from R biglasso".
 - **Gaussian zero maximum penalty.** R's logarithmic grid calculation can
   produce non-finite values when the maximum penalty is zero. pybiglasso
   returns a finite all-zero grid, whose fits solve the unpenalized problem.
+- **Gaussian unrepresentable grids.** If an automatic grid overflows (for
+  example, with extremely small positive `alpha`), pybiglasso raises
+  `ValueError` rather than returning non-finite penalties. Finite supplied
+  grids remain supported, including in compatibility mode.
 - **Gaussian loss after an iteration limit.** R can leave `loss` at zero when
   the budget ends with outstanding KKT violations. pybiglasso reports the
   returned model's residual sum of squares; `r_compatible=True` retains R's

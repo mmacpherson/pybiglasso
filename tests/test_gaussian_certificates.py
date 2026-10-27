@@ -11,6 +11,15 @@ from support.certificates import (
 )
 
 
+def test_gaussian_curvature_promotes_float32_before_arithmetic():
+    Z = np.column_stack([np.ones(8), np.tile([-0.1, 0.1], 4)]).astype(np.float32)
+    # Orthogonal columns: the smaller Hessian eigenvalue is exactly x**2.
+    exact_curvature = float(np.float32(0.1)) ** 2
+    lower = float(gaussian_curvature(Z))
+    assert 0 < lower <= exact_curvature
+    assert lower == gaussian_curvature(Z.astype(np.float64))
+
+
 @pytest.fixture
 def orthogonal():
     # Each column has mean zero, unit population variance, and X'X/n = I.

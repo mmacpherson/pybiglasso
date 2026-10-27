@@ -14,6 +14,24 @@ from support.certificates import (
 CASES = rcompare.gaussian_grid()
 
 
+@pytest.mark.parametrize("compatible", [False, True])
+@pytest.mark.parametrize("penalty_factor", [None, [0.0, 1.0]])
+def test_gaussian_reference_constant_response(compatible, penalty_factor):
+    X = np.tile([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]], (2, 1))
+    fit = reference.gaussian_path(
+        X,
+        np.full(8, 3.0),
+        nlambda=3,
+        max_iter=4,
+        r_compatible=compatible,
+        penalty_factor=penalty_factor,
+    )
+    np.testing.assert_array_equal(fit["iter"], [0, 4, 4] if compatible else [0, 1, 1])
+    np.testing.assert_array_equal(fit["lambda_"], 0)
+    np.testing.assert_array_equal(fit["loss"], 0)
+    np.testing.assert_array_equal(fit["beta"], [[3, 3, 3], [0, 0, 0], [0, 0, 0]])
+
+
 @pytest.fixture(scope="session")
 def fixtures():
     return rcompare.load_fixtures()
