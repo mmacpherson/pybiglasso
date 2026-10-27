@@ -17,7 +17,7 @@ function sample() {
 test("lambda above the maximum gives the balanced null model", () => {
   const d = sample();
   try {
-    const p = d.fit({ alpha: 1, lambdas: [1] });
+    const p = d.fit({ family: "binomial", alpha: 1, lambdas: [1] });
     assert.deepEqual(p.indices, [[]]);
     assert.deepEqual(p.coefficients, [[]]);
     assert.deepEqual(p.intercept, [0]);
@@ -40,6 +40,7 @@ test("invalid dimensions, incomplete data, invalid options and nonbinary y are c
     assert.throws(() => d.write_response(0, Float64Array.of(NaN)));
     d.write_response(0, Float64Array.of(2));
     assert.throws(() => d.fit({ family: "binomial" }));
+    d.write_response(0, Float64Array.of(0));
     for (const options of [{ family: "invalid" }, { alpha: 0 }, { alpha: NaN }, { nlambda: 1 }, { nlambda: 201 }, { eps: -1 }, { lambdas: [1, 2] }, { penalty_factor: [1] }, { max_iter: 0 }]) {
       assert.throws(() => d.fit(options));
     }

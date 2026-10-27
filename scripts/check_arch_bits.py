@@ -57,7 +57,13 @@ def record(output):
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
                 fit = bl.biglasso(
-                    X, y, alpha=alpha, nlambda=12, backend="rust", n_threads=2
+                    X,
+                    y,
+                    family="binomial",
+                    alpha=alpha,
+                    nlambda=12,
+                    backend="rust",
+                    n_threads=2,
                 )
             assert len(fit) == 12 and fit.coef.nnz > 0, name
             coef = fit.coef.tocsc()

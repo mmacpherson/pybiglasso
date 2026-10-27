@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { parquetWriteBuffer } from "hyparquet-writer";
+import { gzipSync, zstdCompressSync } from "node:zlib";
 
-const rows = Array.from({ length: 48 }, (_, i) => [i % 2, i % 3 - 1, Math.floor(i / 3) % 3 - 1]);
+const rows = Array.from({ length: 48 }, (_, i) => [Number((i % 3 === 2 && i % 7 !== 0) || (i % 3 === 1 && i % 2 === 0) || i % 11 === 0), i % 3 - 1, Math.floor(i / 3) % 3 - 1]);
 const csv = "response,x,z\n" + rows.map((r) => r.join(",")).join("\n");
 
 async function upload(page, name, buffer) {
@@ -56,14 +57,17 @@ test("CSV and multi-row-group Parquet produce identical paths, with no data requ
   await page.goto("/");
   await upload(page, "local.csv", csv);
   const a = await pathDownload(page);
+  expect(a.indices.some((row) => row.length > 0)).toBe(true);
+  for (const codec of ["SNAPPY", "GZIP", "ZSTD"]) {
   const buffer = parquetWriteBuffer({ columnData: [
     { name: "response", data: rows.map((r) => r[0]), type: "INT32" },
     { name: "x", data: rows.map((r) => r[1]), type: "DOUBLE" },
     { name: "z", data: rows.map((r) => r[2]), type: "DOUBLE" },
-  ], rowGroupSize: 7 });
+  ], rowGroupSize: 7, codec, compressors: { GZIP: gzipSync, ZSTD: zstdCompressSync } });
   await upload(page, "local.parquet", new Uint8Array(buffer));
   const b = await pathDownload(page);
   for (const field of ["lambdas", "intercept", "coefficients", "iterations", "n_rejected", "center", "scale"]) expect(a[field]).toEqual(b[field]);
+  }
   expect(network).toEqual([]);
 });
 
@@ -121,6 +125,9 @@ test("cancelling an example download cannot restart a fit when the response arri
   await page.route("**/examples/colon.csv", async (route) => { await waiting; await route.continue().catch(() => {}); });
   await page.goto("/"); await page.locator("#load-example").click();
   await page.locator("#cancel").click(); release();
+  // Let the pending response and its continuations settle before checking
+  // cancellation; starting another task immediately could mask a late restart.
+  await page.waitForLoadState("networkidle");
   await expect(page.locator("#status")).toContainText("Cancelled");
   await expect(page.locator("#model-results")).toBeHidden();
   await page.locator("#example").selectOption("synthetic"); await page.locator("#load-example").click();
