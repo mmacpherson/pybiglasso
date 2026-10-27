@@ -21,13 +21,6 @@
   for rounded values. Neither asserts that different optimization trajectories
   must agree. Compare independently capped solutions with a distance bound
   instead.
-- `gaussian_oracles.py`: tiny, unscreened Gaussian optima by enumerating signed
-  active sets and solving their stationarity systems. Every candidate must pass
-  independent KKT and rational primal/dual-gap caps. The production comparisons
-  in `test_gaussian_oracles.py` also use orthogonal closed forms and sklearn's
-  lasso on a ridge-augmented, penalty-weighted design. Its sample normalization
-  and free intercept are handled explicitly; negative controls omit each of
-  the required normalization factors. No expected result comes from a port fit.
 
 These helpers may copy small test designs. The production no-copy contract is
 tested separately; no production solver imports this package. Analytic examples
