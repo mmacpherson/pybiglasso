@@ -185,6 +185,21 @@ harness now records per-fit UTC epoch-nanosecond bookends outside the measured
 region, to allow direct attribution in the follow-up. Original times, hashes,
 and load samples are preserved, not replaced.
 
+The first timestamped follow-up was aborted rather than used as clean
+evidence. Its twenty-second preflight passed (median user+system 8%, maximum
+19%, no compiler/test process observed), but a new unrelated multi-core
+Python job started at 21:27:10 UTC. Only the benchmark worker and its own
+monitor were stopped; the unrelated job was not changed. The
+[two completed settings](results/int8-zen4-controls-followup-aborted.jsonl)
+retain all 24 recorded timed fits, and the
+[timestamped load](results/int8-zen4-followup-aborted-load.csv) retains 123
+samples. The [attempt manifest](results/int8-zen4-followup-aborted.json) marks
+17 fit windows as potentially overlapping the new job. The next setting was
+interrupted before its repetitions were written, so it has no durable
+per-fit record. This is an incomplete, contaminated attempt, not a
+replacement control set. A coordinated quiet window is required before a
+complete control follow-up; no uncontaminated-control conclusion is drawn.
+
 ## Reproduce
 
 Build `bfd527f` in a separate baseline checkout, then run from the candidate:
