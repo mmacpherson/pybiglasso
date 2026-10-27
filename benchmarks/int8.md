@@ -168,6 +168,19 @@ overlaps, both after the last int8 target had finished at 21:01:06 UTC:
 | bigstatsr | 21:02:31–21:02:51 | Binary-package installation; no source compilation |
 | snpnet | 21:04:53–21:06:13 | Package installation including source compilation |
 
+Subsequently supplied command-execution records corroborate those build
+intervals and identify three additional jobs. These are reported whole-command
+bounds, not independently verified per-stage or fit timings:
+
+| Reported command | UTC interval | Conservative continuous-load samples |
+|---|---|---:|
+| Dependency sync / ruff | 21:01:17.271–21:01:17.883 | 366–371 |
+| Python CV smoke | 21:04:54.484–21:05:00.414 | 584–593 |
+| Targeted pytest / ruff | 21:05:58.983–21:06:01.426 | 648–654 |
+
+All also start after the final int8 target. They reinforce the controls'
+contaminated status without changing the follow-up scope.
+
 These overlap the original float64 binomial and Gaussian controls, so their
 small differences above cannot establish an uncontaminated floating-control
 result. The int8 targets preceded both builds; they are not rerun on this
