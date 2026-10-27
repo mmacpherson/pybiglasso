@@ -425,8 +425,7 @@ def test_cv_masks_folds_that_stop_on_saturation(rule):
 # edge shapes ------------------------------------------------------------------
 
 
-# a one-column array is both C- and F-contiguous, and np.isfortran says False
-@pytest.mark.filterwarnings("ignore:The design matrix is not in Fortran")
+@pytest.mark.filterwarnings("error:The design matrix is not in Fortran")
 def test_single_feature():
     """With one column, lambda_max is |x'(y - ybar)| / (n * alpha) on the
     standardized column, and KKT holds along the path."""
