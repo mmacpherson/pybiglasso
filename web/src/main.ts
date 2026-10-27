@@ -59,6 +59,8 @@ function fail(message: string) { setBusy(false); automatic = false; queued = fal
 
 function clearModel() {
   model = undefined; cv = undefined; lastFitMs = 0; hide("fit");
+  // a new dataset starts without the old one's pending refit
+  queued = false; clearTimeout(settle);
   hide("model-results"); hide("chart-panel"); hide("cv-panel"); hide("lambda-controls"); hide("empty", false);
   text("timing", "Ready when you are"); text("path-title", "From sparse to expressive.");
 }
@@ -170,7 +172,8 @@ function renderModel() {
   text("lambda-value", format(model.lambdas[k]));
   text("active-count", String(model.indices[k].length)); text("iterations", model.iterations[k].toLocaleString());
   text("rejections", model.n_rejected[k].toLocaleString()); text("deviance", model.deviance[k].toFixed(2));
-  text("loss-label", model.family === "gaussian" ? "Training RSS" : "Training deviance");
+  const loss = model.family === "gaussian" ? "Training RSS" : "Training deviance";
+  text("loss-label", loss); $("tip-loss").previousElementSibling!.setAttribute("aria-label", `About ${loss.toLowerCase()}`);
   text("tip-loss", `How closely the model fits the rows it was trained on, as the ${model.family === "gaussian" ? "residual sum of squares" : "deviance"}; lower is closer. It always falls as λ shrinks, so it can't choose λ; cross-validation's held-out loss can.`);
   const body = $("coefficient-body"); body.replaceChildren();
   const append = (name: string, raw: number, std: number | undefined, index?: number) => {
@@ -264,14 +267,25 @@ $("alpha").addEventListener("input", alphaChanged);
 document.querySelectorAll<HTMLElement>("[data-alpha]").forEach((button) => button.addEventListener("click", () => { $<HTMLInputElement>("alpha").value = button.dataset.alpha!; alphaChanged(); }));
 for (const id of ["nlambda", "eps", "folds"]) $(id).addEventListener("change", settingsChanged);
 $("cv").addEventListener("change", () => { $<HTMLSelectElement>("folds").disabled = !$<HTMLInputElement>("cv").checked; settingsChanged(); });
-// the explainers open on hover and focus (CSS) and on a tap, for touch screens
-document.querySelectorAll<HTMLButtonElement>(".info").forEach((button) => button.addEventListener("click", (event) => {
-  event.stopPropagation();
-  const open = button.getAttribute("aria-expanded") !== "true";
-  document.querySelectorAll(".info").forEach((other) => other.setAttribute("aria-expanded", "false"));
-  button.setAttribute("aria-expanded", String(open));
-}));
-const closeTips = () => document.querySelectorAll(".info").forEach((button) => button.setAttribute("aria-expanded", "false"));
+// The explainers open while the pointer is on the button or its text, while
+// the button has focus, or after a tap (touch screens); Escape, or a click
+// elsewhere, closes them until the next hover or focus.
+const groups = [...document.querySelectorAll<HTMLElement>(".metric-label")].filter((g) => g.querySelector(".info"));
+const setTip = (group: HTMLElement, open: boolean) => {
+  group.classList.toggle("open", open);
+  group.querySelector(".info")!.setAttribute("aria-expanded", String(open));
+};
+const closeTips = () => groups.forEach((group) => setTip(group, false));
+for (const group of groups) {
+  const button = group.querySelector<HTMLButtonElement>(".info")!;
+  button.addEventListener("mouseenter", () => { closeTips(); setTip(group, true); });
+  group.addEventListener("mouseleave", () => { if (document.activeElement !== button) setTip(group, false); });
+  button.addEventListener("focus", () => { closeTips(); setTip(group, true); });
+  button.addEventListener("blur", () => setTip(group, false));
+  // a click follows the hover that opened it, so it opens rather than toggles
+  button.addEventListener("click", (event) => { event.stopPropagation(); closeTips(); setTip(group, true); });
+  group.querySelector(".tip")!.addEventListener("click", (event) => event.stopPropagation());
+}
 document.addEventListener("click", closeTips);
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTips(); });
 $("cancel").addEventListener("click", () => {

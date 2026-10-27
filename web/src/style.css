@@ -86,10 +86,12 @@ progress { width: 100%; accent-color: var(--green); height: 5px; }
 .metrics strong { font: 25px/1.5 Georgia, serif; }
 .metric-label { position: relative; display: flex; align-items: center; gap: 6px; }
 .info { width: 15px; height: 15px; padding: 0; border-radius: 50%; border: 1px solid #b9c4b4; background: var(--white); color: var(--muted); font: italic 600 9px/13px Georgia, serif; cursor: help; flex: none; }
-.info:hover, .info:focus-visible, .info[aria-expanded="true"] { border-color: var(--green); color: var(--green); outline: none; }
-.tip { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; width: max-content; max-width: min(250px, 70vw); padding: 10px 12px; border-radius: 8px; background: var(--ink); color: #f4f3ed; font-size: 11.5px; line-height: 1.5; box-shadow: 0 8px 24px rgba(20, 40, 30, .18); pointer-events: none; }
+.info:hover, .info:focus-visible, .metric-label.open .info { border-color: var(--green); color: var(--green); outline: none; }
+.tip { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; width: max-content; max-width: min(250px, 70vw); padding: 10px 12px; border-radius: 8px; background: var(--ink); color: #f4f3ed; font-size: 11.5px; line-height: 1.5; box-shadow: 0 8px 24px rgba(20, 40, 30, .18); }
+/* bridges the gap, so the pointer can move from the button onto the text */
+.tip::after { content: ""; position: absolute; left: 0; right: 0; top: -9px; height: 9px; }
 .tip::before { content: ""; position: absolute; top: -5px; left: 30px; border: 5px solid transparent; border-top: 0; border-bottom-color: var(--ink); }
-.info:hover + .tip, .info:focus-visible + .tip, .info[aria-expanded="true"] + .tip { display: block; }
+.metric-label.open .tip { display: block; }
 .metrics > div:last-child .tip { left: auto; right: 0; }
 .metrics > div:last-child .tip::before { left: auto; right: 30px; }
 @media (max-width: 1000px) { .metrics > div:nth-child(2n) .tip { left: auto; right: 0; } .metrics > div:nth-child(2n) .tip::before { left: auto; right: 30px; } }
