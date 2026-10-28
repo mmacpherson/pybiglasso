@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 import scipy.sparse as sps
 
+from ._threads import resolve_threads
 from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
@@ -50,7 +51,7 @@ def biglasso(
     feature_names=None,
     stop_on_saturation=True,
     r_compatible=False,
-    n_threads=None,
+    n_threads="auto",
     backend=None,
     _stop=None,
 ):
@@ -79,12 +80,16 @@ def biglasso(
     glmnet's pmin=1e-9 boundary with a positive weight floor; compatibility
     mode retains R's |eta| > 10 cutoff and 1e-4 weights.
 
-    Column-wise work (standardization and the strong-rule and KKT scans) runs on
-    `n_threads` threads, by default all available cores; coordinate descent
-    itself is sequential. Results do not depend on the thread count.
+    `n_threads="auto"` (or None) uses one thread for memory-mapped X or fewer
+    than 10 million fitted-row/column entries, otherwise the available physical
+    cores (performance cores on Apple silicon). A positive RAYON_NUM_THREADS
+    caps auto mode; an explicit positive integer overrides the policy.
+    Unknown core topology falls back to one.
+    Coordinate descent itself is sequential. Results do not depend on the
+    thread count. See benchmarks/threads.md for the recorded evidence.
 
     The solver is implemented in Rust. `backend=None` and `backend="rust"` are
-    accepted for compatibility; `backend="numba"` was removed in 0.4.0.
+    accepted for compatibility; `backend="numba"` is no longer supported.
 
     Returns a `BiglassoPath`.
 
@@ -133,8 +138,6 @@ def biglasso(
             )
     if dfmax is not None:
         _integer("dfmax", dfmax, minimum=0)
-    if n_threads is not None:
-        _integer("n_threads", n_threads)
     if backend is not None:
         check_backend(backend)
     if family not in ("binomial", "gaussian"):
@@ -186,6 +189,8 @@ def biglasso(
 
     nrow = X.shape[0] if row_indices is None else len(row_indices)
     ncol = X.shape[1]
+
+    n_threads = resolve_threads(n_threads, X, nrow)
 
     if feature_names is not None:
         feature_names = tuple(str(f) for f in feature_names)
