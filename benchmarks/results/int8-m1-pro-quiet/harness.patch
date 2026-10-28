@@ -1,0 +1,130 @@
+--- ungated-2b03702/benchmarks/int8.py
++++ int8-threeway.py
+@@ -8,6 +8,7 @@
+ """
+ 
+ import argparse
++import datetime
+ import hashlib
+ import importlib.util
+ import itertools
+@@ -42,12 +43,14 @@
+             message=r"^The numba backend is deprecated and slated for removal in pybiglasso ",
+             category=FutureWarning,
+         )
++        utc_start = datetime.datetime.now(datetime.timezone.utc).isoformat()
+         start = time.perf_counter()
+         path = bl.biglasso(X, response, nlambda=nlambda, **options)
+         seconds = time.perf_counter() - start
++        utc_end = datetime.datetime.now(datetime.timezone.utc).isoformat()
+     if len(path) != nlambda:
+         raise ValueError(f"Incomplete benchmark path: {len(path)} of {nlambda} lambdas")
+-    return path, seconds
++    return path, seconds, dict(utc_start=utc_start, utc_end=utc_end)
+ 
+ 
+ def path_hash(path):
+@@ -73,6 +76,7 @@
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--baseline-extension", type=Path, required=True)
++    parser.add_argument("--ungated-extension", type=Path, required=True)
+     parser.add_argument(
+         "--family", choices=["binomial", "gaussian"], default="binomial"
+     )
+@@ -105,13 +109,18 @@
+     )
+     baseline = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(baseline)
+-    variants = {"baseline": baseline, "candidate": _rust}
++    ungated_spec = importlib.util.spec_from_file_location(
++        "ungated._rust", args.ungated_extension
++    )
++    ungated = importlib.util.module_from_spec(ungated_spec)
++    ungated_spec.loader.exec_module(ungated)
++    variants = {"baseline": baseline, "ungated": ungated, "gated": _rust}
+     fingerprints = {
+         name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+         for name, module in variants.items()
+     }
+-    if len(set(fingerprints.values())) != 2:
+-        parser.error("The baseline and candidate extension files must differ.")
++    if fingerprints["baseline"] == fingerprints["ungated"]:
++        parser.error("The baseline and ungated extension files must differ.")
+     numba_version = None
+     if args.with_numba:
+         import numba
+@@ -123,11 +132,9 @@
+     # Every order for a three-way control balances position/predecessor effects.
+     # With two variants this is the familiar AB/BA sequence.
+     orders = list(itertools.permutations(variants.items()))
+-    cpu = next(
+-        line.split(":", 1)[1].strip()
+-        for line in Path("/proc/cpuinfo").read_text().splitlines()
+-        if line.startswith("model name")
+-    )
++    cpu = subprocess.check_output(
++        ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
++    ).strip()
+     metadata = dict(
+         cpu=cpu,
+         python=platform.python_version(),
+@@ -163,12 +170,15 @@
+                             alpha=alpha,
+                             n_threads=threads,
+                         )
++                        warmup_records = []
+                         for name, module in variants.items():
+                             bl._rust = module
+                             options["backend"] = "numba" if name == "numba" else "rust"
+-                            fit, _ = checked_fit(X, response, **options)
++                            fit, warmup_seconds, timestamp = checked_fit(X, response, **options)
++                            warmup_records.append(dict(**timestamp, variant=name, seconds=warmup_seconds))
+                             hashes[name].add(path_hash(fit))
+                         times = {name: [] for name in variants}
++                        fit_records = []
+                         for repeat in range(args.repeats):
+                             order = orders[repeat % len(orders)]
+                             for name, module in order:
+@@ -176,14 +186,15 @@
+                                 options["backend"] = (
+                                     "numba" if name == "numba" else "rust"
+                                 )
+-                                fit, seconds = checked_fit(X, response, **options)
++                                fit, seconds, timestamp = checked_fit(X, response, **options)
++                                fit_records.append(dict(**timestamp, variant=name, repeat=repeat, position=len(fit_records) % len(variants), seconds=seconds))
+                                 times[name].append(seconds)
+                                 hashes[name].add(path_hash(fit))
+                                 trajectories[name] = dict(
+                                     nlambda=len(fit),
+                                     iterations=int(fit.iterations.sum()),
+                                 )
+-                        assert len(hashes["baseline"] | hashes["candidate"]) == 1, (
++                        assert len(set().union(*hashes.values())) == 1, (
+                             "A Rust fit changed bits across versions/threads"
+                         )
+                         assert all(len(h) == 1 for h in hashes.values()), (
+@@ -202,14 +213,20 @@
+                             alpha=alpha,
+                             threads=threads,
+                             times=times,
++                            fits=fit_records,
++                            warmups=warmup_records,
++                            orders=[[name for name, _ in order] for order in orders],
++                            minimum_seconds={name: min(values) for name, values in times.items()},
++                            baseline_over_ungated=medians["baseline"] / medians["ungated"],
++                            baseline_over_gated=medians["baseline"] / medians["gated"],
+                             median_seconds=medians,
+-                            speedup=medians["baseline"] / medians["candidate"],
+-                            path_hash=next(iter(hashes["candidate"])),
++                            speedup=medians["baseline"] / medians["gated"],
++                            path_hash=next(iter(hashes["gated"])),
+                             variant_hashes={
+                                 name: next(iter(h)) for name, h in hashes.items()
+                             },
+                             trajectories=trajectories,
+-                            **trajectories["candidate"],
++                            **trajectories["gated"],
+                         )
+                         line = json.dumps(result)
+                         print(line, flush=True)

@@ -382,6 +382,29 @@ fn passes_strided() {
 }
 
 #[test]
+fn passes_contiguous_int8_with_exact_signed_conversion() {
+    fn run<const CHECKED: bool>(how: &str) {
+        for n in SIZES {
+            // Every int8 value, including -128 and 127; conversion to f64 is
+            // exact. The reference sums the independently expanded scalars
+            // in the specified LANES/CHUNK order, with no fitted oracle.
+            let x: Vec<i8> = (0..n).map(|i| (i % 256) as i16 - 128).map(|v| v as i8).collect();
+            let y: Vec<i8> = (0..n).map(|i| ((i * 71 + 53) % 256) as i16 - 128).map(|v| v as i8).collect();
+            let xf: Vec<f64> = x.iter().map(|&v| v as f64).collect();
+            let yf: Vec<f64> = y.iter().map(|&v| v as f64).collect();
+            check_passes(
+                &format!("contiguous int8, {how}"),
+                &Contig::<_, CHECKED>(&x),
+                &Contig::<_, CHECKED>(&y),
+                &xf,
+                &yf,
+            );
+        }
+    }
+    checked_and_not!(run);
+}
+
+#[test]
 fn passes_gathered() {
     fn run<const CHECKED: bool>(how: &str) {
         for n in SIZES {
