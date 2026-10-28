@@ -18,6 +18,7 @@ from pathlib import Path
 PROBLEMS = {"tall": (2057, 17), "wide": (97, 129), "parallel-irls": (16_391, 9)}
 ALPHAS = (1.0, 0.5)
 FAMILIES = ("binomial", "gaussian")
+DTYPES = ("float64", "int8")
 CANDIDATE_MACHINES = {
     "Linux": ("aarch64", "arm64"),
     "Darwin": ("aarch64", "arm64"),
@@ -53,45 +54,52 @@ def record(output):
         # cross-OS check covers portable math on worker threads.
         rng = np.random.default_rng(1)
         y = rng.integers(0, 2, nrow, dtype=np.int64).astype(np.float64)
-        X = rng.integers(-8, 9, (nrow, ncol), dtype=np.int64).astype(np.float64)
-        X[:, 0] += 4 * (2 * y - 1)
-        X = np.asfortranarray(X / 8)
-        for family in FAMILIES:
-            # All operations are exact dyadic arithmetic, including Gaussian y.
-            response = y if family == "binomial" else 0.5 + 2 * y + X[:, 1] / 4
-            for alpha in ALPHAS:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error")
-                    fit = bl.biglasso(
-                        X,
-                        response,
-                        family=family,
-                        alpha=alpha,
-                        nlambda=12,
-                        backend="rust",
-                        n_threads=2,
+        raw = rng.integers(-8, 9, (nrow, ncol), dtype=np.int64).astype(np.float64)
+        raw[:, 0] += 4 * (2 * y - 1)
+        designs = {
+            "float64": np.asfortranarray(raw / 8),
+            # All values are integers in [-12, 12], exactly representable in
+            # int8. Exercise Contig<i8>::block, not just the f64 control.
+            "int8": np.asfortranarray(raw.astype(np.int8)),
+        }
+        for dtype in DTYPES:
+            X = designs[dtype]
+            for family in FAMILIES:
+                # All operations are exact dyadic arithmetic, including Gaussian y.
+                response = y if family == "binomial" else 0.5 + 2 * y + X[:, 1] / 4
+                for alpha in ALPHAS:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error")
+                        fit = bl.biglasso(
+                            X,
+                            response,
+                            family=family,
+                            alpha=alpha,
+                            nlambda=12,
+                            backend="rust",
+                            n_threads=2,
+                        )
+                    assert len(fit) == 12 and fit.coef.nnz > 0, name
+                    coef = fit.coef.tocsc()
+                    arrays = dict(
+                        lambdas=fit.lambdas,
+                        intercept=fit.intercept,
+                        coef_data=coef.data,
+                        coef_indices=coef.indices,
+                        coef_indptr=coef.indptr,
+                        iterations=fit.iterations,
+                        n_rejected=fit.n_rejected,
+                        center=fit.center,
+                        scale=fit.scale,
+                        deviance=fit.deviance,
                     )
-                assert len(fit) == 12 and fit.coef.nnz > 0, name
-                coef = fit.coef.tocsc()
-                arrays = dict(
-                    lambdas=fit.lambdas,
-                    intercept=fit.intercept,
-                    coef_data=coef.data,
-                    coef_indices=coef.indices,
-                    coef_indptr=coef.indptr,
-                    iterations=fit.iterations,
-                    n_rejected=fit.n_rejected,
-                    center=fit.center,
-                    scale=fit.scale,
-                    deviance=fit.deviance,
-                )
-                cases[f"{name}/family={family}/alpha={alpha}"] = dict(
-                    inputs={"X": array_bits(X), "y": array_bits(response)},
-                    fit={
-                        key: array_bits(value, include_data=True)
-                        for key, value in arrays.items()
-                    },
-                )
+                    cases[f"{name}/dtype={dtype}/family={family}/alpha={alpha}"] = dict(
+                        inputs={"X": array_bits(X), "y": array_bits(response)},
+                        fit={
+                            key: array_bits(value, include_data=True)
+                            for key, value in arrays.items()
+                        },
+                    )
     snapshot = dict(
         machine=platform.machine().lower(),
         system=platform.system(),
@@ -108,8 +116,9 @@ def compare(reference, candidates):
     baseline = json.loads(reference.read_text())
     assert baseline["machine"] == "x86_64" and baseline["system"] == "Linux"
     expected = {
-        f"{name}/family={family}/alpha={alpha}"
+        f"{name}/dtype={dtype}/family={family}/alpha={alpha}"
         for name in PROBLEMS
+        for dtype in DTYPES
         for family in FAMILIES
         for alpha in ALPHAS
     }

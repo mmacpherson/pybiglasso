@@ -1,0 +1,10 @@
+{
+  "utc": "2026-10-27T22:44:29.365192+00:00",
+  "elapsed_seconds": 365.422468958,
+  "cpu_idle_pct": 90.7,
+  "load_1m": 1.13,
+  "load_5m": 2.56,
+  "load_15m": 3.98,
+  "qualifies": true,
+  "consecutive_quiet_seconds": 195.008864625
+}
