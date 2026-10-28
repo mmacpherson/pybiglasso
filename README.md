@@ -232,25 +232,25 @@ make soak-hypothesis        # property tests, wide random search (part of soak)
 ## Performance
 
 These benchmarks measure speed; correctness is established separately, against
-R biglasso and by checks independent of it (see [Validation](#validation)).
-In memory, every solver is given the same problem and the same 100-value lambda
+R biglasso and by checks independent of it (see [Validation](#validation)). In
+memory, every solver is given the same problem and the same 100-value lambda
 path, at its own default tolerance, and its accuracy is reported alongside its
-time. All ran
-on an AMD Ryzen 5 5600X (6 cores, 12 threads) with 64 GB of RAM, Python 3.14,
-and R 4.6.1. The scripts and raw results are in [`benchmarks/`](benchmarks/).
+time. All ran on an AMD Ryzen 5 5600X (6 cores, 12 threads) with 64 GB of RAM,
+Python 3.14, and R 4.6.1. The scripts and raw results are in
+[`benchmarks/`](benchmarks/).
 
 ### Least squares
 
-With pybiglasso, R biglasso, and glmnet fitting the same 100 lambdas, each standardizing
-raw X itself, times are the median of three runs, each in a fresh process, with
+pybiglasso, R biglasso, and glmnet fit the same 100 lambdas, each standardizing
+raw X itself. Times are the median of three runs, each in a fresh process, with
 R's BLAS limited to one thread, and both thread counts are shown. glmnet's fast
 Gaussian path rescales the response by its standard deviation sᵧ, so it was
 given α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ), which solve the same
 standardized objective (for the lasso, α and λ are unchanged); glmnet's generic
 `gaussian()` family, which doesn't rescale, serves as a correctness reference
-in the tests rather than a timed competitor. pybiglasso's
-time is `biglasso()` itself; the logistic table below also includes exporting
-the coefficients. Times are in seconds:
+in the tests rather than a timed competitor. pybiglasso's time is `biglasso()`
+itself; the logistic table below also includes exporting the coefficients.
+Times are in seconds:
 
 | Dataset | Penalty | pybiglasso, 1 thread | pybiglasso, 6 threads | R biglasso, 1 thread | R biglasso, 6 threads | Native glmnet, 1 thread |
 |---|---|---|---|---|---|---|
