@@ -96,8 +96,8 @@ for start, block in read_blocks():
 X.flush()
 ```
 
-X can be float64, float32, or any integer type (a bool array is read as
-uint8, a byte per value). Use the narrowest type that holds your values
+X can be float64, float32, any integer type, or bool (a byte per value, read as
+0 or 1). Use the narrowest type that holds your values
 exactly: the fit is mostly reading X, so a narrower type is faster as well as
 smaller (see
 [storage](#threads-cross-validation-and-storage)).
