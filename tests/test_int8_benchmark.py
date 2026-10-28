@@ -2,10 +2,13 @@
 
 import hashlib
 import importlib
+import itertools
 import json
+import statistics
 import subprocess
 import sys
 import warnings
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,18 +16,113 @@ import numpy as np
 import pytest
 
 
-def test_quiet_m1_evidence_matches_manifest():
+@pytest.mark.parametrize(
+    "bundle, file_count", [("int8-m1-pro-quiet", 13), ("int8-zen4-quiet", 8)]
+)
+def test_quiet_evidence_matches_manifest(bundle, file_count):
     # These are external measurements, not regenerated solver expectations.
     # Preserve executed sources too: formatting them would break provenance.
-    directory = (
-        Path(__file__).resolve().parents[1] / "benchmarks/results/int8-m1-pro-quiet"
-    )
+    directory = Path(__file__).resolve().parents[1] / "benchmarks/results" / bundle
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert len(manifest) == 13
+    assert len(manifest) == file_count
     for name, expected in manifest.items():
         data = (directory / name).read_bytes()
         assert len(data) == expected["bytes"], name
         assert hashlib.sha256(data).hexdigest() == expected["sha256"], name
+
+
+def test_quiet_zen4_evidence_protocol():
+    # Audit relations in measured records, not expected solver values or speed.
+    directory = (
+        Path(__file__).resolve().parents[1] / "benchmarks/results/int8-zen4-quiet"
+    )
+
+    def records(name):
+        return [
+            json.loads(line) for line in (directory / name).read_text().splitlines()
+        ]
+
+    rows = records("results.jsonl")
+    gates = records("gate-passed.jsonl")
+    samples = records("gate-qualified.jsonl")
+    environment = records("environment.jsonl")
+    assert len(rows) == len(gates) == 20
+    assert len(samples) == 740
+    assert len(environment) == 40
+    expected = {
+        (family, dtype, nrow, ncol, alpha, threads)
+        for family, dtype, problems, alphas in [
+            ("binomial", "int8", [(2000, 20000), (5000, 50000)], [1.0, 0.5]),
+            ("binomial", "float64", [(5000, 1000), (2000, 20000)], [1.0, 0.5]),
+            ("gaussian", "float64", [(5000, 1000), (2000, 20000)], [0.5]),
+        ]
+        for nrow, ncol in problems
+        for alpha in alphas
+        for threads in (1, 6)
+    }
+    keys = ("family", "dtype", "nrow", "ncol", "alpha", "threads")
+    assert {tuple(row[key] for key in keys) for row in rows} == expected
+    variants = ["baseline", "ungated", "gated"]
+    orders = list(map(list, itertools.permutations(variants)))
+    identities = {}
+    previous_end = None
+    for index, (row, gate) in enumerate(zip(rows, gates, strict=True)):
+        label = row["label"]
+        assert row["orders"] == orders and row["seed"] == 1
+        assert gate["label"] == label and gate["qualifying_seconds"] >= 180
+        interval = [sample for sample in samples if sample["label"] == label]
+        assert len(interval) == 37 and interval[-1] == gate
+        duration = (
+            datetime.fromisoformat(interval[-1]["utc"])
+            - datetime.fromisoformat(interval[0]["utc"])
+        ).total_seconds()
+        assert duration >= 180
+        assert all(
+            sample["qualifies"]
+            and sample["user_system_pct"] <= 10
+            and not sample["workers"]
+            for sample in interval
+        )
+        before, after = environment[index * 2 : index * 2 + 2]
+        assert before["label"] == label + "-before"
+        assert after["label"] == label + "-after"
+        assert not before["workers"] and not after["workers"]
+        assert len(row["fits"]) == 18 and len(row["warmups"]) == 3
+        assert [fit["variant"] for fit in row["warmups"]] == variants
+        for repeat, order in enumerate(orders):
+            group = row["fits"][repeat * 3 : repeat * 3 + 3]
+            assert [fit["variant"] for fit in group] == order
+            assert [fit["position"] for fit in group] == [0, 1, 2]
+            assert all(fit["repeat"] == repeat for fit in group)
+        fits = row["warmups"] + row["fits"]
+        assert {fit["path_hash"] for fit in fits} == {row["path_hash"]}
+        assert {fit["nlambda"] for fit in fits} == {100}
+        assert len({fit["iterations"] for fit in fits}) == 1
+        key = tuple(row[key] for key in keys[:-1])
+        assert identities.setdefault(key, row["path_hash"]) == row["path_hash"]
+        chronology = [gate["utc"], before["utc"]]
+        for fit in fits:
+            assert fit["seconds"] > 0
+            chronology.extend([fit["utc_start"], fit["utc_end"]])
+        chronology.append(after["utc"])
+        timestamps = list(map(datetime.fromisoformat, chronology))
+        assert timestamps == sorted(timestamps)
+        if previous_end is not None:
+            assert previous_end < timestamps[0]
+        previous_end = timestamps[-1]
+        for name in variants:
+            times = [fit["seconds"] for fit in row["fits"] if fit["variant"] == name]
+            assert len(times) == 6 and times == row["times"][name]
+            assert row["median_seconds"][name] == statistics.median(times)
+            assert row["minimum_seconds"][name] == min(times)
+        for name in ("ungated", "gated"):
+            assert row["baseline_over_" + name] == (
+                row["median_seconds"]["baseline"] / row["median_seconds"][name]
+            )
+    assert all(
+        record["ac_online"] and record["governors"] == ["performance"]
+        for record in samples + environment
+    )
 
 
 @pytest.fixture

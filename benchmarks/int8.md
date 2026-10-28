@@ -199,89 +199,75 @@ In total, the four files retain 34 records and 292 timed fits. Every median
 and ratio can be recomputed from the raw times. No README competitor table
 or out-of-core performance claim is updated by these measurements.
 
-## Zen 4 / AVX-512 follow-up
+## Quiet-gated Zen 4 three-build run
 
-A separate run uses an AMD Ryzen 5 7640U (6 physical cores/12 threads), on
-mains power with the performance governor and energy preference. Runtime
-dispatch was independently checked to select pulp V4 (AVX-512), rather than
-just checking the advertised CPU flags. Python is 3.15.0, NumPy 2.5.4 and Rust
-1.98.0; the compiler and Python differ from the Zen 3 set above, so this is
-not an isolated comparison of CPU generations.
+The [provenance](results/int8-zen4-quiet/provenance.json) records an AMD Ryzen
+5 7640U (6 physical cores/12 threads), Python 3.15.0, NumPy 2.5.4 and Rust
+1.98.0 / LLVM 22.1.8. Baseline is main `5065100`, ungated is `2b03702`, and
+gated is `d5e0c8b`. All three extensions were built before the first gate with
+`uv sync --no-dev --python 3.15`, then loaded by one baseline Python wrapper.
+Their exact source revisions and binary SHA256s are recorded. The compiler
+and Python differ from the Zen 3 set, so this is not an isolated comparison
+of CPU generations.
 
-The candidate is the main-integrated `53b88b1`; the baseline extension's source
-is `378df63`, whose Rust sources are byte-identical to main `7cdd687` (including
-the clipping change). The latter additionally contains test-only changes.
-The same candidate Python wrapper calls both extensions. Each setting has
-six repetitions per extension: three complete AB/BA pairs, after warming
-both. The warning/full-path guard was active throughout these measurements.
-Every fit reaches 100 lambdas; all before/after and thread-count hashes agree,
-and agree with the corresponding Zen 3 records above. Extension fingerprints
-are recorded in every row.
+Before every setting, five-second `/proc/stat` deltas must show at most 10%
+user + nice + system CPU, with no detected compiler, test or benchmark worker,
+continuously for 180 seconds. Iowait and load average are recorded but do not
+affect admission. The [twenty admitted intervals](results/int8-zen4-quiet/gate-qualified.jsonl)
+retain all 37 samples in each qualifying interval; the
+[pass records](results/int8-zen4-quiet/gate-passed.jsonl) record their endpoints.
+AC power and the performance governor are checked at every gate sample and
+in the [one-second CPU/load bookends](results/int8-zen4-quiet/environment.jsonl)
+before and after every setting. Bookend user/system CPU spans 3.33–7.78%.
+The first timing marker is 2026-10-27 23:43:57 UTC and completion is
+2026-10-28 01:27:56 UTC. The gate admits each setting; it does not monitor
+background CPU continuously during the fits.
 
-The [int8 targets](results/int8-zen4-binomial.jsonl) give these median seconds,
-baseline → candidate:
+The [executed driver](results/int8-zen4-quiet/run.py) uses the same seed-1
+read-only Fortran inputs, original floating effects, and dyadic Gaussian
+response as above. Each setting warms all three builds, then uses every
+baseline/ungated/gated permutation once: six timed fits per build, twice in
+each position. All 20 settings, 360 timed fits and 60 warm-ups are retained
+in the [raw records](results/int8-zen4-quiet/results.jsonl), including UTC
+start/end times for every fit. Generation, warm-up, hashing and UTC bookkeeping
+are outside the fit clock. Every warning is fatal and every fit must complete
+100 lambdas. Path hashes and iteration counts agree across builds,
+repetitions and 1/6 threads.
 
-| Problem | Alpha | 1 thread | 6 threads |
-|---|---:|---:|---:|
-| 2,000 × 20,000 | 1 | 1.129 → 0.841 | 0.657 → 0.493 |
-| 2,000 × 20,000 | 0.5 | 1.350 → 0.927 | 0.957 → 0.735 |
-| 5,000 × 50,000 | 1 | 8.003 → 5.865 | 4.185 → 3.085 |
-| 5,000 × 50,000 | 0.5 | 7.007 → 5.198 | 3.728 → 2.714 |
+Int8 median seconds, B = baseline, U = ungated, G = gated:
 
-The int8 gain spans 1.30–1.46x.
+| Problem | Alpha | Threads | B | U | G |
+|---|---:|---:|---:|---:|---:|
+| 2,000 × 20,000 | 1 | 1 | 1.149906 | 0.847923 | 0.842463 |
+| 2,000 × 20,000 | 1 | 6 | 0.652210 | 0.485625 | 0.491206 |
+| 2,000 × 20,000 | 0.5 | 1 | 1.220298 | 0.897854 | 0.895341 |
+| 2,000 × 20,000 | 0.5 | 6 | 0.722431 | 0.536846 | 0.540207 |
+| 5,000 × 50,000 | 1 | 1 | 6.524844 | 4.874266 | 4.868373 |
+| 5,000 × 50,000 | 1 | 6 | 3.197500 | 2.411411 | 2.403147 |
+| 5,000 × 50,000 | 0.5 | 1 | 6.907092 | 5.159312 | 5.154129 |
+| 5,000 × 50,000 | 0.5 | 6 | 3.576949 | 2.707395 | 2.694797 |
 
-`Contig::block` is generic, so the expression change is also instantiated for
-float64. The earlier Zen 3 Gaussian median up to 2.5% slower remains in the
-record; this follow-up does not establish it was noise. Small differences can
-reflect code generation/layout as well as background load. The binomial
-control range is an observation, not a statistical bound on that variation.
+Baseline/gated ratios span 1.327–1.365x on these int8 targets; baseline/ungated
+ratios span 1.321–1.359x. Both retain the indexed conversion on x86.
 
-[Environment records](results/int8-zen4-environment.json) capture mains,
-governor, versions and source revisions before and after; all are unchanged.
-Java/CCH and ordinary desktop services remained running. These are in-memory,
-paired measurements, not out-of-core claims. The recorded preflight idle CPU
-was 55–66%, with 25–32% iowait.
-
-The [load record](results/int8-zen4-load.csv) retains ten preflight samples and
-the continuous one-second samples for the int8 settings, omitting each
-stream's initial since-boot average. All eight int8 settings and 96 timed
-fits are retained.
-
-### Completed timestamped control follow-up
-
-All twelve float64 settings were measured at `df2f381` in a clean window,
-using the same extension fingerprints and six fits per
-version (three complete AB/BA pairs). The
-[binomial](results/int8-zen4-controls-followup.jsonl) and
-[Gaussian](results/int8-zen4-gaussian-followup.jsonl) records retain all 144
-timed fits, with per-fit UTC epoch-nanosecond intervals. Every fit completes
-100 lambdas without disallowed warnings and reproduces its original
-before/after/thread path hash.
-
-Median seconds, baseline → candidate:
+Float64 control median seconds, baseline → gated:
 
 | Family | Problem | Alpha | 1 thread | 6 threads |
 |---|---|---:|---:|---:|
-| Binomial | 5,000 × 1,000 | 1 | 3.155 → 3.144 | 3.232 → 3.319 |
-| Binomial | 5,000 × 1,000 | 0.5 | 2.190 → 2.178 | 2.118 → 2.135 |
-| Binomial | 2,000 × 20,000 | 1 | 1.474 → 1.456 | 1.024 → 1.028 |
-| Binomial | 2,000 × 20,000 | 0.5 | 1.534 → 1.554 | 1.096 → 1.097 |
-| Gaussian | 5,000 × 1,000 | 0.5 | 1.198 → 1.185 | 1.166 → 1.150 |
-| Gaussian | 2,000 × 20,000 | 0.5 | 2.232 → 2.214 | 1.843 → 1.843 |
+| Binomial | 5,000 × 1,000 | 1 | 3.102194 → 3.085336 | 3.033210 → 3.055058 |
+| Binomial | 5,000 × 1,000 | 0.5 | 2.135752 → 2.148400 | 2.096562 → 2.116675 |
+| Binomial | 2,000 × 20,000 | 1 | 1.497089 → 1.496649 | 1.026277 → 1.019479 |
+| Binomial | 2,000 × 20,000 | 0.5 | 1.581058 → 1.579238 | 1.084883 → 1.089735 |
+| Gaussian | 5,000 × 1,000 | 0.5 | 1.202710 → 1.182065 | 1.142284 → 1.136609 |
+| Gaussian | 2,000 × 20,000 | 0.5 | 2.211592 → 2.203663 | 1.828677 → 1.810536 |
 
-Baseline/candidate ratios span 0.974–1.012x for binomial and
-0.99995–1.01397x for Gaussian. The tall six-thread binomial lasso candidate
-is about 2.7% slower; no floating-storage neutrality or universal speedup is
-claimed. As above, generic code generation/layout can affect float64, and
-these small changes are not assumed to be noise.
-
-The [environment audit](results/int8-zen4-followup-environment.json) records
-unchanged mains/performance settings, versions and extension source revisions.
-Java/CCH and ordinary desktop services remained. Preflight idle
-CPU was 60–71%, with 22–30% iowait; postflight idle was 62–70%, with 24–32%
-iowait. The [timestamped load](results/int8-zen4-followup-load.csv) has 20
-preflight, 325 continuous and ten postflight samples, omitting each stream's
-since-boot average. Postflight also samples the continuous stream's end.
+Baseline/gated ratios span 0.9905–1.0067x for float64 binomial and
+1.0036–1.0175x for float64 Gaussian. The tall six-thread elastic-net binomial
+median is about 0.96% longer, not discarded or assumed to be noise. These
+are measured ranges, not universal performance bounds or out-of-core claims.
+The [manifest](results/int8-zen4-quiet/manifest.json) pins every evidence file;
+all recorded medians, ratios, timestamps, permutations, admission intervals
+and path identities were independently checked without rerunning fits.
 
 ## Reproduce
 
