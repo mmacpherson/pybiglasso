@@ -97,9 +97,8 @@ X.flush()
 ```
 
 X can be float64, float32, any integer type, or bool (a byte per value, read as
-0 or 1). Use the narrowest type that holds your values
-exactly: the fit is mostly reading X, so a narrower type is faster as well as
-smaller (see
+0 or 1). Use the narrowest type that holds your values exactly: the fit is
+mostly reading X, so a narrower type is faster as well as smaller (see
 [storage](#threads-cross-validation-and-storage)).
 
 Unpenalized covariates (say age, sex, and principal components) take a penalty
