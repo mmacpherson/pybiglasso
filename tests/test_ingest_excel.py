@@ -2,6 +2,7 @@
 
 import copy
 import importlib
+import struct
 import zipfile
 from xml.etree import ElementTree
 
@@ -189,3 +190,25 @@ def test_ceiling_must_be_positive_integer(tmp_path, limit):
         ValueError, match="excel_shared_strings_limit must be a positive integer"
     ):
         ingest(source, tmp_path / "X.arrow", excel_shared_strings_limit=limit)
+
+
+@pytest.mark.parametrize("case", ["entries", "bytes", "comment"])
+def test_directory_caps_precede_zipfile_allocation(tmp_path, monkeypatch, case):
+    source = tmp_path / "directory.xlsx"
+    with zipfile.ZipFile(source, "w") as archive:
+        if case == "entries":
+            for index in range(1025):
+                archive.writestr(f"part-{index}", b"")
+        elif case == "bytes":
+            for index in range(1024):
+                archive.writestr(str(index) + "x" * 1100, b"")
+        else:
+            archive.writestr("part", b"")
+            archive.comment = struct.pack(
+                "<4s4H2LH", b"PK\x05\x06", 0, 0, 1, 1, 1 << 30, 0, 65535
+            )
+    monkeypatch.setattr(
+        zipfile, "ZipFile", lambda *_: pytest.fail("Directory allocated")
+    )
+    with pytest.raises(ValueError, match="XLSX ZIP directory"):
+        ingest(source, tmp_path / "X.arrow")

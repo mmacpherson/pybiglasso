@@ -83,6 +83,11 @@ The ceiling can be explicitly raised, accepting the associated memory cost:
 data = ingest("data.xlsx", "design.arrow", excel_shared_strings_limit=2 << 30)
 ```
 
+Separately, the ZIP directory is capped at 1 MiB and 1,024 entries before
+constructing `ZipFile`, so checking the shared-string size does not itself
+allocate an unbounded directory. ZIP64 archive directories are unsupported
+in v1. These directory limits are independent of the shared-string ceiling.
+
 This ceiling is shared-string XML bytes, not total workbook memory or an RSS
 ceiling; Python string objects and other workbook metadata add overhead.
 Workbooks below the ceiling may still require substantial RAM. Prefer CSV or

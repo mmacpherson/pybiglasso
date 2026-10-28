@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import struct
 import tempfile
 import zipfile
 from collections.abc import Mapping
@@ -179,10 +180,40 @@ def _headers(source, pa, sheet, excel_shared_strings_limit):
     raise ValueError("Source must be CSV, Parquet, Feather/IPC file, or .xlsx.")
 
 
+def _check_zip_directory(source):
+    # ZipFile allocates the directory before it can expose ZipInfo sizes.
+    # Bound the EOCD fields first, choosing the same last signature it uses.
+    with source.open("rb") as stream:
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(max(0, size - (65535 + 22 + 20)))
+        tail = stream.read()
+    offset = tail.rfind(b"PK\x05\x06")
+    if offset < 0 or offset + 22 > len(tail):
+        raise ValueError("Invalid XLSX ZIP directory.")
+    _, disk, start_disk, disk_entries, entries, size, _, comment = struct.unpack_from(
+        "<4s4H2LH", tail, offset
+    )
+    if offset + 22 + comment != len(tail):
+        raise ValueError("Invalid XLSX ZIP directory.")
+    if (
+        disk
+        or start_disk
+        or disk_entries != entries
+        or entries > 1024
+        or size > 1 << 20
+        or tail[max(0, offset - 20) : offset - 16] == b"PK\x06\x07"
+    ):
+        raise ValueError("XLSX ZIP directory exceeds the v1 size/entry limits.")
+
+
 def _check_shared_strings(source, limit):
     # ZipInfo.file_size is the uncompressed size recorded in the directory.
     # Do not open/decompress the table merely to decide whether it is too big.
+    _check_zip_directory(source)
     with zipfile.ZipFile(source) as archive:
+        if len(archive.infolist()) > 1024:
+            raise ValueError("XLSX ZIP directory exceeds the v1 size/entry limits.")
         size = sum(
             member.file_size
             for member in archive.infolist()
