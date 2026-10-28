@@ -89,7 +89,7 @@ def biglasso(
     thread count. See benchmarks/threads.md for the recorded evidence.
 
     The solver is implemented in Rust. `backend=None` and `backend="rust"` are
-    accepted for compatibility; `backend="numba"` was removed in 0.4.0.
+    accepted for compatibility; `backend="numba"` is no longer supported.
 
     Returns a `BiglassoPath`.
 

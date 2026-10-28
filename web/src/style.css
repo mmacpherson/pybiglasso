@@ -112,6 +112,12 @@ th { color: var(--muted); font-size: 10px; font-weight: 550; text-align: left; b
 th, td { padding: 9px 7px; border-bottom: 1px solid var(--line); }
 td:not(:first-child), th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 td:first-child { overflow-wrap: anywhere; }
+th[data-sort] button { appearance: none; border: 0; background: none; font: inherit; color: inherit; padding: 0; cursor: pointer; }
+th[data-sort] button:hover { color: var(--ink); }
+th[data-sort] button::after { content: ""; display: inline-block; width: 1.2em; text-align: center; }
+th[aria-sort="descending"] button::after { content: "↓"; }
+th[aria-sort="ascending"] button::after { content: "↑"; }
+th[aria-sort] { color: var(--ink); }
 .coefficient-card tbody tr:first-child td { color: var(--muted); }
 .swatch { width: 6px; height: 6px; display: inline-block; border-radius: 50%; margin-right: 6px; }
 .warnings, .error { padding: 14px 18px; background: #fff3df; border: 1px solid #e7c795; border-radius: 6px; font-size: 12px; margin-bottom: 18px; white-space: pre-line; overflow-wrap: anywhere; }

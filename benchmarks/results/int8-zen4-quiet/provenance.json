@@ -1,0 +1,32 @@
+{
+  "cpu": "AMD Ryzen 5 7640U w/ Radeon 760M Graphics",
+  "python": "3.15.0",
+  "numpy": "2.5.4",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8",
+  "variants": {
+    "baseline": {
+      "source_commit": "5065100f8291dde9ce2200821cf8529e23e09362",
+      "extension_sha256": "c6f9796a0ffdd9db0f5b6cf3c3bf25d524515fa71feb0ab32ab2fb0b8235f802"
+    },
+    "ungated": {
+      "source_commit": "2b0370297e591c8624de532bf2335e32ae9b8ef2",
+      "extension_sha256": "dec53fc57490c8a5b9d1cdd2dbe0dca42bb5d0aa9169ced7f0d9551e81ffd116"
+    },
+    "gated": {
+      "source_commit": "d5e0c8b2d5ba4fa73ea5e47b264dae059fd60150",
+      "extension_sha256": "75a5bf2b9d0987dcaa99367e52af5eeedb763768f999cbd3d70e40d5a62cca90"
+    }
+  },
+  "gate_rule": {
+    "user_system_pct_max": 10,
+    "continuous_seconds": 180,
+    "sample_seconds": 5,
+    "iowait_used": false,
+    "load_used": false,
+    "no_workers": true
+  },
+  "ac_online": true,
+  "governors": [
+    "performance"
+  ]
+}

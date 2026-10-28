@@ -1,4 +1,4 @@
-# Automatic Python thread selection (post-0.4.0)
+# Automatic Python thread selection
 
 `n_threads="auto"` and `None` use one thread when X is memory mapped or
 fitted rows times input columns is below 10,000,000; otherwise they use
