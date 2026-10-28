@@ -2,6 +2,7 @@
 
 import ctypes
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,6 +95,23 @@ def test_recorded_work_cutoff():
     ]
     with pytest.raises(ValueError, match="do not separate"):
         report.cutoff(contradictory)
+
+
+def test_zen4_evidence_keeps_every_baseline_setting():
+    path = Path(__file__).parents[1] / "benchmarks/results/thread-policy-evidence.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    zen4 = [row for row in records if "int8-zen4" in row["source_file"]]
+    assert len(zen4) == 20
+    assert {row["source_file"] for row in zen4} == {
+        "benchmarks/results/int8-zen4-quiet/results.jsonl"
+    }
+    assert {row["source_commit"] for row in zen4} == {
+        "812848955ca19f244c3e7163ff78bb36affe34ac"
+    }
+    assert {row["source_line"] for row in zen4} == set(range(1, 21))
+    assert {row["variant"] for row in zen4} == {"baseline"}
+    assert {row["threads"] for row in zen4} == {1, 6}
+    assert all(len(row["times"]) == 6 for row in zen4)
 
 
 def test_linux_smt_affinity_and_old_kernel_name(tmp_path):

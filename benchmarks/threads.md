@@ -18,13 +18,17 @@ of the fastest setting for every distribution.
 
 `python benchmarks/thread_policy.py` regenerates the comparison table and
 cutoff from `results/thread-policy-evidence.jsonl`. It only reads JSON and
-computes medians. The extract contains 37 baseline records with unchanged
+computes medians. The extract contains 57 baseline records with unchanged
 time samples and original commit, file, line and full-file SHA256 references.
 
 The source datasets are:
 
 - Ryzen 5 5600X: `irls-ryzen-irls.jsonl` and
   `irls-ryzen-standard.jsonl`, using the merged IRLS/weight-sum build.
+- Ryzen 5 7640U: all 20 main-solver baseline settings from
+  [the Zen 4 source bundle](https://github.com/mmacpherson/pybiglasso/tree/812848955ca19f244c3e7163ff78bb36affe34ac/benchmarks/results/int8-zen4-quiet).
+  All eight manifest entries were verified against their byte counts and
+  SHA256 hashes. The baseline solver revision is `5065100`.
 - M1 Pro: 16 baseline settings from
   `int8-m1-pro-quiet/{binomial-int8,binomial-float64,gaussian-float64}.jsonl`.
   The source bundle's thirteen manifest entries were verified against their
@@ -39,6 +43,12 @@ retains all 20 baseline settings, including these four.
 The M1 experiment admits a run after at least 180 seconds with idle CPU
 at least 90% and one-minute load below 3. It uses all six permutations
 of three builds, measuring one and eight workers on the same inputs.
+
+The Zen 4 experiment admits each setting after 180 seconds with at most
+10% user + nice + system CPU time and no competing compiler, test or
+benchmark worker. It uses AC power and the performance governor, all six
+permutations of three builds, and one and six workers on the same inputs.
+The extract preserves every baseline time sample from all 20 settings.
 
 For each CPU, build, problem, dtype and alpha, divide the one-worker median
 by the six-worker (Ryzen) or eight-worker (M1) median. Use a declared 10%
@@ -59,6 +69,10 @@ Representative within-build median ratios (one worker / multiple workers):
 | Ryzen 5 5600X | 50k × 100, IRLS-heavy | 6 | 1.063 |
 | Ryzen 5 5600X | 500k × 40, IRLS-heavy | 6 | 1.754 |
 | Ryzen 5 5600X | 500k × 40, IRLS-heavy | 12 | 1.768 |
+| Ryzen 5 7640U | 5k × 1k, f64 binomial | 6 | 1.019–1.023 |
+| Ryzen 5 7640U | 5k × 1k, f64 Gaussian | 6 | 1.053 |
+| Ryzen 5 7640U | 2k × 20k, f64 binomial | 6 | 1.457–1.459 |
+| Ryzen 5 7640U | 2k × 20k, f64 Gaussian | 6 | 1.209 |
 | M1 Pro | 5k × 1k, f64 Gaussian | 8 | 1.011 |
 | M1 Pro | 2k × 20k, f64 binomial | 8 | 1.460–1.492 |
 | M1 Pro | 2k × 20k, f64 Gaussian | 8 | 1.291 |
