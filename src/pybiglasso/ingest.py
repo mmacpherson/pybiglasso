@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ._xlsx import check_metadata
 from .arrow import ArrowDesign
 
 # In preference order, limited deliberately to ArrowDesign's storage contract.
@@ -155,7 +156,7 @@ def _exact(value, dtype):
         return False
 
 
-def _headers(source, pa, sheet):
+def _headers(source, pa, sheet, excel_metadata_limit):
     suffix = source.suffix.lower()
     if suffix == ".csv":
         with source.open(newline="", encoding="utf-8-sig") as stream:
@@ -169,7 +170,7 @@ def _headers(source, pa, sheet):
         with pa.memory_map(str(source), "r") as mapping:
             return _names(pa.ipc.open_file(mapping).schema.names)
     if suffix == ".xlsx":
-        workbook = _workbook(source)
+        workbook = _workbook(source, excel_metadata_limit)
         try:
             worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
             return _names(next(worksheet.iter_rows(values_only=True), ()))
@@ -178,17 +179,20 @@ def _headers(source, pa, sheet):
     raise ValueError("Source must be CSV, Parquet, Feather/IPC file, or .xlsx.")
 
 
-def _workbook(source):
+def _workbook(source, excel_metadata_limit):
+    check_metadata(source, excel_metadata_limit)
     try:
         import openpyxl
     except ImportError as error:
         raise ImportError(
             "Excel ingest needs pip install 'pybiglasso[ingest]'"
         ) from error
-    return openpyxl.load_workbook(source, read_only=True, data_only=True)
+    return openpyxl.load_workbook(
+        source, read_only=True, data_only=True, keep_links=False
+    )
 
 
-def _blocks(source, columns, all_names, block_size, sheet, pa):
+def _blocks(source, columns, all_names, block_size, sheet, pa, excel_metadata_limit):
     """Yield selected columns; only a source batch or block is decoded at once."""
     suffix = source.suffix.lower()
     if suffix == ".csv":
@@ -231,7 +235,7 @@ def _blocks(source, columns, all_names, block_size, sheet, pa):
                         for name in columns
                     }
     else:
-        workbook = _workbook(source)
+        workbook = _workbook(source, excel_metadata_limit)
         try:
             worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
             rows = worksheet.iter_rows(values_only=True)
@@ -384,6 +388,7 @@ def ingest(
     dtypes="auto",
     block_size=65536,
     sheet=None,
+    excel_metadata_limit=1 << 20,
     cache=False,
     cache_dir=None,
 ):
@@ -397,7 +402,10 @@ def ingest(
 
     ``block_size`` means bytes for CSV and rows for other readers. Compressed
     Feather decoding is bounded by its largest existing record batch. Excel
-    uses a read-only worksheet iterator. Other formats never assemble a table.
+    uses a read-only worksheet iterator plus bounded workbook metadata:
+    ``excel_metadata_limit`` caps total uncompressed non-worksheet bytes
+    (1 MiB by default), checked before openpyxl opens each pass. Other formats
+    never assemble a table.
 
     Specify an explicit persistent ``out`` or ``cache_dir``. There is no
     implicit temporary destination or automatic deletion. ``cache=True``
@@ -415,7 +423,13 @@ def ingest(
         or block_size <= 0
     ):
         raise ValueError("block_size must be a positive integer.")
-    names = _headers(source, pa, sheet)
+    if (
+        not isinstance(excel_metadata_limit, int)
+        or isinstance(excel_metadata_limit, bool)
+        or excel_metadata_limit <= 0
+    ):
+        raise ValueError("excel_metadata_limit must be a positive integer.")
+    names = _headers(source, pa, sheet, excel_metadata_limit)
     selected = _selection(names, response, features, exclude, match)
     if isinstance(dtypes, str):
         if dtypes != "auto":
@@ -434,13 +448,14 @@ def ingest(
     columns = (*selected, *((response,) if response is not None else ()))
     fingerprint = _fingerprint(source)
     options = dict(
-        version=2,
+        version=3,
         source=fingerprint,
         features=selected,
         response=response,
         dtypes=overrides,
         sheet=sheet,
         block_size=block_size,
+        excel_metadata_limit=excel_metadata_limit,
     )
     key = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
     if out is None:
@@ -464,7 +479,9 @@ def ingest(
         raise FileExistsError(f"Ingest output already exists: {path}")
 
     def blocks():
-        return _blocks(source, columns, names, block_size, sheet, pa)
+        return _blocks(
+            source, columns, names, block_size, sheet, pa, excel_metadata_limit
+        )
 
     # The response is separate solver input, always exactly representable f64.
     types, count = _infer(
