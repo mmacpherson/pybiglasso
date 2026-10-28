@@ -128,8 +128,7 @@ reports the residual sum of squares as `deviance`, and scores by
 `"deviance"`, `"mse"`, or `"r2"`. A logistic path predicts classes, with
 log-odds from `decision_function` and probabilities from `predict_proba`,
 reports the binomial deviance, and scores by `"deviance"`, `"auc"`, or
-`"accuracy"`. (Up to 0.2.x, logistic was the default; since
-0.3.0 it must be asked for.)
+`"accuracy"`.
 
 ### scikit-learn
 
