@@ -157,18 +157,19 @@ The estimators use scikit-learn's parameter names, which differ from R's:
 
 At 23andMe, I used R's biglasso package to fit penalized models on large
 genotype/phenotype datasets without loading them into memory. Over a holiday
-break, I ported it to Python, partly to gain a better understanding of how it
-worked and partly because, assuming I could get it working, it would be
-convenient to stay within the Python ecosystem. I validated it against R
-biglasso, matching its coefficients, lambda grid, and iteration counts to
-floating-point precision, and benchmarked it on data both smaller and larger
-than memory.
+break, I ported it to Python, using numba for speed, partly to gain a better
+understanding of how it worked and partly because, assuming I could get it
+working, it would be convenient to stay within the Python ecosystem. I validated
+it against R biglasso, matching its coefficients, lambda grid, and iteration
+counts to floating-point precision, and benchmarked it on data both smaller and
+larger than memory.
 
 In 2026 I revived the port for release, working with coding agents (Claude Code
-and Codex). That work added the scikit-learn estimators and cross-validation,
-extended the validation (against R across many more configurations, and with
-checks independent of R, which turned up the differences listed below), and
-carried the performance work and benchmarks further.
+and Codex). That work added least-squares regression, the scikit-learn
+estimators and cross-validation, extended the validation (against R across many
+more configurations, and with checks independent of R, which turned up the
+differences listed below), rewrote the solver in Rust, and carried the
+performance work and benchmarks further.
 
 This is an independent port, not affiliated with or endorsed by the biglasso
 authors: Yaohui Zeng, Chuyi Wang, Tabitha Peter, and Patrick Breheny. If you use
@@ -253,15 +254,14 @@ with pip, that fits L1 or elastic-net logistic regression on a CPU: scikit-learn
 
 **Other Python solvers.** Each competitor was stopped once it took 10x as long
 as pybiglasso, which would otherwise have stretched the run to many hours. (The
-competitors ran against 0.1.x, whose times set the cap; 0.2.0 is faster, so
-against it the caps fall at 11–25x, and glum's one finish, the 50,000 x 2,000
-elastic net on 12 threads, is at 18x.) Only
-skglm finishes within that on every dataset, at 5–7x for the lasso and 6–9x for
-the elastic net. statsmodels
-(lasso only) ran only on the tall datasets: its L1 fit uses a general-purpose
-optimizer with dense matrices over twice the columns, which would need about
-12 GB and 76 GB on the wide ones. To show how
-large the gaps get, the smallest problem (5,000 x 1,000) also ran with no cap:
+cap was set by an earlier, slower pybiglasso; measured against the one timed
+here, the caps fall at 11–25x, and glum's one finish, the 50,000 x 2,000
+elastic net on 12 threads, is at 18x.) Only skglm finishes within that on every
+dataset, at 5–7x for the lasso and 6–9x for the elastic net. statsmodels (lasso
+only) ran only on the tall datasets: its L1 fit uses a general-purpose
+optimizer with dense matrices over twice the columns, which would need about 12
+GB and 76 GB on the wide ones. To show how large the gaps get, the smallest
+problem (5,000 x 1,000) also ran with no cap:
 
 | Solver | Lasso | Elastic net (α=0.5) | Worst relative suboptimality |
 |---|---|---|---|
@@ -303,7 +303,7 @@ to 3e-6, against pybiglasso's 6e-8 to 3e-6.
 
 ### Least squares
 
-With pybiglasso 0.3.0, R biglasso, and glmnet fitting the same 100 lambdas, each standardizing
+With pybiglasso, R biglasso, and glmnet fitting the same 100 lambdas, each standardizing
 raw X itself, times are the median of three runs, each in a fresh process, with
 R's BLAS limited to one thread, and both thread counts are shown. glmnet's fast
 Gaussian path rescales the response by its standard deviation sᵧ, so it was
@@ -407,7 +407,7 @@ with a comment beginning "Differs from R biglasso".
   for `v + l2`, so the two solve somewhat different problems. pybiglasso uses
   `v + l2`, as glmnet and scikit-learn do; `r_compatible=True` reproduces R
   exactly for this update.
-- **Probability clipping (changed in 0.4.0).** R sets probabilities
+- **Probability clipping.** R sets probabilities
   to 0 or 1 beyond `|eta| > 10`, with weights of `1e-4`. Default mode uses
   glmnet's `pmin = 1e-9` boundary, `|eta| > log(1 / pmin - 1)` (about 20.7).
   This reduces each clipped row's probability error from at most `4.6e-5` to
