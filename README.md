@@ -30,14 +30,14 @@ own CSV or Parquet file, which never leaves your machine, and can
 cross-validate the fit.
 
 pybiglasso fits least-squares (Gaussian) and logistic (binomial) models, and
-it's also fast when the data does fit in memory. For logistic regression, on a full
-100-step lasso path over 5,000 samples by 50,000 features, it is 2.4x faster
-than R's glmnet, 2.5x faster than R biglasso, and 5.2x faster than skglm, the
-fastest of the other Python solvers we tested; across the four benchmark
-problems, with 1,000 to 50,000 features, it runs 2.1–4.7x faster than glmnet,
-2.5–9x faster than R biglasso, and 5–9x faster than skglm. For least squares,
-it is 2.2x faster than glmnet on wide data and 2x slower on tall data (see
-[Performance](#performance)).
+it's also fast when the data does fit in memory. For least squares, it is 2.2x
+faster than R's glmnet on wide data and 2x slower on tall data. For logistic
+regression, on a full 100-step lasso path over 5,000 samples by 50,000
+features, it is 2.4x faster than glmnet, 2.5x faster than R biglasso, and 5.2x
+faster than skglm, the fastest of the other Python solvers we tested; across
+the four benchmark problems, with 1,000 to 50,000 features, it runs 2.1–4.7x
+faster than glmnet, 2.5–9x faster than R biglasso, and 5–9x faster than skglm
+(see [Performance](#performance)).
 
 It is an unofficial Python port of the R package
 [biglasso](https://github.com/pbreheny/biglasso), and reproduces its results to
@@ -56,7 +56,7 @@ wheel. Extras add optional integrations:
 |---|---|
 | `pybiglasso[polars]` | `BiglassoPath.to_polars()` |
 | `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
-| `pybiglasso[sklearn]` | `BiglassoClassifier`, `BiglassoClassifierCV`, `BiglassoRegressor`, `BiglassoRegressorCV` |
+| `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[all]` | all of the above |
 
@@ -139,7 +139,7 @@ cross-validation. All four pass scikit-learn's estimator checks and work in
 pipelines and grid searches (install `pybiglasso[sklearn]`).
 
 ```python
-from pybiglasso import BiglassoClassifierCV, BiglassoRegressorCV
+from pybiglasso import BiglassoRegressorCV, BiglassoClassifierCV
 
 reg = BiglassoRegressorCV(l1_ratio=1.0, cv=5).fit(X, y)
 clf = BiglassoClassifierCV(l1_ratio=1.0, cv=5, rule="1se").fit(X, y_binary)
@@ -182,7 +182,7 @@ against checks that don't depend on R, which also cover the few places where
 the two differ (see [Differences](#differences-from-r-biglasso)).
 
 **Against R.** Every push runs pybiglasso against stored R biglasso 1.7.2
-output for 192 configurations (152 binomial and 40 Gaussian), comparing
+output for 192 configurations (40 least-squares and 152 logistic), comparing
 coefficients, deviance, the lambda grid, centering and scaling, strong-rule
 rejections, and the iteration count at
 every lambda, with `rtol=1e-9`. The grid covers wide and tall problems,
@@ -238,6 +238,39 @@ path, at its own default tolerance, and its accuracy is reported alongside its
 time. All ran
 on an AMD Ryzen 5 5600X (6 cores, 12 threads) with 64 GB of RAM, Python 3.14,
 and R 4.6.1. The scripts and raw results are in [`benchmarks/`](benchmarks/).
+
+### Least squares
+
+With pybiglasso, R biglasso, and glmnet fitting the same 100 lambdas, each standardizing
+raw X itself, times are the median of three runs, each in a fresh process, with
+R's BLAS limited to one thread, and both thread counts are shown. glmnet's fast
+Gaussian path rescales the response by its standard deviation sᵧ, so it was
+given α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ), which solve the same
+standardized objective (for the lasso, α and λ are unchanged); glmnet's generic
+`gaussian()` family, which doesn't rescale, serves as a correctness reference
+in the tests rather than a timed competitor. pybiglasso's
+time is `biglasso()` itself; the logistic table below also includes exporting
+the coefficients. Times are in seconds:
+
+| Dataset | Penalty | pybiglasso, 1 thread | pybiglasso, 6 threads | R biglasso, 1 thread | R biglasso, 6 threads | Native glmnet, 1 thread |
+|---|---|---|---|---|---|---|
+| 5,000 x 1,000 | lasso | 0.52 | 0.47 | 0.90 | 0.70 | 0.25 |
+| 5,000 x 1,000 | elastic net (α=0.5) | 0.55 | 0.51 | 0.94 | 0.73 | 0.27 |
+| 2,000 x 20,000 | lasso | 0.92 | 0.76 | 2.80 | 0.92 | 1.67 |
+| 2,000 x 20,000 | elastic net (α=0.5) | 0.95 | 0.75 | 2.84 | 0.94 | 1.70 |
+
+Dropping generated constant columns leaves 973 and 19,199 features. In each
+row's final repetition, every path reached all 100 lambdas without warnings;
+the largest optimality (KKT) residual, in response units, is about 1.0e-4 for
+pybiglasso and R biglasso and 1.1e-4 for glmnet, and the largest relative
+objective difference from glmnet is 1.9e-6 (a pairwise difference, not a
+certified suboptimality bound). To regenerate the table:
+
+```bash
+make r-image R_VERSION=4.6.1  # once
+benchmarks/run-gaussian.sh
+python benchmarks/gaussian-table.py benchmarks/results/path-gaussian.jsonl
+```
 
 ### Logistic regression
 
@@ -300,39 +333,6 @@ with an intercept, along the same lambda grid, at its default tolerance; it runs
 on one thread. Its objective is the benchmark's. It fit every path in full, at
 2.1–4.7x pybiglasso's best time (1.8–3.1x pybiglasso's on one thread), and about as accurately: a worst relative suboptimality of 2e-8
 to 3e-6, against pybiglasso's 6e-8 to 3e-6.
-
-### Least squares
-
-With pybiglasso, R biglasso, and glmnet fitting the same 100 lambdas, each standardizing
-raw X itself, times are the median of three runs, each in a fresh process, with
-R's BLAS limited to one thread, and both thread counts are shown. glmnet's fast
-Gaussian path rescales the response by its standard deviation sᵧ, so it was
-given α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ), which solve the same
-standardized objective (for the lasso, α and λ are unchanged); glmnet's generic
-`gaussian()` family, which doesn't rescale, serves as a correctness reference
-in the tests rather than a timed competitor. pybiglasso's
-time is `biglasso()` itself; the logistic table above also includes exporting
-the coefficients. Times are in seconds:
-
-| Dataset | Penalty | pybiglasso, 1 thread | pybiglasso, 6 threads | R biglasso, 1 thread | R biglasso, 6 threads | Native glmnet, 1 thread |
-|---|---|---|---|---|---|---|
-| 5,000 x 1,000 | lasso | 0.52 | 0.47 | 0.90 | 0.70 | 0.25 |
-| 5,000 x 1,000 | elastic net (α=0.5) | 0.55 | 0.51 | 0.94 | 0.73 | 0.27 |
-| 2,000 x 20,000 | lasso | 0.92 | 0.76 | 2.80 | 0.92 | 1.67 |
-| 2,000 x 20,000 | elastic net (α=0.5) | 0.95 | 0.75 | 2.84 | 0.94 | 1.70 |
-
-Dropping generated constant columns leaves 973 and 19,199 features. In each
-row's final repetition, every path reached all 100 lambdas without warnings;
-the largest optimality (KKT) residual, in response units, is about 1.0e-4 for
-pybiglasso and R biglasso and 1.1e-4 for glmnet, and the largest relative
-objective difference from glmnet is 1.9e-6 (a pairwise difference, not a
-certified suboptimality bound). To regenerate the table:
-
-```bash
-make r-image R_VERSION=4.6.1  # once
-benchmarks/run-gaussian.sh
-python benchmarks/gaussian-table.py benchmarks/results/path-gaussian.jsonl
-```
 
 ### Out of core
 
@@ -400,6 +400,20 @@ with a comment beginning "Differs from R biglasso".
   pybiglasso raises `ValueError`, for both families and in both modes. Finite
   supplied grids remain supported, including in compatibility mode.
 
+**Least squares.**
+
+- **Constant responses.** R's strict convergence comparison against
+  a zero null loss uses the full iteration budget for a constant response.
+  pybiglasso stops once the coefficients no longer change;
+  `r_compatible=True` retains R's comparison.
+- **Zero maximum penalty.** R's logarithmic grid calculation can
+  produce non-finite values when the maximum penalty is zero. pybiglasso
+  returns a finite all-zero grid, whose fits solve the unpenalized problem.
+- **Loss after an iteration limit.** R can leave `loss` at zero when
+  the budget ends with outstanding KKT violations. pybiglasso reports the
+  returned model's residual sum of squares; `r_compatible=True` retains R's
+  bookkeeping.
+
 **Logistic regression.**
 
 - **Elastic-net update.** For `alpha < 1`, R's logistic coordinate update divides by
@@ -422,20 +436,6 @@ with a comment beginning "Differs from R biglasso".
   occasionally be infinite. `r_compatible=True` keeps R's version.
 - **Saturation.** `stop_on_saturation=False`, an option R doesn't have, fits
   every lambda, even past R's saturation cutoff.
-
-**Least squares.**
-
-- **Constant responses.** R's strict convergence comparison against
-  a zero null loss uses the full iteration budget for a constant response.
-  pybiglasso stops once the coefficients no longer change;
-  `r_compatible=True` retains R's comparison.
-- **Zero maximum penalty.** R's logarithmic grid calculation can
-  produce non-finite values when the maximum penalty is zero. pybiglasso
-  returns a finite all-zero grid, whose fits solve the unpenalized problem.
-- **Loss after an iteration limit.** R can leave `loss` at zero when
-  the budget ends with outstanding KKT violations. pybiglasso reports the
-  returned model's residual sum of squares; `r_compatible=True` retains R's
-  bookkeeping.
 
 ## Threads, cross-validation, and storage
 
@@ -531,7 +531,7 @@ any thread count, on any CPU, and on every operating system with a wheel.
 
 ## Scope
 
-- Binomial (logistic) and Gaussian (least-squares) families; Cox is not ported.
+- Gaussian (least-squares) and binomial (logistic) families; Cox is not ported.
 - SSR (sequential strong rule) screening only. R uses its newer Hybrid and
   Adaptive rules only for the plain lasso without penalty factors, and they
   were no faster than SSR on our benchmarks.
