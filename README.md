@@ -26,11 +26,11 @@ memory.
 To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
 solver, compiled to WebAssembly, in your browser, on example datasets or your
-own CSV or Parquet file, which never leaves your machine. It fits lasso and
-elastic-net paths for Gaussian or binomial responses, and can cross-validate them.
+own CSV or Parquet file, which never leaves your machine, and can
+cross-validate the fit.
 
-It fits least-squares (Gaussian) and logistic (binomial) models, and it's
-also fast when the data does fit in memory. For logistic regression, on a full
+pybiglasso fits least-squares (Gaussian) and logistic (binomial) models, and
+it's also fast when the data does fit in memory. For logistic regression, on a full
 100-step lasso path over 5,000 samples by 50,000 features, it is 2.4x faster
 than R's glmnet, 2.5x faster than R biglasso, and 5.2x faster than skglm, the
 fastest of the other Python solvers we tested; across the four benchmark
@@ -199,9 +199,10 @@ upstream changes.
   (KKT) conditions to 1e-6, on wide, correlated, partly unpenalized, and genotype-like
   designs, for both families; duality gaps, some in exact arithmetic, and
   curvature bounds certify how close the coefficients are to the optimum.
-- **Closed forms.** Small problems with known answers (orthogonal designs,
-  single features, exhaustive enumeration of active sets) are solved
-  exactly, without pybiglasso, and the fits are held to them.
+- **Reference solutions.** Small problems are solved without pybiglasso, from
+  closed forms (orthogonal designs, single features) or by enumerating every
+  active set, and the fits are held to those solutions within derived
+  numerical bounds.
 - **Other solvers.** R's glmnet minimizes the same objective; its paths are
   stored from a pinned release and checked at every lambda, for least squares
   and for logistic fits, including rare-response fits whose log-odds exceed
@@ -231,8 +232,9 @@ make soak-hypothesis        # property tests, wide random search (part of soak)
 
 These benchmarks measure speed; correctness is established separately, against
 R biglasso and by checks independent of it (see [Validation](#validation)).
-Every solver fits the same problem along the same 100-value lambda path, at its
-own default tolerance, and its accuracy is reported alongside its time. All ran
+In memory, every solver is given the same problem and the same 100-value lambda
+path, at its own default tolerance, and its accuracy is reported alongside its
+time. All ran
 on an AMD Ryzen 5 5600X (6 cores, 12 threads) with 64 GB of RAM, Python 3.14,
 and R 4.6.1. The scripts and raw results are in [`benchmarks/`](benchmarks/).
 
@@ -306,7 +308,9 @@ raw X itself, times are the median of three runs, each in a fresh process, with
 R's BLAS limited to one thread, and both thread counts are shown. glmnet's fast
 Gaussian path rescales the response by its standard deviation sᵧ, so it was
 given α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ), which solve the same
-standardized objective (for the lasso, α and λ are unchanged). pybiglasso's
+standardized objective (for the lasso, α and λ are unchanged); glmnet's generic
+`gaussian()` family, which doesn't rescale, serves as a correctness reference
+in the tests rather than a timed competitor. pybiglasso's
 time is `biglasso()` itself; the logistic table above also includes exporting
 the coefficients. Times are in seconds:
 
@@ -317,11 +321,12 @@ the coefficients. Times are in seconds:
 | 2,000 x 20,000 | lasso | 0.92 | 0.76 | 2.80 | 0.92 | 1.67 |
 | 2,000 x 20,000 | elastic net (α=0.5) | 0.95 | 0.75 | 2.84 | 0.94 | 1.70 |
 
-Dropping generated constant columns leaves 973 and 19,199 features. Every path
-reached all 100 lambdas without warnings. The largest optimality (KKT)
-residual, in response units, is about 1.0e-4 for pybiglasso and R biglasso and
-1.1e-4 for glmnet, and objectives agree with glmnet's to within 1.9e-6. To
-regenerate the table:
+Dropping generated constant columns leaves 973 and 19,199 features. In each
+row's final repetition, every path reached all 100 lambdas without warnings;
+the largest optimality (KKT) residual, in response units, is about 1.0e-4 for
+pybiglasso and R biglasso and 1.1e-4 for glmnet, and the largest relative
+objective difference from glmnet is 1.9e-6 (a pairwise difference, not a
+certified suboptimality bound). To regenerate the table:
 
 ```bash
 make r-image R_VERSION=4.6.1  # once
