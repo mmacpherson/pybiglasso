@@ -443,8 +443,9 @@ never loads or copies it; strong-rule screening skips most columns at most
 steps. Cross-validation folds are row indices into the same matrix on disk.
 
 - **Threads help larger fits** (`n_threads=`). By default, `"auto"` (also
-  `None`) chooses one thread for a memmap or fewer than 10M fitted cells,
-  otherwise physical cores (performance cores on Apple silicon).
+  `None`) chooses one thread for a memmap or fewer than 10 million entries in
+  the rows and columns being fit (rows × columns), otherwise physical cores
+  (performance cores on Apple silicon).
   `RAYON_NUM_THREADS` caps auto; an explicit positive integer overrides it.
   See [the rule and evidence](benchmarks/threads.md). Screening and optimality
   scans run in parallel across columns; tall logistic fits also parallelize
