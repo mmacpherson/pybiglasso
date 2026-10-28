@@ -49,6 +49,10 @@ test("colon fits locally, lambda changes the model, and enet refits", async ({ p
   await expect(page.locator('th[data-sort="raw"]')).toHaveAttribute("aria-sort", "ascending");
   expect(nonincreasing((await column(2)).reverse())).toBe(true);
   await expect(page.locator("#coefficient-body tr").first()).toContainText("(intercept)");
+  await page.locator('th[data-sort="feature"] button').press("Enter");
+  await expect(page.locator('th[data-sort="feature"]')).toHaveAttribute("aria-sort", "ascending");
+  const names = await page.locator("#coefficient-body tr:not(:first-child) td:first-child").allTextContents();
+  expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
   // penalty changes refit on their own; the Fit button stays away while fits are quick
   await page.locator('[data-alpha="0.2"]').click(); await page.locator('[data-alpha="0.5"]').click();
   await expect(page.locator("#fit")).toBeHidden();
