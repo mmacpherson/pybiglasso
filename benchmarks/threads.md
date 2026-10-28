@@ -30,6 +30,12 @@ The source datasets are:
   The source bundle's thirteen manifest entries were verified against their
   byte counts and SHA256 hashes.
 
+The M1 calibration subset excludes all four 5k × 1k float64-binomial
+settings (alpha 1 and 0.5, each at one and eight workers). Their distinct
+timing bands make median thread ratios unsuitable for calibration. The
+[complete intended-run source bundle](https://github.com/mmacpherson/pybiglasso/tree/ee29459b51077806da6ff40d9d124a5ac5654137/benchmarks/results/int8-m1-pro-quiet)
+retains all 20 baseline settings, including these four.
+
 The M1 experiment admits a run after at least 180 seconds with idle CPU
 at least 90% and one-minute load below 3. It uses all six permutations
 of three builds, measuring one and eight workers on the same inputs.
