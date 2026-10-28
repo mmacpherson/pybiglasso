@@ -17,7 +17,8 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "bundle, file_count", [("int8-m1-pro-quiet", 13), ("int8-zen4-quiet", 8)]
+    "bundle, file_count",
+    [("int8-m1-pro-quiet", 13), ("int8-zen4-quiet", 8), ("int8-zen3-quiet", 8)],
 )
 def test_quiet_evidence_matches_manifest(bundle, file_count):
     # These are external measurements, not regenerated solver expectations.
@@ -31,11 +32,11 @@ def test_quiet_evidence_matches_manifest(bundle, file_count):
         assert hashlib.sha256(data).hexdigest() == expected["sha256"], name
 
 
-def test_quiet_zen4_evidence_protocol():
+@pytest.mark.parametrize("bundle", ["int8-zen4-quiet", "int8-zen3-quiet"])
+def test_quiet_three_build_evidence_protocol(bundle):
     # Audit relations in measured records, not expected solver values or speed.
-    directory = (
-        Path(__file__).resolve().parents[1] / "benchmarks/results/int8-zen4-quiet"
-    )
+    directory = Path(__file__).resolve().parents[1] / "benchmarks/results" / bundle
+    median_gate = bundle == "int8-zen3-quiet"
 
     def records(name):
         return [
@@ -69,7 +70,7 @@ def test_quiet_zen4_evidence_protocol():
     for index, (row, gate) in enumerate(zip(rows, gates, strict=True)):
         label = row["label"]
         assert row["orders"] == orders and row["seed"] == 1
-        assert gate["label"] == label and gate["qualifying_seconds"] >= 180
+        assert gate["label"] == label
         interval = [sample for sample in samples if sample["label"] == label]
         assert len(interval) == 37 and interval[-1] == gate
         duration = (
@@ -77,12 +78,23 @@ def test_quiet_zen4_evidence_protocol():
             - datetime.fromisoformat(interval[0]["utc"])
         ).total_seconds()
         assert duration >= 180
-        assert all(
-            sample["qualifies"]
-            and sample["user_system_pct"] <= 10
-            and not sample["workers"]
-            for sample in interval
-        )
+        assert not any(sample["workers"] for sample in interval)
+        if median_gate:
+            assert gate["qualifies"] and not gate["window_workers_seen"]
+            assert gate["window_samples"] == 37 and gate["window_seconds"] >= 180
+            assert gate["median_busy_pct"] == statistics.median(
+                sample["user_system_pct"] for sample in interval
+            )
+            assert gate["median_busy_pct"] <= 15
+            assert [sample["window_samples"] for sample in interval] == list(
+                range(1, 38)
+            )
+        else:
+            assert gate["qualifying_seconds"] >= 180
+            assert all(
+                sample["qualifies"] and sample["user_system_pct"] <= 10
+                for sample in interval
+            )
         before, after = environment[index * 2 : index * 2 + 2]
         assert before["label"] == label + "-before"
         assert after["label"] == label + "-after"
@@ -103,6 +115,11 @@ def test_quiet_zen4_evidence_protocol():
         chronology = [gate["utc"], before["utc"]]
         for fit in fits:
             assert fit["seconds"] > 0
+            elapsed = (
+                datetime.fromisoformat(fit["utc_end"])
+                - datetime.fromisoformat(fit["utc_start"])
+            ).total_seconds()
+            assert abs(elapsed - fit["seconds"]) < 0.02
             chronology.extend([fit["utc_start"], fit["utc_end"]])
         chronology.append(after["utc"])
         timestamps = list(map(datetime.fromisoformat, chronology))
@@ -119,10 +136,31 @@ def test_quiet_zen4_evidence_protocol():
             assert row["baseline_over_" + name] == (
                 row["median_seconds"]["baseline"] / row["median_seconds"][name]
             )
-    assert all(
-        record["ac_online"] and record["governors"] == ["performance"]
-        for record in samples + environment
-    )
+    if median_gate:
+        assert all(
+            record["governors"] == ["powersave"]
+            and record["energy_performance_preferences"] == ["balance_performance"]
+            for record in samples + environment
+        )
+        provenance = json.loads((directory / "provenance.json").read_text())
+        assert provenance["gate_rule"] == {
+            "statistic": "median",
+            "cpu_components": ["user", "nice", "system"],
+            "median_busy_pct_max": 15,
+            "window_seconds": 180,
+            "sample_seconds": 5,
+            "window_samples": 37,
+            "iowait_used": False,
+            "load_used": False,
+            "no_workers": True,
+        }
+        assert provenance["governors"] == ["powersave"]
+        assert provenance["energy_performance_preferences"] == ["balance_performance"]
+    else:
+        assert all(
+            record["ac_online"] and record["governors"] == ["performance"]
+            for record in samples + environment
+        )
 
 
 @pytest.fixture

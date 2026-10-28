@@ -1,5 +1,6 @@
 # Original executed evidence is checksummed byte-for-byte, including on Windows.
 benchmarks/results/int8-m1-pro-quiet/** -text
 benchmarks/results/int8-zen4-quiet/** -text
+benchmarks/results/int8-zen3-quiet/** -text
 # A unified diff's blank context lines begin with a required space.
 benchmarks/results/int8-m1-pro-quiet/harness.patch -whitespace

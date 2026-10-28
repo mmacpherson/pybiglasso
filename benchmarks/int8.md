@@ -115,89 +115,88 @@ int8 and float64 inputs, both families and both penalties on each of its
 chunk/tail, wide and parallel-IRLS designs: 24 fits per platform. The comparator
 requires every case, so a float64-only snapshot cannot satisfy the check.
 
-## Paired whole-path measurements
+## Median-CPU-gated Zen 3 three-build run
 
-These measurements use an AMD Ryzen 5 5600X (6 cores/12 threads), Python 3.14.0,
-NumPy 2.5.4 and Rust 1.99.1. The baseline is `bfd527f`; the numerical change is
-`fb9e54f`. The paired runs record source `cd8afa0`, and the subsequent numba
-control records `810295a`; those later revisions change only the harness or
-tests. Both extensions were built serially in separate checkouts.
-Their fingerprints are included in every row.
+The [provenance](results/int8-zen3-quiet/provenance.json) records an AMD Ryzen
+5 5600X (6 physical cores/12 threads), Python 3.14.0, NumPy 2.5.4 and Rust
+1.99.1 / LLVM 23.1.3. Baseline is main `5065100`, ungated is `2b03702`, and
+gated is `8128489`. All three extensions were built before the first gate
+with `uv sync --no-dev --python 3.14`; their exact source revisions and binary
+SHA256s are recorded. One baseline Python wrapper loads all three extensions.
 
-[`int8.py`](int8.py) alternates the actual extensions in one process on the
-same read-only Fortran array. It generates the original seed-1 genotype data
-with floating effect sizes, then converts X's storage; passing `dtype=int8`
-to the generator itself would also truncate its effects and change y.
-Both libraries are warmed before timing. Clocks include the complete fit,
-validation and standardization, and exclude generation, warm-up and hashing.
-Paths use the default 100-lambda binomial grid, at alpha 1 or 0.5, and both
-builds use the clipping policy introduced for 0.4.0.
+The host uses the `powersave` governor and `balance_performance` energy
+preference on all twelve logical CPUs. Both are recorded in provenance and
+checked at every gate sample and bookend. The desktop exposes no AC/battery
+sensor. Its regular application and monitoring services remain running.
 
-The harness now rejects every warning except the optional numba control's
-deprecation, and requires all 100 requested lambdas, during both warm-up and
-timed fits. The warning filter is installed before the clock starts; the path
-length check follows it. The original measurements predate this guard. A
-[separate validation audit](results/int8-ryzen-validation.jsonl), using the
-guard in `e711368`, repeated each recorded setting and variant on the exact
-same extension files: all 70 validation fits completed 100 lambdas without
-disallowed warnings and reproduced their recorded path hashes. These are
-validation fits, not replacement timing measurements; all original times
-remain unchanged.
+Before each setting, the gate collects five-second `/proc/stat` samples over
+180 seconds: 37 samples including both endpoints. The median user + nice +
+system busy fraction must be at most 15%, and no compiler, test or benchmark
+process may appear at any sample in that window. Individual busy samples may
+exceed 15%; admission uses the median of the complete window. Iowait and load
+are recorded but do not affect admission. All
+[740 admission samples](results/int8-zen3-quiet/gate-qualified.jsonl) and
+[20 pass records](results/int8-zen3-quiet/gate-passed.jsonl) are retained.
+The admitted window medians span 8.63–9.60%. One-second
+[CPU/load bookends](results/int8-zen3-quiet/environment.jsonl) precede and follow
+every setting; their busy fractions span 3.55–18.16%. The gate admits settings;
+it does not monitor background CPU continuously during fits.
 
-There were ordinary background services on the machine: idle CPU was 86–93%
-in preflight samples and 85–94% in the final postflight samples. These are
-paired shared-machine results.
-[One-second load samples](results/int8-ryzen-load.csv) cover the complete sets,
-including generation and warm-up; the initial since-boot averages are omitted.
-All repetitions and small regressions
-in the controls below are retained, including medians up to 2.5% slower.
-These measurements do not establish the cause of such small changes.
+Timing starts at 2026-10-28 03:05:29 UTC and ends at 04:21:21 UTC. All
+20 settings, 360 timed fits and 60 warm-ups are retained in the
+[raw records](results/int8-zen3-quiet/results.jsonl), including per-fit UTC
+intervals. Every setting warms all three builds, then runs all six
+baseline/ungated/gated permutations once: six timed fits per build, twice in
+each position. The [executed driver](results/int8-zen3-quiet/run.py) rejects
+every warning and requires all 100 lambdas in warm-ups and timed fits.
+Path hashes and iteration counts agree across builds, repetitions and 1/6
+threads; the hashes check identity, not external expected solver values.
 
-The [int8 target runs](results/int8-ryzen-binomial.jsonl) use four repetitions
-per version, in AB/BA order. Times below are median seconds, baseline → candidate:
+Inputs are seed-1 read-only Fortran arrays. The genotype generator uses its
+original floating effect sizes before X is converted to int8 storage;
+Gaussian uses the same continuous dyadic response as the other three-build
+runs. The fit clock includes validation, standardization and the complete
+path, excluding generation, warm-up, hashing and UTC bookkeeping.
 
-| Problem | Alpha | 1 thread | 6 threads |
-|---|---:|---:|---:|
-| 2,000 × 20,000 | 1 | 1.561 → 0.862 | 0.870 → 0.520 |
-| 2,000 × 20,000 | 0.5 | 1.657 → 0.925 | 0.968 → 0.569 |
-| 5,000 × 50,000 | 1 | 8.806 → 4.926 | 4.285 → 2.639 |
-| 5,000 × 50,000 | 0.5 | 9.333 → 5.223 | 4.867 → 2.976 |
+Int8 median seconds, B = baseline, U = ungated, G = gated:
 
-The before/after ratio spans 1.62–1.81x on these int8 targets.
-[Floating-storage controls](results/int8-ryzen-controls.jsonl) cover tall
-5,000 × 1,000 and wide 2,000 × 20,000 designs, both penalties and 1/6 threads.
-[Gaussian controls](results/int8-ryzen-gaussian.jsonl) use the same two shapes,
-alpha 0.5, and a continuous dyadic response.
+| Problem | Alpha | Threads | B | U | G |
+|---|---:|---:|---:|---:|---:|
+| 2,000 × 20,000 | 1 | 1 | 1.546570 | 0.873216 | 0.861139 |
+| 2,000 × 20,000 | 1 | 6 | 0.881457 | 0.551922 | 0.590317 |
+| 2,000 × 20,000 | 0.5 | 1 | 1.654180 | 0.927049 | 0.928497 |
+| 2,000 × 20,000 | 0.5 | 6 | 0.976873 | 0.609124 | 0.587592 |
+| 5,000 × 50,000 | 1 | 1 | 8.741718 | 4.838774 | 4.805325 |
+| 5,000 × 50,000 | 1 | 6 | 4.341952 | 2.609067 | 2.616984 |
+| 5,000 × 50,000 | 0.5 | 1 | 9.341159 | 5.164698 | 5.131425 |
+| 5,000 × 50,000 | 0.5 | 6 | 4.827652 | 2.920433 | 2.937895 |
 
-| Control | Baseline/candidate time range |
-|---|---:|
-| Binomial float32 | 0.984–1.015x |
-| Binomial float64 | 0.987–1.020x |
-| Gaussian int8 | 1.106–1.368x |
-| Gaussian float64 | 0.975–1.006x |
+Baseline/gated ratios span 1.493–1.820x; baseline/ungated ratios span
+1.597–1.809x. Both use the indexed conversion on x86. At 2,000 × 20,000,
+alpha 1 and six threads, the gated median is 6.96% longer than ungated while
+remaining 1.493x faster than baseline; that difference is retained, not
+assumed to be noise.
 
-## Current numba context
+Float64 control median seconds, baseline → gated:
 
-The original issue compared Rust int8 with numba. A
-[separate same-input control](results/int8-ryzen-numba.jsonl) uses numba 0.68.0,
-six threads and alpha 1. It runs each of the six orders of the three variants
-once, after warming all three. This gives six timed fits per variant and
-balances their positions. All three reach 100 lambdas and the same total
-iterations (559 and 524, respectively).
+| Family | Problem | Alpha | 1 thread | 6 threads |
+|---|---|---:|---:|---:|
+| Binomial | 5,000 × 1,000 | 1 | 2.981246 → 2.941526 | 2.908529 → 2.906966 |
+| Binomial | 5,000 × 1,000 | 0.5 | 2.071206 → 2.084123 | 2.023834 → 2.011012 |
+| Binomial | 2,000 × 20,000 | 1 | 1.580772 → 1.600400 | 1.340692 → 1.334999 |
+| Binomial | 2,000 × 20,000 | 0.5 | 1.622992 → 1.626633 | 1.435907 → 1.382778 |
+| Gaussian | 5,000 × 1,000 | 0.5 | 1.087825 → 1.089677 | 1.076457 → 1.092858 |
+| Gaussian | 2,000 × 20,000 | 0.5 | 2.197399 → 2.205904 | 2.006180 → 1.975193 |
 
-| Problem | Baseline Rust | Candidate Rust | Numba |
-|---|---:|---:|---:|
-| 2,000 × 20,000 | 0.877 s | 0.512 s | 0.558 s |
-| 5,000 × 50,000 | 4.316 s | 2.679 s | 2.764 s |
-
-The candidate is competitive with numba here; this is not a general ranking
-of the two backends. Numba uses different reductions and its hashes are
-recorded separately. Only Rust's before/after hashes are required to coincide;
-each backend must retain its own repeat/thread identity.
-
-In total, the four files retain 34 records and 292 timed fits. Every median
-and ratio can be recomputed from the raw times. No README competitor table
-or out-of-core performance claim is updated by these measurements.
+Baseline/gated ratios span 0.9877–1.0384x for float64 binomial and
+0.9850–1.0157x for float64 Gaussian. The wide single-thread binomial lasso
+median is 1.24% longer; the tall six-thread Gaussian median is 1.52% longer.
+All samples and small regressions remain in the records. These measured
+ranges are not universal performance bounds or out-of-core claims.
+The [manifest](results/int8-zen3-quiet/manifest.json) pins every evidence file;
+counts, orders, timestamps, gate-window medians, path identities, timing
+summaries and unchanged build fingerprints were checked without rerunning
+fits.
 
 ## Quiet-gated Zen 4 three-build run
 
@@ -271,19 +270,9 @@ and path identities were independently checked without rerunning fits.
 
 ## Reproduce
 
-Build `bfd527f` in a separate baseline checkout, then run from the candidate:
-
-```bash
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run python benchmarks/int8.py \
-  --baseline-extension ../baseline/src/pybiglasso/_rust.abi3.so \
-  --problem wide-2k-20k wide-5k-50k --dtype int8 \
-  --threads 1 6 --alpha 1 .5 --repeats 4
-
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run python benchmarks/int8.py \
-  --baseline-extension ../baseline/src/pybiglasso/_rust.abi3.so \
-  --problem wide-2k-20k wide-5k-50k --dtype int8 \
-  --threads 6 --alpha 1 --repeats 6 --with-numba
-```
-
-Use `--dtype float32 float64` for the floating controls and `--family gaussian`
-for the Gaussian control. `--out` appends raw JSONL; choose a fresh destination.
+The [Zen 3 bundle](results/int8-zen3-quiet/README.md) and
+[Zen 4 bundle](results/int8-zen4-quiet/README.md) describe their pinned builds,
+output layout and exact driver commands. Use a fresh output directory and
+the stated host policy and gate rule. The
+[M1 execution notes](results/int8-m1-pro-quiet/execution.txt) record its build,
+gate and run commands; its scripts are included in that bundle.
