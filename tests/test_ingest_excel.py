@@ -1,7 +1,7 @@
-"""Workbook-wide allocations must be bounded before openpyxl opens XLSX."""
+"""Excel memory exception and directory-only shared-string size guard."""
 
+import copy
 import importlib
-import struct
 import zipfile
 from xml.etree import ElementTree
 
@@ -65,22 +65,31 @@ def shared_strings_workbook(tmp_path):
     return source
 
 
-def test_large_unselected_shared_strings_rejected_before_reader(
+def test_over_ceiling_rejected_without_decompression(
     shared_strings_workbook, tmp_path, monkeypatch
 ):
+    with zipfile.ZipFile(shared_strings_workbook) as archive:
+        size = archive.getinfo("xl/sharedStrings.xml").file_size
+
     def forbidden(*args, **kwargs):
-        pytest.fail("openpyxl opened an over-budget workbook")
+        pytest.fail("Over-ceiling shared strings were materialized")
 
     monkeypatch.setattr(openpyxl, "load_workbook", forbidden)
-    with pytest.raises(ValueError, match="metadata exceeds excel_metadata_limit"):
+    monkeypatch.setattr(zipfile.ZipFile, "open", forbidden)
+    with pytest.raises(ValueError, match="convert the workbook to CSV or Parquet"):
         ingest(
-            shared_strings_workbook, tmp_path / "X.arrow", features=["x"], block_size=1
+            shared_strings_workbook,
+            tmp_path / "X.arrow",
+            features=["x"],
+            block_size=1,
+            excel_shared_strings_limit=size - 1,
         )
     assert not (tmp_path / "X.arrow").exists()
 
 
-def test_explicit_larger_budget_has_valid_source_positive_twin(
-    shared_strings_workbook, tmp_path, monkeypatch
+@pytest.mark.parametrize("explicit_ceiling", [False, True])
+def test_under_ceiling_ingests_with_workbook_memory_exception(
+    shared_strings_workbook, tmp_path, monkeypatch, explicit_ceiling
 ):
     original = openpyxl.load_workbook
     independent = original(shared_strings_workbook, read_only=True, data_only=True)
@@ -90,6 +99,8 @@ def test_explicit_larger_budget_has_valid_source_positive_twin(
         independent.close()
     assert len(rows) == 4097
     assert rows[-1][1] == "unique-4095-" + "z" * 512
+    with zipfile.ZipFile(shared_strings_workbook) as archive:
+        size = archive.getinfo("xl/sharedStrings.xml").file_size
     loads = []
 
     def counted(*args, **kwargs):
@@ -98,110 +109,83 @@ def test_explicit_larger_budget_has_valid_source_positive_twin(
         return workbook
 
     monkeypatch.setattr(openpyxl, "load_workbook", counted)
+    options = {"excel_shared_strings_limit": size} if explicit_ceiling else {}
     result = ingest(
         shared_strings_workbook,
         tmp_path / "X.arrow",
         features=["x"],
         block_size=1,
-        excel_metadata_limit=8 << 20,
+        **options,
     )
+    # This is an intentional format exception, not a block-bounded claim.
     assert loads == [4096, 4096, 4096]
     np.testing.assert_array_equal(
         result.design._columns[0][0], [row[0] for row in rows[1:]]
     )
 
 
-def test_preflight_is_checked_again_before_each_pass(
+def test_default_one_gib_ceiling_uses_directory_sizes(
+    shared_strings_workbook, tmp_path, monkeypatch
+):
+    original = zipfile.ZipFile.infolist
+
+    def declared_large(archive):
+        members = [copy.copy(info) for info in original(archive)]
+        for member in members:
+            if member.filename == "xl/sharedStrings.xml":
+                member.file_size = (1 << 30) + 1
+        return members
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", declared_large)
+    monkeypatch.setattr(
+        openpyxl, "load_workbook", lambda *_, **__: pytest.fail("Workbook opened")
+    )
+    monkeypatch.setattr(
+        zipfile.ZipFile, "open", lambda *_, **__: pytest.fail("Member decompressed")
+    )
+    with pytest.raises(ValueError, match="exceeds excel_shared_strings_limit"):
+        ingest(shared_strings_workbook, tmp_path / "X.arrow", features=["x"])
+
+
+def test_explicit_ceiling_can_be_raised(shared_strings_workbook, monkeypatch):
+    module = importlib.import_module("pybiglasso.ingest")
+    original = zipfile.ZipFile.infolist
+
+    def declared_large(archive):
+        members = [copy.copy(info) for info in original(archive)]
+        for member in members:
+            if member.filename == "xl/sharedStrings.xml":
+                member.file_size = (1 << 30) + 1
+        return members
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", declared_large)
+    monkeypatch.setattr(
+        zipfile.ZipFile, "open", lambda *_, **__: pytest.fail("Member decompressed")
+    )
+    module._check_shared_strings(shared_strings_workbook, (1 << 30) + 1)
+
+
+def test_preflight_is_checked_before_each_pass(
     shared_strings_workbook, tmp_path, monkeypatch
 ):
     module = importlib.import_module("pybiglasso.ingest")
-    original = module.check_metadata
+    original = module._check_shared_strings
     checks = []
 
     def counted(source, limit):
         checks.append(limit)
         return original(source, limit)
 
-    monkeypatch.setattr(module, "check_metadata", counted)
-    ingest(
-        shared_strings_workbook,
-        tmp_path / "X.arrow",
-        features=["x"],
-        excel_metadata_limit=8 << 20,
-    )
-    assert checks == [8 << 20] * 3
-
-
-def test_zip_directory_rejected_before_zipfile_allocates(tmp_path, monkeypatch):
-    source = tmp_path / "many-parts.xlsx"
-    with zipfile.ZipFile(source, "w") as archive:
-        for index in range(1025):
-            archive.writestr(f"part-{index}", b"")
-    module = importlib.import_module("pybiglasso._xlsx")
-    monkeypatch.setattr(
-        module.zipfile, "ZipFile", lambda *_: pytest.fail("Directory allocated")
-    )
-    with pytest.raises(ValueError, match="directory exceeds"):
-        ingest(source, tmp_path / "X.arrow")
-
-
-def test_misleading_directory_signature_in_comment_rejected(tmp_path, monkeypatch):
-    source = tmp_path / "comment.xlsx"
-    with zipfile.ZipFile(source, "w") as archive:
-        archive.writestr("part", b"")
-        archive.comment = struct.pack(
-            "<4s4H2LH", b"PK\x05\x06", 0, 0, 1, 1, 1 << 30, 0, 65535
-        )
-    module = importlib.import_module("pybiglasso._xlsx")
-    monkeypatch.setattr(
-        module.zipfile, "ZipFile", lambda *_: pytest.fail("Directory allocated")
-    )
-    with pytest.raises(ValueError, match="Invalid XLSX ZIP directory"):
-        ingest(source, tmp_path / "X.arrow")
-
-
-def test_styles_are_counted_even_without_shared_strings(tmp_path, monkeypatch):
-    base = tmp_path / "base.xlsx"
-    source = tmp_path / "styles.xlsx"
-    workbook = openpyxl.Workbook()
-    workbook.active.append(["x"])
-    workbook.active.append([1])
-    workbook.save(base)
-    workbook.close()
-    with (
-        zipfile.ZipFile(base) as original,
-        zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as output,
-    ):
-        for name in original.namelist():
-            data = original.read(name)
-            if name == "xl/styles.xml":
-                data += b" " * (1 << 20)
-            output.writestr(name, data)
-    monkeypatch.setattr(
-        openpyxl, "load_workbook", lambda *_, **__: pytest.fail("Workbook opened")
-    )
-    with pytest.raises(ValueError, match="metadata exceeds excel_metadata_limit"):
-        ingest(source, tmp_path / "X.arrow")
-
-
-def test_zip_directory_byte_budget_precedes_zipfile(tmp_path, monkeypatch):
-    source = tmp_path / "directory.xlsx"
-    with zipfile.ZipFile(source, "w") as archive:
-        for index in range(1024):
-            archive.writestr(str(index) + "x" * 1100, b"")
-    module = importlib.import_module("pybiglasso._xlsx")
-    monkeypatch.setattr(
-        module.zipfile, "ZipFile", lambda *_: pytest.fail("Directory allocated")
-    )
-    with pytest.raises(ValueError, match="directory exceeds"):
-        ingest(source, tmp_path / "X.arrow")
+    monkeypatch.setattr(module, "_check_shared_strings", counted)
+    ingest(shared_strings_workbook, tmp_path / "X.arrow", features=["x"])
+    assert checks == [1 << 30] * 3
 
 
 @pytest.mark.parametrize("limit", [0, -1, True, 1.5])
-def test_metadata_limit_must_be_positive_integer(tmp_path, limit):
+def test_ceiling_must_be_positive_integer(tmp_path, limit):
     source = tmp_path / "source.csv"
     source.write_text("x\n1\n2\n")
     with pytest.raises(
-        ValueError, match="excel_metadata_limit must be a positive integer"
+        ValueError, match="excel_shared_strings_limit must be a positive integer"
     ):
-        ingest(source, tmp_path / "X.arrow", excel_metadata_limit=limit)
+        ingest(source, tmp_path / "X.arrow", excel_shared_strings_limit=limit)

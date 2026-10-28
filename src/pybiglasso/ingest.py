@@ -8,6 +8,7 @@ import math
 import os
 import re
 import tempfile
+import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -15,7 +16,6 @@ from pathlib import Path
 
 import numpy as np
 
-from ._xlsx import check_metadata
 from .arrow import ArrowDesign
 
 # In preference order, limited deliberately to ArrowDesign's storage contract.
@@ -156,7 +156,7 @@ def _exact(value, dtype):
         return False
 
 
-def _headers(source, pa, sheet, excel_metadata_limit):
+def _headers(source, pa, sheet, excel_shared_strings_limit):
     suffix = source.suffix.lower()
     if suffix == ".csv":
         with source.open(newline="", encoding="utf-8-sig") as stream:
@@ -170,7 +170,7 @@ def _headers(source, pa, sheet, excel_metadata_limit):
         with pa.memory_map(str(source), "r") as mapping:
             return _names(pa.ipc.open_file(mapping).schema.names)
     if suffix == ".xlsx":
-        workbook = _workbook(source, excel_metadata_limit)
+        workbook = _workbook(source, excel_shared_strings_limit)
         try:
             worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
             return _names(next(worksheet.iter_rows(values_only=True), ()))
@@ -179,8 +179,24 @@ def _headers(source, pa, sheet, excel_metadata_limit):
     raise ValueError("Source must be CSV, Parquet, Feather/IPC file, or .xlsx.")
 
 
-def _workbook(source, excel_metadata_limit):
-    check_metadata(source, excel_metadata_limit)
+def _check_shared_strings(source, limit):
+    # ZipInfo.file_size is the uncompressed size recorded in the directory.
+    # Do not open/decompress the table merely to decide whether it is too big.
+    with zipfile.ZipFile(source) as archive:
+        size = sum(
+            member.file_size
+            for member in archive.infolist()
+            if member.filename.rsplit("/", 1)[-1] == "sharedStrings.xml"
+        )
+    if size > limit:
+        raise ValueError(
+            "XLSX sharedStrings.xml exceeds excel_shared_strings_limit; "
+            "convert the workbook to CSV or Parquet, or raise the ceiling explicitly."
+        )
+
+
+def _workbook(source, excel_shared_strings_limit):
+    _check_shared_strings(source, excel_shared_strings_limit)
     try:
         import openpyxl
     except ImportError as error:
@@ -192,7 +208,9 @@ def _workbook(source, excel_metadata_limit):
     )
 
 
-def _blocks(source, columns, all_names, block_size, sheet, pa, excel_metadata_limit):
+def _blocks(
+    source, columns, all_names, block_size, sheet, pa, excel_shared_strings_limit
+):
     """Yield selected columns; only a source batch or block is decoded at once."""
     suffix = source.suffix.lower()
     if suffix == ".csv":
@@ -235,7 +253,7 @@ def _blocks(source, columns, all_names, block_size, sheet, pa, excel_metadata_li
                         for name in columns
                     }
     else:
-        workbook = _workbook(source, excel_metadata_limit)
+        workbook = _workbook(source, excel_shared_strings_limit)
         try:
             worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
             rows = worksheet.iter_rows(values_only=True)
@@ -388,7 +406,7 @@ def ingest(
     dtypes="auto",
     block_size=65536,
     sheet=None,
-    excel_metadata_limit=1 << 20,
+    excel_shared_strings_limit=1 << 30,
     cache=False,
     cache_dir=None,
 ):
@@ -402,10 +420,10 @@ def ingest(
 
     ``block_size`` means bytes for CSV and rows for other readers. Compressed
     Feather decoding is bounded by its largest existing record batch. Excel
-    uses a read-only worksheet iterator plus bounded workbook metadata:
-    ``excel_metadata_limit`` caps total uncompressed non-worksheet bytes
-    (1 MiB by default), checked before openpyxl opens each pass. Other formats
-    never assemble a table.
+    is an exception to block-bounded memory: its complete workbook shared-string
+    table may be held in memory, including unselected columns. Before each open,
+    ``excel_shared_strings_limit`` caps its declared uncompressed XML size
+    (1 GiB by default), without decompressing it. This is not an RSS ceiling.
 
     Specify an explicit persistent ``out`` or ``cache_dir``. There is no
     implicit temporary destination or automatic deletion. ``cache=True``
@@ -424,12 +442,12 @@ def ingest(
     ):
         raise ValueError("block_size must be a positive integer.")
     if (
-        not isinstance(excel_metadata_limit, int)
-        or isinstance(excel_metadata_limit, bool)
-        or excel_metadata_limit <= 0
+        not isinstance(excel_shared_strings_limit, int)
+        or isinstance(excel_shared_strings_limit, bool)
+        or excel_shared_strings_limit <= 0
     ):
-        raise ValueError("excel_metadata_limit must be a positive integer.")
-    names = _headers(source, pa, sheet, excel_metadata_limit)
+        raise ValueError("excel_shared_strings_limit must be a positive integer.")
+    names = _headers(source, pa, sheet, excel_shared_strings_limit)
     selected = _selection(names, response, features, exclude, match)
     if isinstance(dtypes, str):
         if dtypes != "auto":
@@ -448,14 +466,14 @@ def ingest(
     columns = (*selected, *((response,) if response is not None else ()))
     fingerprint = _fingerprint(source)
     options = dict(
-        version=3,
+        version=4,
         source=fingerprint,
         features=selected,
         response=response,
         dtypes=overrides,
         sheet=sheet,
         block_size=block_size,
-        excel_metadata_limit=excel_metadata_limit,
+        excel_shared_strings_limit=excel_shared_strings_limit,
     )
     key = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
     if out is None:
@@ -480,7 +498,7 @@ def ingest(
 
     def blocks():
         return _blocks(
-            source, columns, names, block_size, sheet, pa, excel_metadata_limit
+            source, columns, names, block_size, sheet, pa, excel_shared_strings_limit
         )
 
     # The response is separate solver input, always exactly representable f64.

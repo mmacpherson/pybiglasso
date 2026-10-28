@@ -52,8 +52,8 @@ values are rejected with the column name and one-based data-row number
 ## Bounded conversion
 
 The first pass infers types and counts rows. The second stages typed columns
-on disk, retaining one decoded block and per-column state, plus bounded
-workbook metadata for Excel, in memory.
+on disk. CSV, Parquet and Feather are read by block or source record batch,
+with per-column state. Excel is an explicit exception to block-bounded memory.
 The writer maps those raw columns read-only and writes one IPC batch; it does
 not concatenate the full input into an in-memory table. Bool staging carries
 at most seven bits between blocks, and writes packed bits, not byte-per-row
@@ -67,22 +67,26 @@ bool columns. Source size and modification time are checked between passes.
   batch size therefore bounds the decoding allocation, not `block_size`.
 - Excel uses openpyxl's read-only worksheet iterator. `sheet` selects a named
   worksheet; otherwise the first is used. Formula cells need stored values;
-  external workbook links are not loaded. Before every workbook open, a
-  preflight caps the total uncompressed size of all non-worksheet archive
-  members at `excel_metadata_limit` (1 MiB by default). This includes shared
-  strings, styles and metadata for unselected columns/sheets. Exceeding it
-  raises before openpyxl allocates its eager objects. A caller may explicitly
-  raise this budget, accepting proportionately larger metadata memory. The
-  budget is XML/archive bytes, not a byte-for-byte RSS ceiling: Python object
-  overhead is additional. Metadata allocation is bounded independently of
-  the number of worksheet rows, not eliminated by `read_only=True`.
+  external workbook links are not loaded. **The workbook's complete
+  shared-string table may be held in memory, including strings in unselected
+  columns or sheets.** `read_only=True` does not make this table block-bounded.
+  Excel's per-sheet limits are 1,048,576 rows × 16,384 columns; these dimension
+  limits are not a practical RAM budget for workbook-wide shared strings.
 
-The XLSX ZIP directory is separately capped at 1 MiB and 1,024 members before
-`ZipFile` constructs its entry objects. ZIP64 archive directories, duplicate
-members/content-type overrides, and metadata XML with NUL bytes or DTD/entity
-declarations are rejected in v1. Only standard worksheet XML is exempt from
-the metadata budget. The preflight never decodes an oversized shared-string
-table to decide whether it should have been rejected.
+Before each workbook open, a cheap ZIP-directory preflight reads the declared
+uncompressed size of `sharedStrings.xml` without opening or decompressing it.
+`excel_shared_strings_limit` defaults to **1 GiB (1,073,741,824 bytes)**. Above
+that ceiling, ingestion refuses with guidance to convert to CSV or Parquet.
+The ceiling can be explicitly raised, accepting the associated memory cost:
+
+```python
+data = ingest("data.xlsx", "design.arrow", excel_shared_strings_limit=2 << 30)
+```
+
+This ceiling is shared-string XML bytes, not total workbook memory or an RSS
+ceiling; Python string objects and other workbook metadata add overhead.
+Workbooks below the ceiling may still require substantial RAM. Prefer CSV or
+Parquet when a strict blockwise-memory workflow is needed.
 
 For non-CSV readers `block_size` counts rows. Output disk space must cover
 both column staging and the final IPC file during conversion.
@@ -107,5 +111,6 @@ reads, check row errors, selection and caching, and on Linux put the first
 large CSV conversion under an RLIMIT_DATA allowance smaller than the numeric
 table. A whole-table reader is the negative control.
 An independent valid XLSX fixture has 4,096 unique strings in an unselected
-column: the default metadata budget rejects it before any workbook-reader
-call, while an explicitly larger budget is the matching positive control.
+column: it ingests below the ceiling, while an explicitly smaller ceiling
+rejects it before any workbook-reader or decompression call. Directory-size
+probes check the default 1 GiB boundary without allocating a giant workbook.
