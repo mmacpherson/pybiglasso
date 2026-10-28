@@ -210,19 +210,23 @@ def test_unsupported_explicit_storage_dtype_rejected(tmp_path, dtype):
         ingest(source, tmp_path / "X.arrow", dtypes={"x": dtype})
 
 
-@pytest.mark.parametrize(
-    "value, expected", [(65535, pa.float32()), (2**40 + 1, pa.float64())]
-)
-def test_wider_source_integer_uses_exact_supported_representation(
-    tmp_path, value, expected
-):
+@pytest.mark.parametrize("value", [32768, 65535, 2**40 + 1, 2**53, 2**54])
+def test_wider_source_integer_uses_exact_supported_representation(tmp_path, value):
     source = tmp_path / "source.parquet"
     pq.write_table(pa.table({"x": pa.array([value], type=pa.uint64())}), source)
     result = ingest(source, tmp_path / "X.arrow")
     with pa.memory_map(str(result.path)) as mapping:
         column = pa.ipc.open_file(mapping).get_batch(0).column(0)
-        assert column.type == expected
+        assert column.type == pa.float64()
         assert column[0].as_py() == value
+
+
+@pytest.mark.parametrize("value", [-(2**53) - 1, 2**53 + 1, 2**64 - 1])
+def test_wide_integer_text_never_rounds_into_float64(tmp_path, value):
+    source = tmp_path / "source.csv"
+    source.write_text(f"x\n{value}\n")
+    with pytest.raises(ValueError, match="Column 'x', row 1: no supported exact dtype"):
+        ingest(source, tmp_path / "X.arrow")
 
 
 def test_csv_preserves_large_integer_and_signed_zero_spelling(tmp_path):

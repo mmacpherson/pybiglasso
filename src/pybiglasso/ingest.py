@@ -271,8 +271,16 @@ def _infer(blocks, columns, overrides):
         for name in columns:
             for index, raw in enumerate(block[name], count + 1):
                 value = _numeric(raw, name, index)
+                # Counts/IDs beyond the supported integer widths use f64,
+                # not f32, even when a particular integer happens to fit f32.
+                wide_integer = isinstance(value, int) and not -32768 <= value <= 32767
                 candidates[name] = [
-                    dtype for dtype in candidates[name] if _exact(value, dtype)
+                    dtype
+                    for dtype in candidates[name]
+                    if _exact(value, dtype)
+                    and not (
+                        name not in overrides and wide_integer and dtype == "float32"
+                    )
                 ]
                 if not candidates[name]:
                     raise ValueError(
@@ -426,7 +434,7 @@ def ingest(
     columns = (*selected, *((response,) if response is not None else ()))
     fingerprint = _fingerprint(source)
     options = dict(
-        version=1,
+        version=2,
         source=fingerprint,
         features=selected,
         response=response,

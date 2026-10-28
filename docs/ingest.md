@@ -29,8 +29,12 @@ features, even if explicitly listed. At least one feature must remain.
 
 `dtypes="auto"` chooses the first exact representation in this order:
 bool, int8, uint8, int16, float32, float64. These are the physical types accepted
-by the companion loader. Integer spellings in CSV are parsed without an
-intermediate float, including integral decimal/exponent spellings. Fractional
+by the companion loader. In auto mode, parsed integers outside the int16
+range use float64 rather than float32, provided conversion is exact. Every
+integer with magnitude at most 2^53 fits float64 exactly; larger integers are
+accepted only when they too are exactly representable. Integer spellings in
+CSV are parsed without an intermediate float, including integral
+decimal/exponent spellings. Fractional
 CSV values use float64 parsing. Float32 is used only when conversion preserves
 every parsed value; signed floating zero is retained. A partial dtype mapping
 overrides selected feature columns, with the same exactness requirement:
