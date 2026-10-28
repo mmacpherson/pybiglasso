@@ -494,8 +494,8 @@ like the algorithm's outline. To my eye that's easier to read, test, and modify.
 It's a matter of taste, though; some excellent programmers prefer the long
 inlined function you can read straight through (John Carmack has
 [a good essay](https://web.archive.org/web/20261006034120/http://number-none.com/blow/john_carmack_on_inlined_code.html) on
-why). The solver takes exactly the same iterations as R's at every lambda; the R
-comparison checks this in every case.
+why). The solver takes the same number of iterations as R's at every lambda; the
+R comparison checks this in every case.
 
 The solver is written twice, in the same steps. The one that runs is Rust
 (`rust/src/solver.rs`): one call from Python fits the whole path. The readable one,
