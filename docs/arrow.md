@@ -14,6 +14,12 @@ statement about what pybiglasso does, not about the provenance of a Table or the
 memory used by its producer. Bool remains bit-packed. The small response can
 be materialized as a contiguous array using O(n) memory.
 
+**Compressed files are decompressed into RAM by PyArrow before pybiglasso
+sees them, even with `memory_map=True`.** Check the reader's allocations with
+the one-liner below, or convert once with `ingest`, which always writes
+uncompressed feature files. For NumPy files, the counterpart is
+`np.load(path, mmap_mode="r")`.
+
 ```python
 import numpy as np
 import pyarrow.feather as pf
@@ -33,6 +39,20 @@ X = table.drop_columns(["response"])
 fit = biglasso(X, y, family="gaussian")
 prediction = fit.predict(X)
 ```
+
+Run this allocation diagnostic in a fresh Python process, with the same
+projection you plan to fit:
+
+```python
+import pyarrow as pa; import pyarrow.feather as pf; before = pa.total_allocated_bytes(); table = pf.read_table("data.feather", memory_map=True, columns=["x1", "x2", "response"]); print(pa.total_allocated_bytes() - before)
+```
+
+It reads (and, if compressed, decompresses) the file. The result is the bytes
+still held in Arrow's memory pool while `table` remains alive; zero means no
+retained pool allocation. This is an allocation diagnostic, not a compression
+preflight or a measurement of peak memory/RSS. Other reader conversions may
+allocate too. Converting once with ingest avoids decompression on subsequent reads; its
+conversion still has to decode each compressed source record batch.
 
 Use PyArrow to read files, just as NumPy files use `np.load(mmap_mode="r")`.
 The ordinary Table can be projected with Arrow's `select`/`drop_columns`, sliced, or handed to another
