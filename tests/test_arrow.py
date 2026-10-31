@@ -28,6 +28,15 @@ def write_ipc(path, arrays, *, compression=None, batches=1):
                 writer.write_batch(batch)
 
 
+def test_explicit_table_conversion_from_arrow_stream():
+    values = np.asfortranarray(np.arange(123 * 2).reshape(123, 2) % 7, dtype=float)
+    source = pa.table({"x0": values[:, 0], "x1": values[:, 1]})
+    reader = pa.RecordBatchReader.from_stream(source)
+    table = reader.read_all()
+    target = np.arange(123) % 2
+    same_path(biglasso(table, target, nlambda=5), biglasso(values, target, nlambda=5))
+
+
 def _arrow_recipe(marker, document="docs/arrow.md"):
     documentation = Path(__file__).resolve().parents[1] / document
     recipes = re.findall(r"```python\n(.*?)\n```", documentation.read_text(), re.S)
@@ -379,6 +388,8 @@ def test_rejects_nulls(tmp_path, values):
 def test_rejects_unsupported_types(tmp_path, kind):
     path = tmp_path / "unsupported.arrow"
     values = ["a", "b"] if kind == pa.string() else [1, 2]
+    if kind == pa.float16():
+        values = np.array(values, dtype=np.float16)
     write_ipc(path, [pa.array(values, type=kind)])
     with pytest.raises(ValueError, match="Column.*chunk.*unsupported Arrow type"):
         biglasso(_open_mapped(path), [0, 1])

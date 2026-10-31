@@ -9,6 +9,8 @@ dev = [
   "pytest-cov",
   "ruff",
   "pybiglasso[all]",
+  "pandas",
+  "polars",
   "pre-commit>=4.6.2",
   "hypothesis>=6.170.9",
   "pytest-xdist>=3.8.0"
@@ -27,8 +29,8 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Mathematics"
 ]
 dependencies = [
-  "numpy",
-  "scipy"
+  "numpy>=2.0",
+  "scipy>=1.13"
 ]
 description = "Unofficial Python port of R's biglasso: lasso and elastic-net paths for larger-than-memory data."
 keywords = [
@@ -50,12 +52,10 @@ requires-python = ">=3.11"
 version = "0.4.0"
 
 [project.optional-dependencies]
-all = ["pybiglasso[arrow,ingest,polars,pandas,sklearn,viz]"]
-arrow = ["pyarrow"]
-ingest = ["pybiglasso[arrow]", "openpyxl"]
-pandas = ["pandas"]
-polars = ["polars"]
-sklearn = ["scikit-learn>=1.6"]
+all = ["pybiglasso[arrow,ingest,sklearn,viz]"]
+arrow = ["pyarrow>=16.0"]
+ingest = ["pybiglasso[arrow]", "openpyxl>=3.0.6"]
+sklearn = ["scikit-learn>=1.9"]
 viz = ["seaborn>=0.13"]
 
 [project.urls]
@@ -67,6 +67,7 @@ Homepage = "https://github.com/mmacpherson/pybiglasso"
 # sdist adds what builds and tests the package.
 [tool.maturin]
 exclude = [{ path = "**/__pycache__/**", format = "sdist" }]
+features = ["pyo3/extension-module"]
 include = [
   { path = "tests/**/*", format = "sdist" },
   { path = "examples/**/*", format = "sdist" }

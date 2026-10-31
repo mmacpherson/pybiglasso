@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every uv command uses uv.lock as committed, and fails if it is stale
-# (except the latest-deps job).
+# (except the latest- and minimum-deps jobs).
 env:
   UV_LOCKED: 1
 
@@ -171,6 +171,20 @@ jobs:
       with:
         python-version: '3.15'
     - run: make test-latest
+
+  minimum-deps:
+    name: Minimum dependency versions
+    runs-on: ubuntu-latest
+    env:
+      UV_LOCKED: false
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+      with:
+        python-version: '3.11'
+    - run: make test-minimum
 
   sdist:
     name: Build the sdist and a wheel from it; fit from that wheel with no extras

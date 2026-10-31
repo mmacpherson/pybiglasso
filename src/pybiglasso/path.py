@@ -167,10 +167,8 @@ class BiglassoPath:
         """
         try:
             import polars as pl
-        except ImportError as e:  # pragma: no cover
-            raise ImportError(
-                "to_polars() needs polars: pip install 'pybiglasso[polars]'"
-            ) from e
+        except ImportError as e:
+            raise ImportError("to_polars() needs polars: pip install polars") from e
         data = self._frames()[kind]
         return pl.DataFrame(
             {k: (v.tolist() if v.dtype == object else v) for k, v in data.items()}
@@ -180,10 +178,8 @@ class BiglassoPath:
         """Export as a pandas DataFrame; see `to_polars` for `kind`."""
         try:
             import pandas as pd
-        except ImportError as e:  # pragma: no cover
-            raise ImportError(
-                "to_pandas() needs pandas: pip install 'pybiglasso[pandas]'"
-            ) from e
+        except ImportError as e:
+            raise ImportError("to_pandas() needs pandas: pip install pandas") from e
         return pd.DataFrame(self._frames()[kind])
 
 
