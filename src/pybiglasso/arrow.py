@@ -121,7 +121,7 @@ def _check_uncompressed(source, pa):
                 raise ValueError("Expected an Arrow record batch.")
             if _field(metadata, table, 3) is not None:
                 raise ValueError(
-                    "Mapped storage requires uncompressed Arrow buffers; use ingest to convert the file."
+                    "Mapped storage requires an uncompressed Arrow file; use ingest to convert the file."
                 )
 
 
