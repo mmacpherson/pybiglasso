@@ -1,0 +1,47 @@
+{
+  "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+  "python": "3.14.0",
+  "numpy": "2.5.4",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Arch Linux rust 1:1.99.1-1)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.3",
+  "variants": {
+    "baseline": {
+      "source_commit": "5065100f8291dde9ce2200821cf8529e23e09362",
+      "extension_sha256": "6b8b544ed65d39a9cb4004e62a9c01a4b5d0653529054ad4a96b8e2aa0cf0f0a"
+    },
+    "ungated": {
+      "source_commit": "2b0370297e591c8624de532bf2335e32ae9b8ef2",
+      "extension_sha256": "5c46b8a95a81ae5c5868d058331de2ed03124509b338ddd661e1dd3d19445499"
+    },
+    "gated": {
+      "source_commit": "812848955ca19f244c3e7163ff78bb36affe34ac",
+      "extension_sha256": "479b363cdbbcaf0d8f3e38d306fd0b58b8529a77283b80ebdd8fc7593580c6ab"
+    }
+  },
+  "gate_rule": {
+    "statistic": "median",
+    "cpu_components": [
+      "user",
+      "nice",
+      "system"
+    ],
+    "median_busy_pct_max": 15,
+    "window_seconds": 180,
+    "sample_seconds": 5,
+    "window_samples": 37,
+    "iowait_used": false,
+    "load_used": false,
+    "no_workers": true
+  },
+  "allowed_background": [
+    "IB Gateway/JxBrowser",
+    "clementine-web",
+    "cadvisor"
+  ],
+  "power_supply_online": {},
+  "governors": [
+    "powersave"
+  ],
+  "energy_performance_preferences": [
+    "balance_performance"
+  ]
+}

@@ -5,6 +5,8 @@ import dataclasses
 import numpy as np
 import scipy.sparse as sps
 
+from .arrow import ArrowDesign
+
 INTERCEPT = "(Intercept)"
 METRICS = ("deviance", "auc", "accuracy")
 
@@ -217,7 +219,14 @@ def linear_predictor(X, coef, intercept, row_indices=None):
         beta = sps.csr_array(coef[cols, :])
         for start in range(0, nrow, height):
             stop = min(start + height, nrow)
-            if row_indices is None:
+            if isinstance(X, ArrowDesign):
+                rows = (
+                    slice(start, stop)
+                    if row_indices is None
+                    else row_indices[start:stop]
+                )
+                block = X._block(rows, cols)
+            elif row_indices is None:
                 block = X[start:stop][:, cols]
             else:
                 block = X[np.ix_(row_indices[start:stop], cols)]

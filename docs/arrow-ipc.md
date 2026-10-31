@@ -1,10 +1,23 @@
-# Arrow IPC designs (draft, post-0.4.0)
+# Arrow IPC designs
 
-This is the implementation plan for p4j.1, not a released API. The initial
-interface is `ArrowDesign(path)`, passed as X to `biglasso`. It owns a read-only
+`ArrowDesign(path)` can be passed as X to `biglasso`, the classifier and
+regressor estimators (including CV), and path prediction/scoring. It owns a read-only
 PyArrow memory mapping of an uncompressed IPC file (Feather v2), with one
 nonempty record batch. PyArrow is an optional `arrow` extra; importing
-pybiglasso must not import it.
+pybiglasso does not import PyArrow until a design is opened.
+
+```python
+from pybiglasso import biglasso
+from pybiglasso.arrow import ArrowDesign
+
+X = ArrowDesign("features.feather")
+fit = biglasso(X, y, family="gaussian")
+prediction = fit.predict(X)
+```
+
+The file contains features only; supply the response separately. Feature names
+must be unique. `n_threads="auto"` treats mapped Arrow files like NumPy memmaps
+and uses one worker; an explicit positive worker count overrides this policy.
 
 ## Storage and lifetime
 
@@ -14,38 +27,44 @@ pybiglasso must not import it.
   same 0.0 or 1.0 as a NumPy bool column. No unpacked row-length bool buffer.
 - Primitive readers borrow read-only, aligned NumPy views of the mapped Arrow
   buffers. Creating a view changes metadata, not X's storage.
-- Validate compression metadata before decoding a record batch, and verify
+- The reader validates compression metadata before decoding a record batch, and verifies
   every values buffer lies within the mapping. Do not silently decode a
   compressed Feather file into allocated columns.
-- Reject nulls, unsupported types, empty designs and multiple record batches.
+- It rejects nulls, unsupported types, empty designs and multiple record batches.
   In particular, nulls are rejected even outside a row subset. NaN/infinity
   retain the solver's existing selected-row policy for floating columns.
 - The design keeps the mapping, batch and exported buffers alive. A fit holds
   its immutable buffer owners across GIL release and callbacks.
+
+Do not overwrite, truncate or modify the underlying file while any design or
+view refers to it. A read-only mapping protects against writes through this
+API, not changes by another process. No temporary-file deletion or lifetime
+management is implicit in opening a design.
 
 Requiring one batch keeps every logical column contiguous without changing
 chunk boundaries. Writing or combining batches is a separate ingest operation
 (p4j.2), not something a fit does. Arrow's default compressed Feather output
 is not suitable; write uncompressed with a batch size covering the whole file.
 
-## Solver boundary
+## Solver and prediction
 
-Add a heterogeneous Rust `Design` whose per-column enum borrows primitive
+The heterogeneous Rust `Design` has a per-column enum borrowing primitive
 slices or a bool bitmap. Choose the representation once per column; reuse the
 existing `Col` kernels and fixed logical row/chunk order, not Arrow's buffer
 boundaries. No new arithmetic, unsafe pointer access or numerical policy.
 
-Reuse the Python binding's row selection, including the mask-safety fallback
+It reuses the Python binding's row selection, including the mask-safety fallback
 to a gather. Both paths refer to the same mapped columns and never materialize
 X or a row-subset matrix. Keep the existing ndarray path and direct-call
 validation intact.
 
-The initial public integration targets `biglasso` and bounded-block path
-prediction. Do not let generic `np.asarray` or sklearn validation silently
-materialize an Arrow design; unsupported consumers must fail explicitly until
-they have a deliberate zero-copy path.
+Prediction converts only bounded blocks of the columns used by the selected
+fits, as on NumPy inputs; it does not expand the whole bool design. sklearn
+validates design metadata without `check_array` on X, and validates the response
+separately. Its prediction also checks floating values in bounded blocks.
+Generic `np.asarray(X)` raises instead of silently materializing a matrix.
 
-## Acceptance before leaving draft
+## Checks
 
 1. Bit-identical complete paths against the same values in a Fortran .npy:
    every supported type, mixed columns, both families and penalties, supplied
@@ -58,7 +77,8 @@ they have a deliberate zero-copy path.
    claim must cover both loading and the first fit, not only warm fits.
 5. Existing fast/native/live-R suites and hooks unchanged in strength. No new
    R fixtures and no altered expectations or fitted tolerances.
-6. Independent astra review; no merge until after the 0.4.0 release.
+6. Independent review and CI's cross-platform bit check, including a mixed
+   six-type Arrow design on Linux x86/ARM, macOS ARM and Windows x86.
 
 References: [Arrow IPC](https://arrow.apache.org/docs/python/ipc.html),
 [columnar layout](https://arrow.apache.org/docs/format/Columnar.html), and

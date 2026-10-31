@@ -12,12 +12,14 @@ import argparse
 import hashlib
 import json
 import platform
+import tempfile
 import warnings
 from pathlib import Path
 
 PROBLEMS = {"tall": (2057, 17), "wide": (97, 129), "parallel-irls": (16_391, 9)}
 ALPHAS = (1.0, 0.5)
 FAMILIES = ("binomial", "gaussian")
+DTYPES = ("float64", "int8", "arrow-mixed")
 CANDIDATE_MACHINES = {
     "Linux": ("aarch64", "arm64"),
     "Darwin": ("aarch64", "arm64"),
@@ -42,8 +44,10 @@ def array_bits(array, *, include_data=False):
 
 def record(output):
     import numpy as np
+    import pyarrow as pa
 
     import pybiglasso as bl
+    from pybiglasso.arrow import ArrowDesign
 
     cases = {}
     for name, (nrow, ncol) in PROBLEMS.items():
@@ -53,45 +57,81 @@ def record(output):
         # cross-OS check covers portable math on worker threads.
         rng = np.random.default_rng(1)
         y = rng.integers(0, 2, nrow, dtype=np.int64).astype(np.float64)
-        X = rng.integers(-8, 9, (nrow, ncol), dtype=np.int64).astype(np.float64)
-        X[:, 0] += 4 * (2 * y - 1)
-        X = np.asfortranarray(X / 8)
-        for family in FAMILIES:
-            # All operations are exact dyadic arithmetic, including Gaussian y.
-            response = y if family == "binomial" else 0.5 + 2 * y + X[:, 1] / 4
-            for alpha in ALPHAS:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error")
-                    fit = bl.biglasso(
-                        X,
-                        response,
-                        family=family,
-                        alpha=alpha,
-                        nlambda=12,
-                        backend="rust",
-                        n_threads=2,
+        raw = rng.integers(-8, 9, (nrow, ncol), dtype=np.int64).astype(np.float64)
+        raw[:, 0] += 4 * (2 * y - 1)
+        designs = {
+            "float64": np.asfortranarray(raw / 8),
+            # All values are integers in [-12, 12], exactly representable in
+            # int8. Exercise Contig<i8>::block, not just the f64 control.
+            "int8": np.asfortranarray(raw.astype(np.int8)),
+        }
+        # All six supported physical types, including a bitmap crossing the
+        # same logical chunk/tail boundaries. Compare values, not IPC bytes.
+        columns = []
+        for j in range(ncol):
+            values = raw[:, j]
+            column = (
+                values > 0,
+                values.astype(np.int8),
+                (values + 16).astype(np.uint8),
+                (values * 256).astype(np.int16),
+                (values / 8).astype(np.float32),
+                values / 8,
+            )[j % 6]
+            columns.append(column)
+        reference = np.asfortranarray(np.column_stack(columns))
+        temporary = tempfile.TemporaryDirectory()
+        arrow_path = Path(temporary.name) / "mixed.arrow"
+        batch = pa.record_batch(
+            [pa.array(a) for a in columns], names=[f"x{j}" for j in range(ncol)]
+        )
+        with pa.OSFile(str(arrow_path), "wb") as sink:
+            with pa.ipc.new_file(sink, batch.schema) as writer:
+                writer.write_batch(batch)
+        designs["arrow-mixed"] = ArrowDesign(arrow_path)
+        for dtype in DTYPES:
+            X = designs[dtype]
+            values = reference if dtype == "arrow-mixed" else X
+            for family in FAMILIES:
+                # All operations are exact dyadic arithmetic, including Gaussian y.
+                response = y if family == "binomial" else 0.5 + 2 * y + values[:, 1] / 4
+                for alpha in ALPHAS:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error")
+                        fit = bl.biglasso(
+                            X,
+                            response,
+                            family=family,
+                            alpha=alpha,
+                            nlambda=12,
+                            backend="rust",
+                            n_threads=2,
+                        )
+                    assert len(fit) == 12 and fit.coef.nnz > 0, name
+                    coef = fit.coef.tocsc()
+                    arrays = dict(
+                        lambdas=fit.lambdas,
+                        intercept=fit.intercept,
+                        coef_data=coef.data,
+                        coef_indices=coef.indices,
+                        coef_indptr=coef.indptr,
+                        iterations=fit.iterations,
+                        n_rejected=fit.n_rejected,
+                        center=fit.center,
+                        scale=fit.scale,
+                        deviance=fit.deviance,
                     )
-                assert len(fit) == 12 and fit.coef.nnz > 0, name
-                coef = fit.coef.tocsc()
-                arrays = dict(
-                    lambdas=fit.lambdas,
-                    intercept=fit.intercept,
-                    coef_data=coef.data,
-                    coef_indices=coef.indices,
-                    coef_indptr=coef.indptr,
-                    iterations=fit.iterations,
-                    n_rejected=fit.n_rejected,
-                    center=fit.center,
-                    scale=fit.scale,
-                    deviance=fit.deviance,
-                )
-                cases[f"{name}/family={family}/alpha={alpha}"] = dict(
-                    inputs={"X": array_bits(X), "y": array_bits(response)},
-                    fit={
-                        key: array_bits(value, include_data=True)
-                        for key, value in arrays.items()
-                    },
-                )
+                    cases[f"{name}/dtype={dtype}/family={family}/alpha={alpha}"] = dict(
+                        inputs={"X": array_bits(values), "y": array_bits(response)},
+                        fit={
+                            key: array_bits(value, include_data=True)
+                            for key, value in arrays.items()
+                        },
+                    )
+        # Windows cannot remove a mapped file; release all views first.
+        designs.pop("arrow-mixed")
+        del X
+        temporary.cleanup()
     snapshot = dict(
         machine=platform.machine().lower(),
         system=platform.system(),
@@ -108,8 +148,9 @@ def compare(reference, candidates):
     baseline = json.loads(reference.read_text())
     assert baseline["machine"] == "x86_64" and baseline["system"] == "Linux"
     expected = {
-        f"{name}/family={family}/alpha={alpha}"
+        f"{name}/dtype={dtype}/family={family}/alpha={alpha}"
         for name in PROBLEMS
+        for dtype in DTYPES
         for family in FAMILIES
         for alpha in ALPHAS
     }

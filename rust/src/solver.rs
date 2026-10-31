@@ -138,7 +138,17 @@ impl<T: Elem, const CHECKED: bool> Col for Contig<'_, T, CHECKED> {
     #[inline(always)]
     fn block(&self, i0: usize) -> [f64; LANES] {
         let rows: &[T; LANES] = self.0[i0..i0 + LANES].try_into().expect("LANES rows");
-        rows.map(Elem::f)
+        // For int8 on NEON, map gives one 64-bit load, not eight byte loads.
+        // On x86, indexing exposes packed sign-extension/conversion instead.
+        // Same conversions and lane order; measurements: benchmarks/int8.md.
+        #[cfg(target_arch = "aarch64")]
+        {
+            rows.map(Elem::f)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            std::array::from_fn(|k| rows[k].f())
+        }
     }
 }
 
@@ -210,6 +220,75 @@ pub(crate) trait Design: Sync {
     fn col(&self, j: usize) -> Self::C<'_>;
     fn ncol(&self) -> usize;
     fn nrow(&self) -> usize;
+}
+
+/// Heterogeneous mapped columns: dispatch storage, never the reduction order.
+#[derive(Clone, Copy)]
+pub(crate) enum MappedCol<'a> {
+    F64(&'a [f64]),
+    F32(&'a [f32]),
+    I8(&'a [i8]),
+    U8(&'a [u8]),
+    I16(&'a [i16]),
+    Bits { bytes: &'a [u8], offset: usize, len: usize },
+}
+
+impl Col for MappedCol<'_> {
+    fn n(&self) -> usize {
+        match self {
+            Self::F64(v) => v.len(),
+            Self::F32(v) => v.len(),
+            Self::I8(v) => v.len(),
+            Self::U8(v) => v.len(),
+            Self::I16(v) => v.len(),
+            Self::Bits { len, .. } => *len,
+        }
+    }
+    #[inline(always)]
+    fn at(&self, i: usize) -> f64 {
+        match self {
+            Self::F64(v) => v[i],
+            Self::F32(v) => v[i].f(),
+            Self::I8(v) => v[i].f(),
+            Self::U8(v) => v[i].f(),
+            Self::I16(v) => v[i].f(),
+            Self::Bits { bytes, offset, len } => {
+                assert!(i < *len);
+                let bit = offset + i;
+                ((bytes[bit / 8] >> (bit % 8)) & 1).f()
+            }
+        }
+    }
+    #[inline(always)]
+    fn block(&self, i0: usize) -> [f64; LANES] {
+        match self {
+            Self::F64(v) => Contig::<_, true>(v).block(i0),
+            Self::F32(v) => Contig::<_, true>(v).block(i0),
+            Self::I8(v) => Contig::<_, true>(v).block(i0),
+            Self::U8(v) => Contig::<_, true>(v).block(i0),
+            Self::I16(v) => Contig::<_, true>(v).block(i0),
+            Self::Bits { .. } => std::array::from_fn(|k| self.at(i0 + k)),
+        }
+    }
+}
+
+pub(crate) struct MappedX<'a> {
+    pub(crate) columns: Vec<MappedCol<'a>>,
+}
+impl Design for MappedX<'_> {
+    type C<'b>
+        = MappedCol<'b>
+    where
+        Self: 'b;
+    fn col(&self, j: usize) -> MappedCol<'_> {
+        self.columns[j]
+    }
+    fn ncol(&self) -> usize {
+        self.columns.len()
+    }
+    fn nrow(&self) -> usize {
+        self.columns[0].n()
+    }
 }
 
 pub(crate) struct ContigX<'a, T, const CHECKED: bool> {

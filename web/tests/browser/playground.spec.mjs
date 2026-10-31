@@ -38,6 +38,21 @@ test("colon fits locally, lambda changes the model, and enet refits", async ({ p
   const last = await page.locator("#lambda").getAttribute("max");
   await page.locator("#lambda").fill(last);
   await expect(page.locator("#active-count")).not.toHaveText("0");
+  // the table opens sorted by standardized size; headings re-sort it
+  const column = async (i) => (await page.locator(`#coefficient-body tr:not(:first-child) td:nth-child(${i})`).allTextContents()).map(Number);
+  const nonincreasing = (v) => v.every((x, i) => i === 0 || Math.abs(v[i - 1]) >= Math.abs(x));
+  expect(nonincreasing(await column(3))).toBe(true);
+  await page.locator('th[data-sort="raw"] button').click();
+  await expect(page.locator('th[data-sort="raw"]')).toHaveAttribute("aria-sort", "descending");
+  expect(nonincreasing(await column(2))).toBe(true);
+  await page.locator('th[data-sort="raw"] button').click();
+  await expect(page.locator('th[data-sort="raw"]')).toHaveAttribute("aria-sort", "ascending");
+  expect(nonincreasing((await column(2)).reverse())).toBe(true);
+  await expect(page.locator("#coefficient-body tr").first()).toContainText("(intercept)");
+  await page.locator('th[data-sort="feature"] button').press("Enter");
+  await expect(page.locator('th[data-sort="feature"]')).toHaveAttribute("aria-sort", "ascending");
+  const names = await page.locator("#coefficient-body tr:not(:first-child) td:first-child").allTextContents();
+  expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
   // penalty changes refit on their own; the Fit button stays away while fits are quick
   await page.locator('[data-alpha="0.2"]').click(); await page.locator('[data-alpha="0.5"]').click();
   await expect(page.locator("#fit")).toBeHidden();
@@ -164,6 +179,7 @@ test("cross-validation chooses λ on held-out rows for both families", async ({ 
     await page.locator("#go-best").click();
     await expect(page.locator("#active-count")).toHaveText(String(result.indices[cv.best].length));
     await expect(page.locator("#cv-note")).toContainText(example === "gaussian" ? "squared error" : "deviance");
+    await expect(page.locator("#cv-note sub")).toHaveText(["min", "1se", "min", "1se"]);
   }
   await page.getByText("Cross-validate to choose λ").click();
   await expect(page.getByLabel("Cross-validate to choose λ")).not.toBeChecked();

@@ -183,6 +183,129 @@ enum Stop {
 }
 use Stop::{Fail, Fallback};
 
+// Read guards retain mapped buffer owners across GIL release and callbacks.
+// The descriptor carries arrays, never unchecked addresses supplied by Python.
+enum ColumnOwner<'py> {
+    F64(PyReadonlyArray1<'py, f64>),
+    F32(PyReadonlyArray1<'py, f32>),
+    I8(PyReadonlyArray1<'py, i8>),
+    U8(PyReadonlyArray1<'py, u8>),
+    I16(PyReadonlyArray1<'py, i16>),
+    Bits(PyReadonlyArray1<'py, u8>, usize),
+}
+
+type MappedDescriptor<'py> = (usize, Vec<(Bound<'py, PyUntypedArray>, Option<usize>)>);
+
+impl<'py> ColumnOwner<'py> {
+    fn extract(array: &Bound<'py, PyUntypedArray>, offset: Option<usize>) -> PyResult<Self> {
+        if !array.getattr("flags")?.getattr("aligned")?.extract::<bool>()?
+            || array.getattr("flags")?.getattr("writeable")?.extract::<bool>()?
+        {
+            return Err(PyValueError::new_err("Mapped columns must be read-only and aligned."));
+        }
+        if let Some(offset) = offset {
+            return Ok(Self::Bits(array.extract()?, offset));
+        }
+        let dtype = array.dtype();
+        if dtype.is_equiv_to(&numpy::dtype::<f64>(array.py())) {
+            return Ok(Self::F64(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<f32>(array.py())) {
+            return Ok(Self::F32(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<i8>(array.py())) {
+            return Ok(Self::I8(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<u8>(array.py())) {
+            return Ok(Self::U8(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<i16>(array.py())) {
+            return Ok(Self::I16(array.extract()?));
+        }
+        Err(PyValueError::new_err("Unsupported mapped column dtype."))
+    }
+
+    fn column(&self, nrow: usize) -> PyResult<MappedCol<'_>> {
+        let col = match self {
+            Self::F64(a) => MappedCol::F64(a.as_slice()?),
+            Self::F32(a) => MappedCol::F32(a.as_slice()?),
+            Self::I8(a) => MappedCol::I8(a.as_slice()?),
+            Self::U8(a) => MappedCol::U8(a.as_slice()?),
+            Self::I16(a) => MappedCol::I16(a.as_slice()?),
+            Self::Bits(a, offset) => {
+                let bytes = a.as_slice()?;
+                let end = offset.checked_add(nrow).ok_or_else(|| PyValueError::new_err("Bitmap offset overflows."))?;
+                if end.div_ceil(8) > bytes.len() {
+                    return Err(PyValueError::new_err("Bitmap is too short for its offset and row count."));
+                }
+                MappedCol::Bits { bytes, offset: *offset, len: nrow }
+            }
+        };
+        if col.n() != nrow {
+            return Err(PyValueError::new_err("Mapped columns must have one value per row."));
+        }
+        Ok(col)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_mapped(
+    py: Python<'_>,
+    owners: &[ColumnOwner<'_>],
+    nrow: usize,
+    y_all: &[f64],
+    rows: Selection<'_>,
+    params: &Params,
+    n_threads: usize,
+) -> PyResult<(Path, &'static str)> {
+    let columns = owners.iter().map(|a| a.column(nrow)).collect::<PyResult<Vec<_>>>()?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    py.detach(|| {
+        pool.install(|| {
+            let attempt = |rows: Selection<'_>| -> Result<(Path, &'static str), Stop> {
+                let x = MappedX { columns: columns.clone() };
+                let y_selected: Vec<f64>;
+                macro_rules! go {
+                    ($design:expr, $y:expr, $mask:expr, $n:expr) => {{
+                        let d = $design;
+                        let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: rows.masked_rows(), n_fit: $n };
+                        let (center, scale, safe) = fit.center_scale().map_err(Fail)?;
+                        if !safe {
+                            return Err(Fallback);
+                        }
+                        fit.run(center, scale).map(|p| (p, rows.name())).map_err(Fail)
+                    }};
+                }
+                match rows {
+                    Selection::All => go!(x, y_all, None, nrow),
+                    Selection::Gather(idx) => {
+                        y_selected = idx.iter().map(|&i| y_all[i]).collect();
+                        go!(GatherX { x, idx }, &y_selected, None, idx.len())
+                    }
+                    Selection::Mask { idx, mask } => {
+                        y_selected = y_all.iter().zip(mask).map(|(&y, &m)| if m != 0.0 { y } else { 0.0 }).collect();
+                        go!(x, &y_selected, Some(mask), idx.len())
+                    }
+                }
+            };
+            match attempt(rows) {
+                Err(Fallback) => match rows {
+                    Selection::Mask { idx, .. } => attempt(Selection::Gather(idx)),
+                    _ => unreachable!("only masks fall back"),
+                },
+                result => result,
+            }
+        })
+    })
+    .map_err(|e| match e {
+        Fail(msg) => PyValueError::new_err(msg),
+        Fallback => unreachable!("gather cannot fall back"),
+    })
+}
+
 /// Fit a binomial path; arguments and result as the numba backend's
 /// fit_path. Null-model statistics use the same portable math as the fit.
 #[pyfunction]
@@ -190,7 +313,7 @@ use Stop::{Fail, Fallback};
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
-    x: &Bound<'py, PyUntypedArray>,
+    x: &Bound<'py, PyAny>,
     y: PyReadonlyArray1<'py, f64>,
     row_indices: Option<PyReadonlyArray1<'py, i64>>,
     alpha: f64,
@@ -215,8 +338,18 @@ fn fit_path<'py>(
     }
     // biglasso() checks all of this; checked again here so a direct call
     // gets an error rather than a panic
-    for (name, a) in [("X", x.as_any()), ("y", y.as_any()), ("penalty factors", penalty_factor.as_any())]
+    let ndarray = x.cast::<PyUntypedArray>().ok();
+    let (shape, owners) = if let Some(a) = ndarray {
+        (a.shape().to_vec(), vec![])
+    } else {
+        let (nrow, columns): MappedDescriptor<'py> = x.extract()?;
+        let shape = vec![nrow, columns.len()];
+        let owners = columns.iter().map(|(a, bit)| ColumnOwner::extract(a, *bit)).collect::<PyResult<Vec<_>>>()?;
+        (shape, owners)
+    };
+    for (name, a) in [("y", y.as_any()), ("penalty factors", penalty_factor.as_any())]
         .into_iter()
+        .chain(ndarray.map(|a| ("X", a.as_any())))
         .chain(row_indices.as_ref().map(|a| ("row_indices", a.as_any())))
         .chain(lambdas.as_ref().map(|a| ("lambdas", a.as_any())))
     {
@@ -227,7 +360,6 @@ fn fit_path<'py>(
             return Err(PyValueError::new_err(format!("{name} must be aligned to its dtype.")));
         }
     }
-    let shape = x.shape();
     if shape.len() != 2 || shape[0] == 0 || shape[1] == 0 {
         return Err(PyValueError::new_err("X must be a non-empty 2-D array."));
     }
@@ -241,7 +373,7 @@ fn fit_path<'py>(
     let idx: Option<Vec<usize>> = match &row_indices {
         Some(ri) => {
             let ri = ri.as_slice()?;
-            let nrow = x.shape()[0];
+            let nrow = shape[0];
             if ri.iter().any(|&i| i < 0 || i as usize >= nrow) {
                 return Err(PyValueError::new_err("row_indices has indices outside valid range."));
             }
@@ -325,18 +457,24 @@ fn fit_path<'py>(
         (Some(idx), None) => Selection::Gather(idx),
         (None, _) => Selection::All,
     };
+    let finish = |result: PyResult<(Path, &'static str)>| {
+        if let Some(e) = raised.lock().unwrap().take() {
+            return Err(e);
+        }
+        let (path, ran) = result?;
+        let d = to_dict(py, path)?;
+        d.set_item("row_path", ran)?;
+        Ok(d)
+    };
+    let Some(x) = ndarray else {
+        return finish(run_mapped(py, &owners, shape[0], y_all, rows, &params, n_threads));
+    };
     let dtype = x.dtype();
     macro_rules! dispatch {
         ($($t:ty),*) => {
             $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py)) {
                 let result = run_typed::<$t>(py, x, y_all, rows, &params, n_threads, boundscheck);
-                if let Some(e) = raised.lock().unwrap().take() {
-                    return Err(e);
-                }
-                let (path, ran) = result?;
-                let d = to_dict(py, path)?;
-                d.set_item("row_path", ran)?;
-                return Ok(d);
+                return finish(result);
             })*
         };
     }

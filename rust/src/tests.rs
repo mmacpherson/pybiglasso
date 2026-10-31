@@ -369,6 +369,21 @@ fn passes_contiguous() {
 }
 
 #[test]
+fn packed_bits_preserve_pass_order_at_every_offset_and_tail() {
+    for n in SIZES {
+        for offset in 0..8 {
+            let x: Vec<f64> = (0..n).map(|i| ((i * 17 + 3) % 7 < 3) as u8 as f64).collect();
+            let mut bytes = vec![0u8; (n + offset).div_ceil(8)];
+            for i in 0..n {
+                bytes[(offset + i) / 8] |= (x[i] as u8) << ((offset + i) % 8);
+            }
+            let col = MappedCol::Bits { bytes: &bytes, offset, len: n };
+            check_passes("packed bits", &col, &col, &x, &x);
+        }
+    }
+}
+
+#[test]
 fn passes_strided() {
     fn run<const CHECKED: bool>(how: &str) {
         for n in SIZES {
@@ -376,6 +391,29 @@ fn passes_strided() {
             let x = Array2::from_shape_vec((n, 3), values(3 * n, 6)).expect("shape");
             let (cx, cy) = (Strided::<_, CHECKED>(x.column(0)), Strided(x.column(2)));
             check_passes(&format!("strided, {how}"), &cx, &cy, &x.column(0).to_vec(), &x.column(2).to_vec());
+        }
+    }
+    checked_and_not!(run);
+}
+
+#[test]
+fn passes_contiguous_int8_with_exact_signed_conversion() {
+    fn run<const CHECKED: bool>(how: &str) {
+        for n in SIZES {
+            // Every int8 value, including -128 and 127; conversion to f64 is
+            // exact. The reference sums the independently expanded scalars
+            // in the specified LANES/CHUNK order, with no fitted oracle.
+            let x: Vec<i8> = (0..n).map(|i| (i % 256) as i16 - 128).map(|v| v as i8).collect();
+            let y: Vec<i8> = (0..n).map(|i| ((i * 71 + 53) % 256) as i16 - 128).map(|v| v as i8).collect();
+            let xf: Vec<f64> = x.iter().map(|&v| v as f64).collect();
+            let yf: Vec<f64> = y.iter().map(|&v| v as f64).collect();
+            check_passes(
+                &format!("contiguous int8, {how}"),
+                &Contig::<_, CHECKED>(&x),
+                &Contig::<_, CHECKED>(&y),
+                &xf,
+                &yf,
+            );
         }
     }
     checked_and_not!(run);

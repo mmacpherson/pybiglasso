@@ -1,0 +1,54 @@
+{
+  "report.txt": {
+    "bytes": 11802,
+    "sha256": "db4fa2d2523a823f92e5f4b8ea8e45acdd5dcc135fd140044b439547c0cb52d7"
+  },
+  "provenance.json": {
+    "bytes": 1608,
+    "sha256": "7e159a7a6c62f304fd0b881140b33b37b0e9c6fb19226af0c5a71d61a0020a5a"
+  },
+  "int8-threeway.py": {
+    "bytes": 10443,
+    "sha256": "1fa7cc503af28e6649aeaf96623c88167b1f2e0a93fef6f97e9ef270c46e4ed6"
+  },
+  "run.py": {
+    "bytes": 1844,
+    "sha256": "835c225541eed18fcccd55e4de6363cbe39f0335c30a8c430d7d9d6a2e474cc0"
+  },
+  "gate.py": {
+    "bytes": 1549,
+    "sha256": "56639bacc265d4107aa9b98c343cc16fbb1ae55a6472ec64ea334f94484f2fe5"
+  },
+  "gate.jsonl": {
+    "bytes": 5314,
+    "sha256": "6beffe6b32934fc8143a9396a5720d44a60f042a0a3782f41c9a003453040722"
+  },
+  "gate-passed.json": {
+    "bytes": 233,
+    "sha256": "5ec5d294c5e87a293492a394b9af391984db3e0ab9cf6f277550572d4f594c05"
+  },
+  "set-environment.jsonl": {
+    "bytes": 9892,
+    "sha256": "c750ada0c19d0b051ef78307f870e0ef2653332f2307b4703df8b68acfff61af"
+  },
+  "binomial-int8.jsonl": {
+    "bytes": 45631,
+    "sha256": "c17887484b8de5fb9bf83612fb284b61302c2e89376d1be8051deb8b189fa458"
+  },
+  "binomial-float64.jsonl": {
+    "bytes": 45616,
+    "sha256": "b1724343ebb435fdc3040042c9b3daebf3fa919e01742b99a70a5e7210397351"
+  },
+  "gaussian-float64.jsonl": {
+    "bytes": 22866,
+    "sha256": "6c637233d20912fc813099c8f03fc5287d01755670f9dfd1ec6690646e2d1ca0"
+  },
+  "harness.patch": {
+    "bytes": 6469,
+    "sha256": "dd458dbf0255c351e7adf84bba10566f2e8d34a4210b88c13e4578280d1bef42"
+  },
+  "execution.txt": {
+    "bytes": 1343,
+    "sha256": "83c6678a6005b0dc867c9c8832ed1e25ea3d984c581d2fc0eb1137f145880e80"
+  }
+}
