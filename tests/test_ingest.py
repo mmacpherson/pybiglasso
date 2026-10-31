@@ -276,8 +276,9 @@ def test_excel_round_trip_against_independent_reader(tmp_path):
 
 
 def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_path):
+    import pyarrow.feather as pf
+
     from pybiglasso import BiglassoRegressor, biglasso
-    from pybiglasso.arrow import open_mapped
 
     source = tmp_path / "source.csv"
     source.write_text(
@@ -292,7 +293,7 @@ def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_pa
     with pytest.raises((TypeError, ValueError)):
         BiglassoRegressor().fit(result, result.response)
     result.path.with_suffix(result.path.suffix + ".json").unlink()
-    reopened = open_mapped(result.path)
+    reopened = pf.read_table(result.path, memory_map=True)
     with pa.memory_map(str(result.path), "r") as stream:
         ordinary = pa.ipc.open_file(stream).read_all()
     assert reopened.equals(ordinary)

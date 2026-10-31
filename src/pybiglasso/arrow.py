@@ -1,4 +1,4 @@
-"""Ordinary Arrow inputs and explicit, uncompressed Arrow file memory mapping."""
+"""Private Arrow input adaptation and mapped-file preflight."""
 
 import struct
 import sys
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["open_mapped"]
+__all__ = []
 
 
 def _is_arrow(value, names=("Table", "RecordBatch")):
@@ -62,7 +62,7 @@ def _field(metadata, table, index):
 def _check_uncompressed(source, pa):
     source.seek(0)
     if source.read(8)[:6] != b"ARROW1":
-        raise ValueError("open_mapped requires an Arrow file (Feather v2).")
+        raise ValueError("Mapped storage requires an Arrow file (Feather v2).")
     source.seek(source.size() - 10)
     trailer = source.read(10)
     if trailer[4:] != b"ARROW1":
@@ -111,7 +111,7 @@ def _check_uncompressed(source, pa):
                 delta = _field(metadata, table, 2)
                 if delta is not None and struct.unpack_from("<?", metadata, delta)[0]:
                     raise ValueError(
-                        "open_mapped cannot borrow dictionary deltas; use ingest to convert the file."
+                        "Mapped storage cannot borrow dictionary deltas; use ingest to convert the file."
                     )
                 data = _field(metadata, table, 1)
                 if data is None:
@@ -121,11 +121,11 @@ def _check_uncompressed(source, pa):
                 raise ValueError("Expected an Arrow record batch.")
             if _field(metadata, table, 3) is not None:
                 raise ValueError(
-                    "open_mapped requires uncompressed Arrow buffers; use ingest to convert the file."
+                    "Mapped storage requires uncompressed Arrow buffers; use ingest to convert the file."
                 )
 
 
-def open_mapped(path):
+def _open_mapped(path):
     """Map an uncompressed Arrow file (Feather v2) as an ordinary pyarrow.Table.
 
     All footer-selected batches are preflighted before decoding. The Table's
@@ -137,7 +137,7 @@ def open_mapped(path):
         import pyarrow as pa
     except ImportError as error:
         raise ImportError(
-            "open_mapped needs pip install 'pybiglasso[arrow]'"
+            "Arrow support needs pip install 'pybiglasso[arrow]'"
         ) from error
     source = pa.memory_map(str(Path(path)), "r")
     try:

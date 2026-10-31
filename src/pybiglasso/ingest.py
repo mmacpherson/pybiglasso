@@ -21,7 +21,7 @@ from xml.parsers import expat
 
 import numpy as np
 
-from .arrow import open_mapped
+from .arrow import _open_mapped
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -443,7 +443,7 @@ def _open_result(path, metadata):
             dtype=np.float64,
             shape=(metadata["rows"],),
         )
-    design = open_mapped(path)
+    design = _open_mapped(path)
     if design.shape != (
         metadata["rows"],
         len(metadata["features"]),

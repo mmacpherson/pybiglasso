@@ -111,8 +111,8 @@ both column staging and the final Arrow file during conversion.
 
 `IngestResult` exposes `.design` (a standard `pyarrow.Table`), `.response`,
 `.feature_names` and `.path`. The feature Arrow file is ordinary uncompressed
-Arrow storage: `pybiglasso.arrow.open_mapped(data.path)` or PyArrow's own file
-reader reopens it without any JSON sidecar. The receipt itself is not accepted
+Arrow storage: `pyarrow.feather.read_table(data.path, memory_map=True)`
+reopens it without any JSON sidecar. The receipt itself is not accepted
 as a fitting input. Mappings are read-only. Files persist independently of the Python result, so
 retained designs and responses do not depend on a temporary-directory owner.
 
