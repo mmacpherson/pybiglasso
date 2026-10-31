@@ -40,18 +40,21 @@ fit = biglasso(X, y, family="gaussian")
 prediction = fit.predict(X)
 ```
 
-Run this allocation diagnostic in a fresh Python process, with the same
-projection you plan to fit:
+Run this allocation diagnostic in a fresh Python process. It maps the file
+first and then projects the resulting Table:
 
 ```python
-import pyarrow as pa; import pyarrow.feather as pf; before = pa.total_allocated_bytes(); table = pf.read_table("data.feather", memory_map=True, columns=["x1", "x2", "response"]); print(pa.total_allocated_bytes() - before)
+import pyarrow as pa; import pyarrow.feather as pf; before = pa.total_allocated_bytes(); table = pf.read_table("data.feather", memory_map=True).select(["x1", "x2", "response"]); print(pa.total_allocated_bytes() - before)
 ```
 
 It reads (and, if compressed, decompresses) the file. The result is the bytes
 still held in Arrow's memory pool while `table` remains alive; zero means no
 retained pool allocation. This is an allocation diagnostic, not a compression
 preflight or a measurement of peak memory/RSS. Other reader conversions may
-allocate too. Converting once with ingest avoids decompression on subsequent reads; its
+allocate too. In particular, PyArrow 26's `columns=` reader path allocates batch
+buffers even for an uncompressed mapped file. Omit `columns=` and select/drop
+columns on the resulting Table to keep its existing buffers, as in the
+diagnostic. Converting once with ingest avoids decompression on subsequent reads; its
 conversion still has to decode each compressed source record batch.
 
 Use PyArrow to read files, just as NumPy files use `np.load(mmap_mode="r")`.
