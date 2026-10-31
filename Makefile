@@ -42,6 +42,11 @@ update-hooks:
 run-hooks-all-files:
 	uv run pre-commit run --all-files
 
+# every snippet in docs/data.md, run verbatim
+.PHONY: test-recipes
+test-recipes:
+	uv run --group recipes pytest -m recipes
+
 # R comparisons; set CONTAINER=podman to use podman instead
 CONTAINER ?= docker
 R_VERSION ?= latest
