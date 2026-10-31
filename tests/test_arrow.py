@@ -6,6 +6,7 @@ import re
 import struct
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -914,9 +915,159 @@ def test_arrow_response_preserves_estimator_target_contract(form, labels):
             np.testing.assert_array_equal(actual.classes_, ["case", "control"])
 
 
+@pytest.mark.parametrize("framework", ["pandas", "polars"])
 @pytest.mark.parametrize(
-    "protocol", ["__arrow_c_stream__", "__arrow_c_array__", "pandas", "polars"]
+    "model",
+    [
+        "binomial",
+        "gaussian",
+        "BiglassoClassifier",
+        "BiglassoClassifierCV",
+        "BiglassoRegressor",
+        "BiglassoRegressorCV",
+        "BiglassoClassifier_strings",
+        "BiglassoClassifierCV_strings",
+    ],
 )
+def test_arraylike_frame_fit_matches_fortran_ndarray(framework, model):
+    import pybiglasso as bl
+
+    module = pytest.importorskip(framework)
+    rng = np.random.default_rng(33)
+    values = rng.normal(size=(123, 5))
+    names = [f"feature_{j}" for j in range(values.shape[1])]
+    signal = values[:, 0] - values[:, 1] / 2
+    binary = (rng.random(len(values)) < 1 / (1 + np.exp(-signal))).astype(float)
+    target = (
+        signal + rng.normal(size=len(values))
+        if model in ("gaussian", "BiglassoRegressor", "BiglassoRegressorCV")
+        else binary
+    )
+    if model.endswith("_strings"):
+        target = np.where(binary == 1, "case", "control")
+    if framework == "pandas":
+        frame = module.DataFrame(values, columns=names)
+        response = module.Series(target, name="y")
+    else:
+        frame = module.DataFrame({name: values[:, j] for j, name in enumerate(names)})
+        response = module.Series("y", target)
+    reference_values = np.asfortranarray(values)
+    expected_warning = not np.asarray(frame).flags.f_contiguous
+    if model in ("binomial", "gaussian"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            actual = biglasso(frame, response, family=model, alpha=0.7, nlambda=7)
+        reference = biglasso(
+            reference_values, target, family=model, alpha=0.7, nlambda=7
+        )
+        same_path(actual, reference)
+        assert list(actual.feature_names) == names
+    else:
+        pytest.importorskip("sklearn")
+        cls = getattr(bl, model.removesuffix("_strings"))
+        options = (
+            dict(n_alphas=7, cv=3, n_jobs=1)
+            if cls.__name__.endswith("CV")
+            else dict(alpha=0.1)
+        )
+        options["l1_ratio"] = 0.7
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            actual = cls(**options).fit(frame, response)
+        reference = cls(**options).fit(reference_values, target)
+        assert list(actual.feature_names_in_) == names
+        for attribute in (
+            "coef_",
+            "intercept_",
+            "n_iter_",
+            "cv_scores_",
+            "alphas_",
+            "alpha_",
+        ):
+            if hasattr(actual, attribute):
+                left, right = (
+                    np.asarray(getattr(actual, attribute)),
+                    np.asarray(getattr(reference, attribute)),
+                )
+                assert left.shape == right.shape and left.dtype == right.dtype
+                assert left.tobytes() == right.tobytes(), attribute
+        if hasattr(actual, "path_"):
+            same_path(actual.path_, reference.path_)
+            assert list(actual.path_.feature_names) == names
+        if hasattr(actual, "classes_"):
+            np.testing.assert_array_equal(actual.classes_, reference.classes_)
+        np.testing.assert_array_equal(
+            actual.predict(frame), reference.predict(reference_values)
+        )
+    assert (
+        any("not in Fortran" in str(item.message) for item in caught)
+        == expected_warning
+    )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "biglasso",
+        "BiglassoClassifier",
+        "BiglassoClassifierCV",
+        "BiglassoRegressor",
+        "BiglassoRegressorCV",
+    ],
+)
+def test_arraylike_stream_reader_rejected_without_consumption(model):
+    import pybiglasso as bl
+
+    batch = pa.record_batch({"x": np.arange(41, dtype=float)})
+    consumed = []
+
+    def batches():
+        consumed.append(True)
+        yield batch
+
+    reader = pa.RecordBatchReader.from_batches(batch.schema, batches())
+    target = np.arange(41) % 2
+    if model == "biglasso":
+        fit = biglasso
+    else:
+        pytest.importorskip("sklearn")
+        fit = getattr(bl, model)().fit
+    with pytest.raises(TypeError, match="Convert explicitly to a pyarrow.Table"):
+        fit(reader, target)
+    assert consumed == []
+    assert reader.read_next_batch().equals(batch)
+    assert consumed == [True]
+
+
+@pytest.mark.parametrize("protocol", ["__arrow_c_stream__", "__arrow_c_array__"])
+def test_numpy_array_protocol_precedes_arrow_exporter(protocol):
+    values = np.asfortranarray(np.arange(123 * 3).reshape(123, 3) % 7, dtype=float)
+    target = np.arange(123) % 2
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Arrow exporter was called instead of __array__")
+
+    class Matrix:
+        columns = ["one", "two", "three"]
+
+        def __array__(self, dtype=None, copy=None):
+            return np.asarray(values, dtype=dtype)
+
+    setattr(Matrix, protocol, forbidden)
+    actual = biglasso(Matrix(), target, nlambda=5)
+    same_path(actual, biglasso(values, target, nlambda=5))
+    assert list(actual.feature_names) == Matrix.columns
+
+
+@pytest.mark.parametrize("framework", ["pandas", "polars"])
+def test_arraylike_frame_keeps_numpy_dtype_validation(framework):
+    module = pytest.importorskip(framework)
+    frame = module.DataFrame({"feature": ["a", "b"]})
+    with pytest.raises(ValueError, match="native real numeric dtype"):
+        biglasso(frame, [0, 1])
+
+
+@pytest.mark.parametrize("protocol", ["__arrow_c_stream__", "__arrow_c_array__"])
 def test_implicit_exporters_are_rejected_before_conversion(protocol):
     def forbidden(*args):
         pytest.fail("Implicit exporter was invoked")
@@ -924,14 +1075,7 @@ def test_implicit_exporters_are_rejected_before_conversion(protocol):
     cls = type(
         "Exporter",
         (),
-        {
-            "__array__": forbidden,
-            **(
-                {"__module__": protocol}
-                if protocol in ("pandas", "polars")
-                else {protocol: forbidden}
-            ),
-        },
+        {protocol: forbidden},
     )
     with pytest.raises(TypeError, match="Convert explicitly to a pyarrow.Table"):
         biglasso(cls(), [0, 1])

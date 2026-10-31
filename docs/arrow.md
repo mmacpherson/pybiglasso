@@ -78,17 +78,25 @@ native-endian **Arrow file** (Feather v2), with one or multiple record batches.
 PyArrow is optional (`pip install 'pybiglasso[arrow]'`). NumPy arrays and
 Fortran `.npy` memmaps remain direct inputs; no conversion to Arrow is required.
 
-**pybiglasso never copies X.** For Arrow inputs it borrows the existing chunk
+**For Table/RecordBatch inputs, pybiglasso never copies X.** It borrows the chunk
 buffers, whether they came from a mapping, an allocation or NumPy. This is a
 statement about what pybiglasso does, not about the provenance of a Table or the
 memory used by its producer. Bool remains bit-packed. The small response can
 be materialized as a contiguous array using O(n) memory.
 
-Feature names come from `column_names` and must be unique. Choosing features,
-extracting the response and keeping rows aligned are the caller's responsibility.
-Generic `__arrow_c_stream__`/`__arrow_c_array__` exporters, pandas and Polars
-frames are not fitting inputs: explicitly produce a Table first, or use ingest
-on a source file. Exporting or building a Table upstream may itself allocate.
+Table/RecordBatch feature names come from `column_names` and must be unique.
+Choosing features, extracting the response and keeping rows aligned are the
+caller's responsibility.
+Pandas and Polars DataFrames keep the existing array-like path: feature names
+come from `.columns`, and `np.asarray` converts the values before fitting.
+Their Series work as responses too, including string labels for sklearn
+classifiers. This conversion can allocate the full feature matrix; pass a
+Table or RecordBatch to borrow Arrow buffers directly.
+
+An Arrow `__arrow_c_stream__`/`__arrow_c_array__` exporter without `__array__`
+(such as a RecordBatchReader) is not a matrix input and is rejected without
+consuming it. Convert it explicitly to a Table, or use ingest on a file.
+Exporting or building a Table upstream may itself allocate.
 
 All classifier/regressor estimators, including CV, accept these Arrow X types.
 Arrow `Array` and `ChunkedArray` responses use the existing target rules;

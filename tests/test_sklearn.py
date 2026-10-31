@@ -19,18 +19,7 @@ from pybiglasso.sklearn import BiglassoClassifier, BiglassoClassifierCV  # noqa:
     ]
 )
 def test_sklearn_compatible(estimator, check):
-    name = getattr(check, "func", check).__name__
-    if name in (
-        "check_classifier_data_not_an_array",
-        "check_regressor_data_not_an_array",
-    ):
-        # These checks first exercise NumPy's NotAnArray wrapper, then pandas.
-        # Keep that first check; the approved boundary deliberately rejects the
-        # subsequent DataFrame instead of implicitly materializing X.
-        with pytest.raises(TypeError, match="Convert explicitly to a pyarrow.Table"):
-            check(estimator)
-    else:
-        check(estimator)
+    check(estimator)
 
 
 @pytest.fixture(scope="module")
