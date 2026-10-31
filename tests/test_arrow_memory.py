@@ -1,4 +1,4 @@
-"""The native memory cap covers opening IPC plus its first target fit."""
+"""The native memory cap covers opening an Arrow file plus its first target fit."""
 
 import json
 import os
@@ -15,13 +15,25 @@ pytestmark = pytest.mark.skipif(
 )
 
 CHILD = textwrap.dedent("""
-    import ctypes, gc, json, resource, sys
+    import ctypes, gc, json, os, resource, sys, traceback
+    # glibc snapshots RLIMIT_STACK at exec for C++ workers. RUST_MIN_STACK
+    # only bounds Rayon stacks; Arrow's lazily started I/O workers otherwise
+    # inherit large stacks (typically 8 MiB), depending on task scheduling.
+    if '_PYBIGLASSO_ARROW_STACK_SET' not in os.environ:
+        _, hard = resource.getrlimit(resource.RLIMIT_STACK)
+        resource.setrlimit(resource.RLIMIT_STACK, (1 << 20, hard))
+        os.execve(sys.executable, sys.orig_argv,
+                  {**os.environ, '_PYBIGLASSO_ARROW_STACK_SET': '1'})
     import numpy as np
     import pyarrow as pa
     from pybiglasso import biglasso
     from pybiglasso.arrow import _ArrowMatrix, _open_mapped
 
     target, warm, case, storage = sys.argv[1:]
+    # Fully warm the bounded Arrow pools, rather than racing later worker
+    # creation against the baseline. The solver still uses two Rayon workers.
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
     # Imports, worker pools and small allocator arenas are initialized with
     # a different design. The target is not even opened until under the cap.
     small = _open_mapped(warm)
@@ -67,6 +79,7 @@ CHILD = textwrap.dedent("""
                        lambda_min=0.8, row_indices=rows, n_threads=2)
         assert len(fit) == 3
     except MemoryError:
+        traceback.print_exc()
         print(json.dumps({'fits': False, 'stage': stage}))
     else:
         print(json.dumps({'fits': True, 'stage': stage}))
@@ -117,4 +130,4 @@ def test_open_and_first_fit_cap_with_copy_controls(files, case, stack_cache, sto
     assert json.loads(result.stdout.splitlines()[-1]) == {
         "fits": positive,
         "stage": "fit" if positive else case,
-    }
+    }, result.stderr[-3000:]
