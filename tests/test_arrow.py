@@ -49,16 +49,16 @@ def test_readme_arrow_example_verbatim(tmp_path, monkeypatch):
         compression="uncompressed",
         chunksize=41,
     )
-    recipe = _arrow_recipe("fit = bl.biglasso(table.drop_columns", document="README.md")
+    recipe = _arrow_recipe("bl.biglasso(table.drop_columns", document="README.md")
     monkeypatch.chdir(tmp_path)
     namespace = {}
     exec(compile(recipe, "README.md", "exec"), namespace)
     np.save(tmp_path / "features.npy", np.asfortranarray(np.column_stack([x1, x2])))
     same_path(
-        namespace["fit"],
+        namespace["path"],
         biglasso(np.load(tmp_path / "features.npy", mmap_mode="r"), response),
     )
-    assert list(namespace["fit"].feature_names) == ["x1", "x2"]
+    assert list(namespace["path"].feature_names) == ["x1", "x2"]
 
 
 def _mapped_read_allocations(recipe, directory):
