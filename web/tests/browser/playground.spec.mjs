@@ -24,6 +24,111 @@ async function pathDownload(page) {
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 
+// Record the actual canvas marker strokes, including the device-pixel transform.
+async function observeLambdaMarkers(page) {
+  await page.addInitScript(() => {
+    const proto = CanvasRenderingContext2D.prototype;
+    const moveTo = proto.moveTo, stroke = proto.stroke;
+    proto.moveTo = function (x, y) { this.__startX = x; return moveTo.call(this, x, y); };
+    proto.stroke = function (...args) {
+      const kind = this.strokeStyle === "#ba783b" && this.globalAlpha === 1 && this.getLineDash().length === 0 ? "best"
+        : this.strokeStyle === "#283f30" && this.getLineDash().join() === "3,4" ? "selected" : undefined;
+      if (kind && ["chart", "cv-chart"].includes(this.canvas.id)) {
+        const transform = this.getTransform(), bounds = this.canvas.getBoundingClientRect();
+        (window.__lambdaMarkers ??= {})[`${this.canvas.id}/${kind}`] = bounds.left
+          + (transform.a * this.__startX + transform.e) * bounds.width / this.canvas.width;
+      }
+      return stroke.apply(this, args);
+    };
+  });
+}
+
+async function lambdaAlignment(page) {
+  const slider = page.locator("#lambda");
+  await slider.scrollIntoViewIfNeeded();
+  const bounds = await slider.boundingBox();
+  // A locator screenshot rounds its crop to pixels. Adding bounds.x to its
+  // pixel coordinates would reintroduce the fractional origin as a bias.
+  const clip = { x: Math.floor(bounds.x), y: Math.floor(bounds.y),
+    width: Math.ceil(bounds.x + bounds.width) - Math.floor(bounds.x),
+    height: Math.ceil(bounds.y + bounds.height) - Math.floor(bounds.y) };
+  const pixels = await page.screenshot({ clip, scale: "device" });
+  // Locate the thumb itself above the track, rather than assuming a browser's
+  // default inset or deriving the answer from the application's layout rules.
+  return page.evaluate(async ({ bounds, clip, png }) => {
+    const blob = await (await fetch(`data:image/png;base64,${png}`)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas"); canvas.width = bitmap.width; canvas.height = bitmap.height;
+    const ctx = canvas.getContext("2d"); ctx.drawImage(bitmap, 0, 0);
+    const dpr = window.devicePixelRatio;
+    if (bitmap.width !== clip.width * dpr) throw new Error("Unexpected screenshot pixel scale");
+    const row = ctx.getImageData(0, Math.round((bounds.y - clip.y + 2) * dpr), canvas.width, 1).data, green = [];
+    for (let x = 0; x < canvas.width; x++) {
+      const [r, g, b] = row.slice(4 * x, 4 * x + 3);
+      if (g > r * 1.2 && g > b * 1.1) green.push(x);
+    }
+    if (!green.length) throw new Error("Could not locate the range thumb above the track");
+    const input = document.getElementById("lambda"), axis = document.querySelector(".lambda-axis").getBoundingClientRect();
+    const fraction = (Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min));
+    // Pixel centers are x + .5; convert their midpoint using the actual crop
+    // origin and device scale, without CSS-resolution screenshot resampling.
+    return { thumb: clip.x + (green[0] + green.at(-1) + 1) / (2 * dpr), markers: window.__lambdaMarkers,
+      dpr, ideal: axis.left + fraction * axis.width,
+      input: { left: bounds.x, width: bounds.width },
+      plots: ["chart", "cv-chart"].map((id) => { const plot = document.getElementById(id); const rect = plot.getBoundingClientRect();
+        return { id, left: rect.left, width: rect.width, clientWidth: plot.clientWidth, bitmapWidth: plot.width }; }) };
+  }, { bounds, clip, png: pixels.toString("base64") });
+}
+
+for (const dpr of [1, 2]) test.describe(`DPR ${dpr}`, () => {
+  test.use({ deviceScaleFactor: dpr });
+  for (const width of [1446, 390]) {
+    test(`lambda thumb aligns with both plots at ${width}px and after resize`, async ({ page }, testInfo) => {
+      await observeLambdaMarkers(page);
+      await page.setViewportSize({ width, height: 1000 });
+      await page.goto("/");
+      await page.locator("#example").selectOption("colon");
+      await page.getByText("Cross-validate to choose λ").click();
+      await page.locator("#load-example").click();
+      await expect(page.locator("#cv-panel")).toBeVisible();
+      await expect(page.locator("#cancel")).toBeHidden();
+      await page.locator("#go-best").click();
+      const best = await page.locator("#lambda").inputValue();
+      for (const viewport of [width, width === 390 ? 1446 : 390]) {
+        await page.setViewportSize({ width: viewport, height: 1000 });
+        // Wait for the existing plot resize observer; don't move the slider or
+        // otherwise force a render that could conceal stale resize geometry.
+        await expect.poll(() => page.evaluate(() => ["chart", "cv-chart"].every((id) => {
+          const canvas = document.getElementById(id);
+          return canvas.width === Math.round(canvas.getBoundingClientRect().width * (window.devicePixelRatio || 1));
+        }))).toBe(true);
+        for (const index of [best, "0", "11", "25", "50", "75", await page.locator("#lambda").getAttribute("max")]) {
+          if (index !== best) await page.locator("#lambda").fill(index);
+          const measurement = { viewport, index, ...await lambdaAlignment(page) };
+          await testInfo.attach(`lambda-alignment-${viewport}-${index}`, { body: JSON.stringify(measurement, null, 2), contentType: "application/json" });
+          console.log(`lambda alignment ${testInfo.project.name}: ${JSON.stringify(measurement)}`);
+          const kind = index === best ? "best" : "selected";
+          // Native placement can round by half a CSS pixel (Chromium does so
+          // even at DPR 2). Pixel-edge midpoint measurement resolves half a
+          // device pixel. Add one layout unit (1/60 px covers these engines).
+          // This sums independent bounds; the observed DPR-1 error is <= .5 px.
+          const layoutUnit = 1 / 60, tolerance = .5 + .5 / dpr + layoutUnit;
+          for (const id of ["chart", "cv-chart"]) {
+            expect(Math.abs(measurement.thumb - measurement.markers[`${id}/${kind}`])).toBeLessThanOrEqual(tolerance);
+            expect(Math.abs(measurement.ideal - measurement.markers[`${id}/${kind}`])).toBeLessThanOrEqual(layoutUnit);
+          }
+          if (index === "0" || index === await page.locator("#lambda").getAttribute("max")) {
+            const label = await page.locator(index === "0" ? "#lambda-max" : "#lambda-min").boundingBox();
+            const edge = index === "0" ? label.x : label.x + label.width;
+            expect(Math.abs(edge - measurement.markers["chart/selected"])).toBeLessThanOrEqual(layoutUnit);
+          }
+        }
+        await page.locator("#lambda").fill(best);
+      }
+    });
+  }
+});
+
 test("colon fits locally, lambda changes the model, and enet refits", async ({ page }) => {
   const errors = []; page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
