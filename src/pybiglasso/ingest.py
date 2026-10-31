@@ -1,4 +1,6 @@
-"""Draft blockwise conversion to a feature-only, memory-mapped Arrow design."""
+"""Blockwise conversion from source paths to ordinary Arrow Tables and files."""
+
+from __future__ import annotations
 
 import csv
 import fnmatch
@@ -14,13 +16,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import TYPE_CHECKING
 from xml.parsers import expat
 
 import numpy as np
 
-from .arrow import ArrowDesign
+from .arrow import mmap_ipc
 
-# In preference order, limited deliberately to ArrowDesign's storage contract.
+if TYPE_CHECKING:
+    import pyarrow as pa
+
+# Inference candidates deliberately narrower than the fitting input contract.
 _TYPES = ("bool", "int8", "uint8", "int16", "float32", "float64")
 _INTEGER = re.compile(r"[+-]?\d+\Z")
 
@@ -33,7 +39,7 @@ class IngestResult:
     design or response outlive the result, including on Windows.
     """
 
-    design: ArrowDesign
+    design: pa.Table
     response: np.ndarray | None
     feature_names: tuple[str, ...]
     path: Path
@@ -437,13 +443,13 @@ def _open_result(path, metadata):
             dtype=np.float64,
             shape=(metadata["rows"],),
         )
-    design = ArrowDesign(path)
+    design = mmap_ipc(path)
     if design.shape != (
         metadata["rows"],
         len(metadata["features"]),
-    ) or design.columns != tuple(metadata["features"]):
+    ) or tuple(design.column_names) != tuple(metadata["features"]):
         raise ValueError("Ingest cache metadata does not match its design.")
-    return IngestResult(design, response, design.columns, path)
+    return IngestResult(design, response, tuple(design.column_names), path)
 
 
 def _write_ipc(path, raw, selected, types, count, pa):
@@ -511,6 +517,10 @@ def ingest(
     """
     if out is None and cache_dir is None:
         raise ValueError("Specify a persistent out or cache_dir for ingest.")
+    if not isinstance(source, (str, os.PathLike)):
+        raise TypeError(
+            "ingest accepts a filesystem path, not a Table, receipt, stream or file object."
+        )
     pa = _arrow()
     source = Path(source).resolve(strict=True)
     if (

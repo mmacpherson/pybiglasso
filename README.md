@@ -30,6 +30,10 @@ Use `pybiglasso.arrow.mmap_ipc(path)` for an ordinary Table over an uncompressed
 native-endian IPC/Feather file. Select/drop columns explicitly; y is supplied
 separately as NumPy or an Arrow Array/ChunkedArray. See [Arrow inputs](docs/arrow.md)
 for the mutation and lifetime contract.
+For CSV, Parquet, compressed Feather or Excel sources, optional
+[`ingest(path, out=..., response=...)`](docs/ingest.md) materializes an
+uncompressed feature file explicitly. Pass the receipt's ordinary Table
+`.design` and separate `.response` to fit; the receipt itself is not X.
 
 To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
@@ -67,6 +71,7 @@ wheel. Extras add optional integrations:
 | `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs and `mmap_ipc()` |
+| `pybiglasso[ingest]` | explicit file conversion with Arrow and openpyxl |
 | `pybiglasso[all]` | all of the above |
 
 ## Quick start

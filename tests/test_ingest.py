@@ -233,7 +233,7 @@ def test_csv_preserves_large_integer_and_signed_zero_spelling(tmp_path):
     source = tmp_path / "source.csv"
     source.write_text("x\n-0.0\n0.25\n")
     result = ingest(source, tmp_path / "zero.arrow")
-    assert np.signbit(result.design._columns[0][0][0])
+    assert np.signbit(result.design.column(0).chunk(0)[0].as_py())
     source.write_text("x\n9007199254740993.0\n")
     with pytest.raises(ValueError, match="no supported exact dtype"):
         ingest(source, tmp_path / "integer.arrow")
@@ -243,7 +243,7 @@ def test_decimal_source_requires_exact_binary_representation(tmp_path):
     source = tmp_path / "source.parquet"
     pq.write_table(pa.table({"x": [Decimal("0.25"), Decimal("0.50")]}), source)
     result = ingest(source, tmp_path / "exact.arrow")
-    np.testing.assert_array_equal(result.design._columns[0][0], [0.25, 0.5])
+    np.testing.assert_array_equal(result.design.column(0).to_numpy(), [0.25, 0.5])
     pq.write_table(pa.table({"x": [Decimal("0.1")]}), source)
     with pytest.raises(ValueError, match="Column 'x', row 1: no supported exact dtype"):
         ingest(source, tmp_path / "inexact.arrow")
@@ -273,3 +273,55 @@ def test_excel_round_trip_against_independent_reader(tmp_path):
         assert actual.column("x").to_pylist() == [row[0] for row in rows]
         assert actual.column("bit").to_pylist() == [row[1] for row in rows]
     np.testing.assert_array_equal(result.response, [row[2] for row in rows])
+
+
+def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_path):
+    from pybiglasso import BiglassoRegressor, biglasso
+    from pybiglasso.arrow import mmap_ipc
+
+    source = tmp_path / "source.csv"
+    source.write_text(
+        "x,z,y\n" + "\n".join(f"{i % 7},{i % 3},{i % 2}" for i in range(41)) + "\n"
+    )
+    result = ingest(source, tmp_path / "features.arrow", response="y")
+    assert isinstance(result.design, pa.Table)
+    assert result.feature_names == tuple(result.design.column_names)
+    assert result.design.column_names == ["x", "z"]
+    with pytest.raises((TypeError, ValueError)):
+        biglasso(result, result.response, nlambda=3)
+    with pytest.raises((TypeError, ValueError)):
+        BiglassoRegressor().fit(result, result.response)
+    result.path.with_suffix(result.path.suffix + ".json").unlink()
+    reopened = mmap_ipc(result.path)
+    with pa.memory_map(str(result.path), "r") as stream:
+        ordinary = pa.ipc.open_file(stream).read_all()
+    assert reopened.equals(ordinary)
+    assert reopened.equals(result.design)
+    actual = biglasso(reopened, result.response, nlambda=3)
+    reference = biglasso(result.design, result.response, nlambda=3)
+    for field in ("lambdas", "intercept", "iterations", "deviance"):
+        assert getattr(actual, field).tobytes() == getattr(reference, field).tobytes()
+
+
+@pytest.mark.parametrize(
+    "source_type", ["table", "batch", "reader", "file", "exporter"]
+)
+def test_ingest_accepts_paths_only(tmp_path, source_type):
+    import io
+
+    table = pa.table({"x": [1, 2]})
+
+    class Exporter:
+        def __arrow_c_stream__(self, *args):
+            pytest.fail("Path-only ingest consumed an exporter")
+
+    sources = {
+        "table": table,
+        "batch": table.to_batches()[0],
+        "reader": pa.RecordBatchReader.from_batches(table.schema, table.to_batches()),
+        "file": io.BytesIO(b"x\n1\n2\n"),
+        "exporter": Exporter(),
+    }
+    with pytest.raises(TypeError, match="filesystem path"):
+        ingest(sources[source_type], tmp_path / "out.arrow")
+    assert not (tmp_path / "out.arrow").exists()

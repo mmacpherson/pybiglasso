@@ -1,24 +1,31 @@
-# Blockwise ingest (draft, post-0.4.0)
+# Blockwise ingest
 
 Install `pybiglasso[arrow]` for CSV, Parquet and Feather/Arrow IPC files;
 `pybiglasso[ingest]` includes Arrow and the optional `.xlsx` reader.
 Importing pybiglasso does not import either reader dependency.
 
 ```python
+from pybiglasso import biglasso
 from pybiglasso.ingest import ingest
 
 data = ingest(
     "observations.parquet", "design.arrow",
     response="outcome", match="predictor_*",
 )
-X, y, names = data.design, data.response, data.feature_names
+X, y, names = data.design, data.response, data.feature_names  # X is a pyarrow.Table
+fit = biglasso(X, y, family="gaussian")
 ```
 
-This companion to the draft Arrow loader writes **features only** to an
+The converter accepts filesystem paths only: CSV, Parquet, Feather/IPC files
+and `.xlsx`. Tables, streams and file objects are not ingest sources. Existing
+NumPy arrays/memmaps and compatible Tables/RecordBatches can be fitted directly;
+ingest is an optional explicit materializer. See [Arrow inputs](arrow.md).
+
+It writes **features only** to an
 uncompressed Arrow IPC **file**, containing exactly one nonempty record batch.
 The response is selected explicitly and stored separately as a read-only
-float64 mapping; no target or family is inferred from column names. The loader
-and solver integration are developed in the companion Arrow IPC change.
+float64 mapping; no target or family is inferred from column names. The receipt
+is not X: pass `.design` (an ordinary Table) and `.response` explicitly.
 
 ## Selection and exact representation
 
@@ -28,8 +35,8 @@ string or a compiled regular expression. The response is always excluded from
 features, even if explicitly listed. At least one feature must remain.
 
 `dtypes="auto"` chooses the first exact representation in this order:
-bool, int8, uint8, int16, float32, float64. These are the physical types accepted
-by the companion loader. In auto mode, parsed integers outside the int16
+bool, int8, uint8, int16, float32, float64. These are the converter's candidate output types; direct Arrow inputs also accept wider integer
+storage. In auto mode, parsed integers outside the int16
 range use float64 rather than float32, provided conversion is exact. Every
 integer with magnitude at most 2^53 fits float64 exactly; larger integers are
 accepted only when they too are exactly representable. Integer spellings in
@@ -102,8 +109,11 @@ both column staging and the final IPC file during conversion.
 
 ## Persistent outputs and reuse
 
-`IngestResult` exposes `.design`, `.response`, `.feature_names` and `.path`.
-Mappings are read-only. Files persist independently of the Python result, so
+`IngestResult` exposes `.design` (a standard `pyarrow.Table`), `.response`,
+`.feature_names` and `.path`. The feature IPC file is ordinary uncompressed
+Arrow storage: `pybiglasso.arrow.mmap_ipc(data.path)` or PyArrow's own file
+reader reopens it without any JSON sidecar. The receipt itself is not accepted
+as a fitting input. Mappings are read-only. Files persist independently of the Python result, so
 retained designs and responses do not depend on a temporary-directory owner.
 
 An explicit persistent `out` or `cache_dir` is required. With `out=None`,
