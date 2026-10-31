@@ -89,6 +89,7 @@ Choosing features, extracting the response and keeping rows aligned are the
 caller's responsibility.
 Pandas and Polars DataFrames keep the existing array-like path: feature names
 come from `.columns`, and `np.asarray` converts the values before fitting.
+Polars feature names in the estimators need scikit-learn 1.9 or newer.
 Their Series work as responses too, including string labels for sklearn
 classifiers. This conversion can allocate the full feature matrix; pass a
 Table or RecordBatch to borrow Arrow buffers directly.
