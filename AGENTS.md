@@ -56,7 +56,10 @@ to observed output.
 - **Python (uv)**: loose `pyproject.toml` constraints for users, and a committed
   `uv.lock` that pins development and CI only (it never ships). CI installs from
   the lock as committed (`UV_LOCKED=1`), and a latest-deps job tests the newest
-  versions `pyproject.toml` allows, which is what a new install gets.
+  versions `pyproject.toml` allows, which is what a new install gets. The
+  minimum-deps job runs `make test-minimum` on Python 3.11, with an isolated
+  lowest-direct resolution and exact installed-floor checks; it never edits
+  the development lock.
 - **R**: the R comparison runs in a container (`docker/r-biglasso.Dockerfile`),
   pinned by R version; packages come from that R release's P3M snapshot.
 - Supported Pythons are those not yet at end of life.
@@ -64,6 +67,7 @@ to observed output.
 ## Development Commands
 
 - `make test` — fast suite, against stored R output (no R needed)
+- `make test-minimum` — the same suite with every declared dependency floor
 - `make test-r` — the same grid live against R, in a container
   (`CONTAINER=podman` works too; `R_VERSION=latest` for current CRAN)
 - `make soak` — larger memory-mapped problems against live R; for a big machine.

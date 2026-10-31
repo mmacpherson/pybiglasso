@@ -2088,8 +2088,6 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "polars" },
     { name = "pyarrow" },
     { name = "scikit-learn" },
     { name = "seaborn" },
@@ -2100,12 +2098,6 @@ arrow = [
 ingest = [
     { name = "openpyxl" },
     { name = "pyarrow" },
-]
-pandas = [
-    { name = "pandas" },
-]
-polars = [
-    { name = "polars" },
 ]
 sklearn = [
     { name = "scikit-learn" },
@@ -2125,6 +2117,8 @@ bench = [
 ]
 dev = [
     { name = "hypothesis" },
+    { name = "pandas" },
+    { name = "polars" },
     { name = "pre-commit" },
     { name = "pybiglasso", extra = ["all"] },
     { name = "pytest" },
@@ -2135,18 +2129,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "numpy" },
-    { name = "openpyxl", marker = "extra == 'ingest'" },
-    { name = "pandas", marker = "extra == 'pandas'" },
-    { name = "polars", marker = "extra == 'polars'" },
-    { name = "pyarrow", marker = "extra == 'arrow'" },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "openpyxl", marker = "extra == 'ingest'", specifier = ">=3.0.6" },
+    { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=16.0" },
     { name = "pybiglasso", extras = ["arrow"], marker = "extra == 'ingest'" },
-    { name = "pybiglasso", extras = ["arrow", "ingest", "polars", "pandas", "sklearn", "viz"], marker = "extra == 'all'" },
+    { name = "pybiglasso", extras = ["arrow", "ingest", "sklearn", "viz"], marker = "extra == 'all'" },
     { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.6" },
-    { name = "scipy" },
+    { name = "scipy", specifier = ">=1.13" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13" },
 ]
-provides-extras = ["all", "arrow", "ingest", "pandas", "polars", "sklearn", "viz"]
+provides-extras = ["all", "arrow", "ingest", "sklearn", "viz"]
 
 [package.metadata.requires-dev]
 bench = [
@@ -2159,6 +2151,8 @@ bench = [
 ]
 dev = [
     { name = "hypothesis", specifier = ">=6.170.9" },
+    { name = "pandas" },
+    { name = "polars" },
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "pybiglasso", extras = ["all"] },
     { name = "pytest" },

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from packaging.version import Version
 
 from pybiglasso import biglasso
 from pybiglasso.arrow import _ArrowMatrix, _open_mapped
@@ -26,6 +27,15 @@ def write_ipc(path, arrays, *, compression=None, batches=1):
         with pa.ipc.new_file(sink, batch.schema, options=options) as writer:
             for _ in range(batches):
                 writer.write_batch(batch)
+
+
+def test_explicit_table_conversion_from_arrow_stream():
+    values = np.asfortranarray(np.arange(123 * 2).reshape(123, 2) % 7, dtype=float)
+    source = pa.table({"x0": values[:, 0], "x1": values[:, 1]})
+    reader = pa.RecordBatchReader.from_stream(source)
+    table = reader.read_all()
+    target = np.arange(123) % 2
+    same_path(biglasso(table, target, nlambda=5), biglasso(values, target, nlambda=5))
 
 
 def _arrow_recipe(marker, document="docs/arrow.md"):
@@ -379,6 +389,8 @@ def test_rejects_nulls(tmp_path, values):
 def test_rejects_unsupported_types(tmp_path, kind):
     path = tmp_path / "unsupported.arrow"
     values = ["a", "b"] if kind == pa.string() else [1, 2]
+    if kind == pa.float16():
+        values = np.array(values, dtype=np.float16)
     write_ipc(path, [pa.array(values, type=kind)])
     with pytest.raises(ValueError, match="Column.*chunk.*unsupported Arrow type"):
         biglasso(_open_mapped(path), [0, 1])
@@ -929,7 +941,7 @@ def test_arrow_response_preserves_estimator_target_contract(form, labels):
         "BiglassoClassifierCV_strings",
     ],
 )
-def test_arraylike_frame_fit_matches_fortran_ndarray(framework, model):
+def test_arraylike_frame_fit_matches_fortran_ndarray(framework, model, request):
     import pybiglasso as bl
 
     module = pytest.importorskip(framework)
@@ -963,7 +975,15 @@ def test_arraylike_frame_fit_matches_fortran_ndarray(framework, model):
         same_path(actual, reference)
         assert list(actual.feature_names) == names
     else:
-        pytest.importorskip("sklearn")
+        sklearn = pytest.importorskip("sklearn")
+        if framework == "polars":
+            request.applymarker(
+                pytest.mark.xfail(
+                    condition=Version(sklearn.__version__) < Version("1.9"),
+                    strict=True,
+                    reason="scikit-learn < 1.9 drops feature names from Polars DataFrames",
+                )
+            )
         cls = getattr(bl, model.removesuffix("_strings"))
         options = (
             dict(n_alphas=7, cv=3, n_jobs=1)

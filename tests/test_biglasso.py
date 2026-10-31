@@ -1,3 +1,4 @@
+import builtins
 import fractions
 import functools
 import operator
@@ -171,6 +172,21 @@ def test_score(path, data):
     np.testing.assert_allclose(path.score(X, y, "accuracy"), acc)
     with pytest.raises(ValueError, match="metric"):
         path.score(X, y, "r2")
+
+
+@pytest.mark.parametrize("package", ["pandas", "polars"])
+def test_dataframe_export_missing_package_names_install(path, monkeypatch, package):
+    original_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == package or name.startswith(package + "."):
+            raise ImportError(f"{package} not installed", name=package)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    with pytest.raises(ImportError, match=f"pip install {package}") as error:
+        getattr(path, f"to_{package}")()
+    assert "pybiglasso[" not in str(error.value)
 
 
 def test_dataframe_exports(path):
