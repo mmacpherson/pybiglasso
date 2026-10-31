@@ -1,5 +1,75 @@
 # Arrow inputs
 
+Open an uncompressed Arrow (Feather) file, choose the feature columns, and
+keep the response separate:
+
+```python
+import pyarrow.feather as pf
+
+table = pf.read_table("data.feather", memory_map=True)
+features = ["x1", "x2"]
+X = table.select(features)
+y = table["y"]
+```
+
+Then fit as you would with a NumPy array:
+
+```python
+from pybiglasso import biglasso
+
+fit = biglasso(X, y, family="gaussian")
+prediction = fit.predict(X)
+```
+
+For an uncompressed file, the columns stay on disk and are read as the fit
+needs them. **PyArrow's `write_feather` compresses by default. Compressed files
+are decompressed into RAM when opened, even with `memory_map=True`.** If you
+did not write the file uncompressed yourself,
+[rewrite it uncompressed](#rewrite-an-arrow-file-uncompressed) once.
+
+Choose features with `select` or `drop_columns` on the Table after opening.
+**Avoid `read_table(..., columns=...)`: in PyArrow 26.0.0 this copies all the
+file's uncompressed data, including unselected columns, into RAM.** Reading
+without `columns=` and choosing columns afterward uses zero Arrow-pool bytes
+on the tested uncompressed files. Future PyArrow versions may behave differently.
+
+The NumPy counterpart is:
+
+```python
+import numpy as np
+
+X = np.load("features.npy", mmap_mode="r")
+y = np.load("response.npy", mmap_mode="r")
+```
+
+## Rewrite an Arrow file uncompressed
+
+Write a new file one batch at a time with standard PyArrow APIs:
+
+```python
+import pyarrow as pa
+
+with pa.memory_map("data.feather", "r") as source:
+    reader = pa.ipc.open_file(source)
+    with pa.OSFile("data-uncompressed.feather", "wb") as target:
+        options = pa.ipc.IpcWriteOptions(compression=None)
+        with pa.ipc.new_file(target, reader.schema, options=options) as writer:
+            for index in range(reader.num_record_batches):
+                writer.write_batch(reader.get_batch(index))
+```
+
+This reads and writes one batch at a time. For the supported numeric/bool
+columns, memory use depends on the largest batch, plus the writer's and
+compression codec's workspaces. A file with one very large batch can still
+need substantial RAM. The result keeps the same batches and opens directly
+with `pf.read_table("data-uncompressed.feather", memory_map=True)`.
+
+When writing a new Feather file from a Table, pass `compression="uncompressed"`
+to `pf.write_feather`. Ingest also converts supported source files and always
+writes uncompressed feature files; its conversion-memory limits still apply.
+
+## Accepted inputs
+
 X can be a `pyarrow.Table` or `pyarrow.RecordBatch` with non-null bool,
 int8/uint8/int16/uint16/int32/uint32/int64/uint64, float32 or float64 columns.
 String, dictionary/categorical, nested, extension, decimal and temporal columns
@@ -14,74 +84,8 @@ statement about what pybiglasso does, not about the provenance of a Table or the
 memory used by its producer. Bool remains bit-packed. The small response can
 be materialized as a contiguous array using O(n) memory.
 
-**Compressed files are decompressed into RAM by PyArrow before pybiglasso
-sees them, even with `memory_map=True`. If you did not write the file
-uncompressed yourself, rewrite it uncompressed as shown below, or use ingest.**
-Ingest always writes uncompressed feature files.
-
-For NumPy files, use `np.load(path, mmap_mode="r")`:
-
-```python
-import numpy as np
-
-X = np.load("features.npy", mmap_mode="r")
-y = np.load("response.npy", mmap_mode="r")
-```
-
-For a native-endian uncompressed Arrow file, read first and then select/drop
-columns on the resulting Table:
-
-```python
-import pyarrow.feather as pf
-
-table = pf.read_table("data.feather", memory_map=True)
-features = ["x1", "x2"]
-X = table.select(features)
-y = table["y"]
-```
-
-**Do not pass `columns=` to `pf.read_table` for mapped loading. In PyArrow
-26.0.0, that reader path copies all uncompressed batch bodies, including
-unselected columns, into RAM.** Reading without `columns=` and projecting the
-Table afterward allocates zero Arrow-pool bytes on the tested uncompressed
-files. This reader behavior may change in future PyArrow versions.
-
-Fit either input in the usual way:
-
-```python
-from pybiglasso import biglasso
-
-fit = biglasso(X, y, family="gaussian")
-prediction = fit.predict(X)
-```
-
-To create known-uncompressed storage, use standard PyArrow APIs to rewrite
-one record batch at a time to a new output file:
-
-```python
-import pyarrow as pa
-
-with pa.memory_map("data.feather", "r") as source:
-    reader = pa.ipc.open_file(source)
-    with pa.OSFile("data-uncompressed.feather", "wb") as target:
-        options = pa.ipc.IpcWriteOptions(compression=None)
-        with pa.ipc.new_file(target, reader.schema, options=options) as writer:
-            for index in range(reader.num_record_batches):
-                writer.write_batch(reader.get_batch(index))
-```
-
-For the supported primitive features this holds one decoded batch at a time;
-memory scales with the largest source batch, plus Arrow's writer/codec
-workspaces. A source with one very large batch can still require substantial
-RAM. The loop preserves the source batch boundaries. The uncompressed result
-opens directly with
-`pf.read_table("data-uncompressed.feather", memory_map=True)` and supports
-Table projection as above; multiple batches need not be combined.
-Alternatively, ingest converts supported source files and always writes
-uncompressed feature storage, with its documented conversion-memory limits.
-
-Feature names come from `column_names` and must be unique. Projection,
-response extraction and row alignment are the caller's responsibility.
+Feature names come from `column_names` and must be unique. Choosing features,
+extracting the response and keeping rows aligned are the caller's responsibility.
 Generic `__arrow_c_stream__`/`__arrow_c_array__` exporters, pandas and Polars
 frames are not fitting inputs: explicitly produce a Table first, or use ingest
 on a source file. Exporting or building a Table upstream may itself allocate.
@@ -91,7 +95,12 @@ Arrow `Array` and `ChunkedArray` responses use the existing target rules;
 sklearn's binary string class labels retain their normal meaning. The functional
 `biglasso` response is numeric. Null targets are rejected.
 
-## Chunks and arithmetic
+## Files split into batches
+
+Files can contain several batches, and columns can be split into different
+chunks. Fit the Table directly: there is no need to join the batches first.
+The reader follows the original row order, so splitting the same values into
+batches leaves the complete fitted path unchanged.
 
 Columns can have different chunk boundaries, including empty chunks, one-row
 chunks and sliced arrays. Primitive views start at `array.offset * itemsize` and
@@ -126,7 +135,7 @@ NaN/infinity follow the existing selected-row fitting policy: excluded rows do
 not trigger a new full-X finiteness scan, and unsafe mask arithmetic falls back
 to gathering. sklearn prediction retains its existing finite-value check.
 
-## Loading, mutability and lifetime
+## Keep the data unchanged during a fit
 
 `pf.read_table(path, memory_map=True)` reads an Arrow file (Feather v2) as an
 ordinary Table, including files with multiple record batches. Select/drop

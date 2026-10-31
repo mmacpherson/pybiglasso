@@ -27,11 +27,37 @@ def write_ipc(path, arrays, *, compression=None, batches=1):
                 writer.write_batch(batch)
 
 
-def _arrow_recipe(marker):
-    documentation = Path(__file__).resolve().parents[1] / "docs" / "arrow.md"
+def _arrow_recipe(marker, document="docs/arrow.md"):
+    documentation = Path(__file__).resolve().parents[1] / document
     recipes = re.findall(r"```python\n(.*?)\n```", documentation.read_text(), re.S)
     [recipe] = [block for block in recipes if marker in block]
     return recipe
+
+
+def test_readme_arrow_example_verbatim(tmp_path, monkeypatch):
+    import pyarrow.feather as pf
+
+    rows = np.arange(123)
+    rng = np.random.default_rng(28)
+    x1 = rng.normal(size=len(rows))
+    x2 = rows % 3 == 0
+    response = x1 / 2 + rng.normal(size=len(rows))
+    pf.write_feather(
+        pa.table({"x1": x1, "x2": x2, "y": response, "id": ["unused"] * len(rows)}),
+        tmp_path / "data.arrow",
+        compression="uncompressed",
+        chunksize=41,
+    )
+    recipe = _arrow_recipe("fit = bl.biglasso(table.drop_columns", document="README.md")
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    exec(compile(recipe, "README.md", "exec"), namespace)
+    np.save(tmp_path / "features.npy", np.asfortranarray(np.column_stack([x1, x2])))
+    same_path(
+        namespace["fit"],
+        biglasso(np.load(tmp_path / "features.npy", mmap_mode="r"), response),
+    )
+    assert list(namespace["fit"].feature_names) == ["x1", "x2"]
 
 
 def _mapped_read_allocations(recipe, directory):

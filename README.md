@@ -23,19 +23,6 @@ Save the matrix as a numpy memmap and pybiglasso fits the whole regularization
 path, with cross-validation to choose the penalty, without loading it into
 memory.
 
-Inputs can also be `pyarrow.Table` or `RecordBatch`: non-null bool,
-8/16/32/64-bit signed or unsigned integers, or float32/float64 columns with
-aligned buffers. Columns may be chunked or sliced; pybiglasso never copies X.
-Read Arrow files (Feather v2) with
-`table = pyarrow.feather.read_table(path, memory_map=True)`, then
-`X = table.select(features)` and `y = table["y"]`. **PyArrow 26.0.0 copies all
-uncompressed batch bodies when `columns=` is passed to `read_table`; project
-the Table afterward. Compressed files are decompressed into RAM even with
-`memory_map=True`.** If you did not write the file uncompressed yourself,
-[rewrite it one batch at a time](docs/arrow.md), or convert once with ingest,
-which always writes uncompressed feature files. See [Arrow inputs](docs/arrow.md)
-for loading, mutation and lifetime details.
-
 To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
 solver, compiled to WebAssembly, in your browser, on example datasets or your
@@ -123,6 +110,35 @@ pf = np.ones(X.shape[1])
 pf[:12] = 0
 path = bl.biglasso(X, y, penalty_factor=pf)
 ```
+
+### Arrow files
+
+A PyArrow Table works as X just like a NumPy array. Open an Arrow (Feather)
+file memory-mapped, keep the feature columns, and fit:
+
+```python
+import pyarrow.feather as pf
+import pybiglasso as bl
+
+table = pf.read_table("data.arrow", memory_map=True)  # uncompressed data stays mapped
+fit = bl.biglasso(table.drop_columns(["y", "id"]), table["y"])
+```
+
+As with `np.load(..., mmap_mode="r")`, columns are read from disk as the fit
+needs them, so the data can be larger than memory, **as long as the file is
+uncompressed**. PyArrow's `write_feather` compresses by default, and a
+compressed file is decompressed into memory when you open it. If yours is
+compressed, or you're not sure, [rewrite it uncompressed](docs/arrow.md#rewrite-an-arrow-file-uncompressed)
+once.
+
+Pick features with `select` or `drop_columns` after opening. Avoid
+`read_table(..., columns=...)`, which copies the whole file's data in PyArrow
+26.0.0.
+
+Columns can be bool (kept at one bit per value), integers or floats, with no
+missing values; encode text and categories as numbers first.
+[Arrow inputs](docs/arrow.md) covers the details: files split into batches,
+and what not to change while a fit runs.
 
 ### Least squares and logistic regression
 
@@ -482,15 +498,9 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   1.3–1.6x faster in memory; `float32` halves the memory and is about as fast.
   Each value is read as a float64, so values that a narrower dtype holds
   exactly give bit-identical results.
-  X can also be a [`pyarrow.Table` or `RecordBatch`](docs/arrow.md) with
-  non-null primitive numeric/bool columns and aligned buffers. Chunked and
-  sliced columns are borrowed without copying; bool stays bit-packed.
-  Read an Arrow file (Feather v2) with
-  `table = pyarrow.feather.read_table(path, memory_map=True)`, then
-  `X = table.select(features)` and `y = table["y"]`. Avoid `columns=`: PyArrow
-  26.0.0 copies the uncompressed batch bodies through that reader path. Compressed
-  files decompress into RAM; [rewrite unknown storage batch by batch](docs/arrow.md)
-  or use ingest. Supply y separately (NumPy or an Arrow array).
+  Arrow files keep bool columns at one bit per value. They can stay on disk
+  during the fit if the file is uncompressed. See [Arrow files](#arrow-files)
+  for opening a file and choosing feature columns.
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).
