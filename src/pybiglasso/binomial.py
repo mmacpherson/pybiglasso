@@ -9,6 +9,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from ._threads import resolve_threads
+from .arrow import ArrowDesign
 from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
@@ -65,7 +66,7 @@ def biglasso(
     and uses its parameter names: `alpha` mixes the L1 and L2
     penalties (1 is the lasso), and `lambdas` are penalty strengths.
 
-    X may be a numpy array or memmap, ideally in Fortran (column-major) order;
+    X may be an ArrowDesign or a numpy array/memmap, ideally in Fortran order;
     it is read a column at a time and never copied.
 
     Like R, a binomial path stops early once training deviance falls below 1% of the
@@ -107,18 +108,21 @@ def biglasso(
 
     if feature_names is None and hasattr(X, "columns"):
         feature_names = [str(c) for c in X.columns]
-    if not isinstance(X, np.ndarray):
+    mapped = isinstance(X, ArrowDesign)
+    if not mapped and not isinstance(X, np.ndarray):
         X = np.asarray(X)
     y = np.asarray(y)
 
     # first, a few checks on data shape and type
-    if X.ndim != 2 or not all(X.shape):
+    if (not mapped and X.ndim != 2) or not all(X.shape):
         raise ValueError("X must be a non-empty two-dimensional design matrix.")
-    if X.dtype.kind not in "biuf" or X.dtype == np.float16 or not X.dtype.isnative:
+    if not mapped and (
+        X.dtype.kind not in "biuf" or X.dtype == np.float16 or not X.dtype.isnative
+    ):
         raise ValueError(
             "X must have a native real numeric dtype (float32/64 or integer)."
         )
-    if X.dtype.kind == "f" and X.dtype.itemsize not in (4, 8):
+    if not mapped and X.dtype.kind == "f" and X.dtype.itemsize not in (4, 8):
         raise ValueError("Floating-point X must have dtype float32 or float64.")
     if y.ndim != 1 or y.dtype.kind not in "biuf":
         raise ValueError("y must be a one-dimensional numeric response.")
@@ -143,7 +147,7 @@ def biglasso(
     if family not in ("binomial", "gaussian"):
         raise NotImplementedError("Supported families are 'binomial' and 'gaussian'.")
     # not np.isfortran, which is False for one column: both C and F order
-    if not X.flags.f_contiguous:
+    if not mapped and not X.flags.f_contiguous:
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
             "this algorithm performs best on Fortran-ordered arrays.",
@@ -332,12 +336,12 @@ def fit_path_rust(
     """fit_path, run by the Rust backend in one call."""
     from . import _rust
 
-    if not X.flags.aligned:
+    if not isinstance(X, ArrowDesign) and not X.flags.aligned:
         # the kernels read X through typed pointers; numpy can build arrays
         # whose elements aren't aligned for their type (offset buffers)
         raise ValueError("X must be aligned to its dtype for the Rust solver.")
     path = _rust.fit_path(
-        X,
+        (X.shape[0], X._columns) if isinstance(X, ArrowDesign) else X,
         y,
         None if row_indices is None else row_indices.astype(np.int64),
         float(params.alpha),

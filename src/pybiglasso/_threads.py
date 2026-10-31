@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .arrow import ArrowDesign
+
 # Logarithmic midpoint between the recorded 5M-entry near-neutral cases and
 # the smallest sustained parallel win (20M entries). Not a measured crossover.
 PARALLEL_WORK = 10_000_000
@@ -22,7 +24,7 @@ def _mapped_array(array):
     seen = set()
     while array is not None and id(array) not in seen:
         seen.add(id(array))
-        if isinstance(array, (np.memmap, mmap.mmap)):
+        if isinstance(array, (np.memmap, mmap.mmap, ArrowDesign)):
             return True
         # frombuffer uses a memoryview; stride_tricks can insert DummyArray.
         array = (

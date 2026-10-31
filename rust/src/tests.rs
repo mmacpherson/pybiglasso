@@ -369,6 +369,21 @@ fn passes_contiguous() {
 }
 
 #[test]
+fn packed_bits_preserve_pass_order_at_every_offset_and_tail() {
+    for n in SIZES {
+        for offset in 0..8 {
+            let x: Vec<f64> = (0..n).map(|i| ((i * 17 + 3) % 7 < 3) as u8 as f64).collect();
+            let mut bytes = vec![0u8; (n + offset).div_ceil(8)];
+            for i in 0..n {
+                bytes[(offset + i) / 8] |= (x[i] as u8) << ((offset + i) % 8);
+            }
+            let col = MappedCol::Bits { bytes: &bytes, offset, len: n };
+            check_passes("packed bits", &col, &col, &x, &x);
+        }
+    }
+}
+
+#[test]
 fn passes_strided() {
     fn run<const CHECKED: bool>(how: &str) {
         for n in SIZES {

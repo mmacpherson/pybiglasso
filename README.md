@@ -468,6 +468,9 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   1.3–1.6x faster in memory; `float32` halves the memory and is about as fast.
   Each value is read as a float64, so values that a narrower dtype holds
   exactly give bit-identical results.
+  X can also be an uncompressed single-batch Arrow IPC/Feather file, opened
+  with [`ArrowDesign`](docs/arrow-ipc.md); mixed column types stay mapped and
+  bool columns stay bit-packed.
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).
