@@ -47,7 +47,7 @@ def record(output):
     import pyarrow as pa
 
     import pybiglasso as bl
-    from pybiglasso.arrow import ArrowDesign
+    from pybiglasso.arrow import mmap_ipc
 
     cases = {}
     for name, (nrow, ncol) in PROBLEMS.items():
@@ -87,8 +87,10 @@ def record(output):
         )
         with pa.OSFile(str(arrow_path), "wb") as sink:
             with pa.ipc.new_file(sink, batch.schema) as writer:
-                writer.write_batch(batch)
-        designs["arrow-mixed"] = ArrowDesign(arrow_path)
+                cuts = sorted({0, min(7, nrow), min(2047, nrow), min(2048, nrow), nrow})
+                for start, stop in zip(cuts[:-1], cuts[1:], strict=True):
+                    writer.write_batch(batch.slice(start, stop - start))
+        designs["arrow-mixed"] = mmap_ipc(arrow_path)
         for dtype in DTYPES:
             X = designs[dtype]
             values = reference if dtype == "arrow-mixed" else X

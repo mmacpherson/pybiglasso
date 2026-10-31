@@ -23,6 +23,14 @@ Save the matrix as a numpy memmap and pybiglasso fits the whole regularization
 path, with cross-validation to choose the penalty, without loading it into
 memory.
 
+Inputs can also be `pyarrow.Table` or `RecordBatch`: non-null bool,
+8/16/32/64-bit signed or unsigned integers, or float32/float64 columns with
+aligned buffers. Columns may be chunked or sliced; pybiglasso never copies X.
+Use `pybiglasso.arrow.mmap_ipc(path)` for an ordinary Table over an uncompressed,
+native-endian IPC/Feather file. Select/drop columns explicitly; y is supplied
+separately as NumPy or an Arrow Array/ChunkedArray. See [Arrow inputs](docs/arrow.md)
+for the mutation and lifetime contract.
+
 To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
 solver, compiled to WebAssembly, in your browser, on example datasets or your
@@ -58,6 +66,7 @@ wheel. Extras add optional integrations:
 | `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
 | `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
+| `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs and `mmap_ipc()` |
 | `pybiglasso[all]` | all of the above |
 
 ## Quick start
@@ -468,9 +477,12 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   1.3–1.6x faster in memory; `float32` halves the memory and is about as fast.
   Each value is read as a float64, so values that a narrower dtype holds
   exactly give bit-identical results.
-  X can also be an uncompressed single-batch Arrow IPC/Feather file, opened
-  with [`ArrowDesign`](docs/arrow-ipc.md); mixed column types stay mapped and
-  bool columns stay bit-packed.
+  X can also be a [`pyarrow.Table` or `RecordBatch`](docs/arrow.md) with
+  non-null primitive numeric/bool columns and aligned buffers. Chunked and
+  sliced columns are borrowed without copying; bool stays bit-packed.
+  `pybiglasso.arrow.mmap_ipc(path)` returns an ordinary Table over an
+  uncompressed IPC/Feather file, including multi-batch files. Select/drop
+  columns explicitly and supply y separately (NumPy or an Arrow array).
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).

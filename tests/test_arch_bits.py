@@ -39,9 +39,9 @@ def test_record_fits_fortran_int8_and_float64_in_both_families(
     real_fit = bl.biglasso
 
     def observe(X, y, **options):
-        from pybiglasso.arrow import ArrowDesign
+        from pybiglasso.arrow import _is_arrow
 
-        kind = "arrow-mixed" if isinstance(X, ArrowDesign) else X.dtype.name
+        kind = "arrow-mixed" if _is_arrow(X) else X.dtype.name
         if kind != "arrow-mixed":
             assert X.flags.f_contiguous
         assert y.dtype == np.float64

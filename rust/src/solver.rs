@@ -230,6 +230,11 @@ pub(crate) enum MappedCol<'a> {
     I8(&'a [i8]),
     U8(&'a [u8]),
     I16(&'a [i16]),
+    U64(&'a [u64]),
+    I64(&'a [i64]),
+    U32(&'a [u32]),
+    I32(&'a [i32]),
+    U16(&'a [u16]),
     Bits { bytes: &'a [u8], offset: usize, len: usize },
 }
 
@@ -241,6 +246,11 @@ impl Col for MappedCol<'_> {
             Self::I8(v) => v.len(),
             Self::U8(v) => v.len(),
             Self::I16(v) => v.len(),
+            Self::U64(v) => v.len(),
+            Self::I64(v) => v.len(),
+            Self::U32(v) => v.len(),
+            Self::I32(v) => v.len(),
+            Self::U16(v) => v.len(),
             Self::Bits { len, .. } => *len,
         }
     }
@@ -252,6 +262,11 @@ impl Col for MappedCol<'_> {
             Self::I8(v) => v[i].f(),
             Self::U8(v) => v[i].f(),
             Self::I16(v) => v[i].f(),
+            Self::U64(v) => v[i].f(),
+            Self::I64(v) => v[i].f(),
+            Self::U32(v) => v[i].f(),
+            Self::I32(v) => v[i].f(),
+            Self::U16(v) => v[i].f(),
             Self::Bits { bytes, offset, len } => {
                 assert!(i < *len);
                 let bit = offset + i;
@@ -267,27 +282,86 @@ impl Col for MappedCol<'_> {
             Self::I8(v) => Contig::<_, true>(v).block(i0),
             Self::U8(v) => Contig::<_, true>(v).block(i0),
             Self::I16(v) => Contig::<_, true>(v).block(i0),
+            Self::U64(v) => Contig::<_, true>(v).block(i0),
+            Self::I64(v) => Contig::<_, true>(v).block(i0),
+            Self::U32(v) => Contig::<_, true>(v).block(i0),
+            Self::I32(v) => Contig::<_, true>(v).block(i0),
+            Self::U16(v) => Contig::<_, true>(v).block(i0),
             Self::Bits { .. } => std::array::from_fn(|k| self.at(i0 + k)),
         }
     }
 }
 
+// Chunk boundaries affect addressing only. Logical kernel blocks and reduction
+// accumulators are unchanged, including when a block crosses several chunks.
+#[derive(Clone)]
+pub(crate) struct ChunkedColumn<'a> {
+    pub(crate) chunks: Vec<MappedCol<'a>>,
+    pub(crate) ends: Vec<usize>,
+}
+impl<'a> ChunkedColumn<'a> {
+    pub(crate) fn new(chunks: Vec<MappedCol<'a>>, nrow: usize) -> Result<Self, String> {
+        let mut end = 0usize;
+        let mut ends = Vec::with_capacity(chunks.len());
+        for chunk in &chunks {
+            end = end.checked_add(chunk.n()).ok_or("Chunk lengths overflow.")?;
+            ends.push(end);
+        }
+        if end != nrow || chunks.is_empty() {
+            return Err("Chunk lengths must match X rows.".into());
+        }
+        Ok(Self { chunks, ends })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChunkedCol<'a> {
+    chunks: &'a [MappedCol<'a>],
+    ends: &'a [usize],
+}
+impl ChunkedCol<'_> {
+    fn locate(&self, i: usize) -> (usize, usize) {
+        assert!(i < self.n());
+        let k = if self.chunks.len() == 1 { 0 } else { self.ends.partition_point(|&end| end <= i) };
+        (k, i - if k == 0 { 0 } else { self.ends[k - 1] })
+    }
+}
+impl Col for ChunkedCol<'_> {
+    fn n(&self) -> usize {
+        *self.ends.last().expect("nonempty chunks")
+    }
+    #[inline(always)]
+    fn at(&self, i: usize) -> f64 {
+        let (k, local) = self.locate(i);
+        self.chunks[k].at(local)
+    }
+    #[inline(always)]
+    fn block(&self, i0: usize) -> [f64; LANES] {
+        let (k, local) = self.locate(i0);
+        if self.chunks[k].n() - local >= LANES {
+            self.chunks[k].block(local)
+        } else {
+            std::array::from_fn(|lane| self.at(i0 + lane))
+        }
+    }
+}
+
 pub(crate) struct MappedX<'a> {
-    pub(crate) columns: Vec<MappedCol<'a>>,
+    pub(crate) columns: Vec<ChunkedColumn<'a>>,
 }
 impl Design for MappedX<'_> {
     type C<'b>
-        = MappedCol<'b>
+        = ChunkedCol<'b>
     where
         Self: 'b;
-    fn col(&self, j: usize) -> MappedCol<'_> {
-        self.columns[j]
+    fn col(&self, j: usize) -> ChunkedCol<'_> {
+        ChunkedCol { chunks: &self.columns[j].chunks, ends: &self.columns[j].ends }
     }
     fn ncol(&self) -> usize {
         self.columns.len()
     }
     fn nrow(&self) -> usize {
-        self.columns[0].n()
+        *self.columns[0].ends.last().expect("nonempty chunks")
     }
 }
 

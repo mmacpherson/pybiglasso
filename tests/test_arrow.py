@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from pybiglasso import biglasso
-from pybiglasso.arrow import ArrowDesign
+from pybiglasso.arrow import _ArrowMatrix, mmap_ipc
 
 pa = pytest.importorskip("pyarrow")
 
@@ -26,18 +26,30 @@ def write_ipc(path, arrays, *, compression=None, batches=1):
 @pytest.mark.parametrize(
     "kind", ["bool", "int8", "uint8", "int16", "float32", "float64"]
 )
-def test_values_are_readonly_views_of_the_mapping(tmp_path, kind):
+def test_values_are_readonly_views_of_the_mapping(tmp_path, monkeypatch, kind):
     values = np.arange(35) % 7
     values = (values % 2).astype(bool) if kind == "bool" else values.astype(kind)
     path = tmp_path / "design.arrow"
     write_ipc(path, [pa.array(values)])
-    X = ArrowDesign(path)
-    view, bit_offset = X._columns[0]
+    real_map = pa.memory_map
+    mappings = []
+
+    def capture(*args):
+        source = real_map(*args)
+        mappings.append(source.read_buffer(source.size()))
+        source.seek(0)
+        return source
+
+    monkeypatch.setattr(pa, "memory_map", capture)
+    X = mmap_ipc(path)
+    view, bit_offset, _ = _ArrowMatrix(X)._columns[0][0]
     assert X.shape == (35, 1)
-    assert X.columns == ("x0",)
+    assert X.column_names == ["x0"]
+    assert isinstance(X, pa.Table)
     assert not view.flags.writeable and view.flags.aligned
-    assert X._mapping.address <= view.ctypes.data
-    assert view.ctypes.data + view.nbytes <= X._mapping.address + X._mapping.size
+    assert mappings[0].address <= view.ctypes.data
+    assert view.ctypes.data + view.nbytes <= mappings[0].address + mappings[0].size
+    assert view.ctypes.data == X.column(0).chunk(0).buffers()[1].address
     if kind == "bool":
         assert view.dtype == np.uint8
         assert bit_offset == 0
@@ -48,8 +60,7 @@ def test_values_are_readonly_views_of_the_mapping(tmp_path, kind):
         assert view.dtype == values.dtype
         assert bit_offset is None
         np.testing.assert_array_equal(view, values)
-    with pytest.raises(TypeError, match="implicitly converted"):
-        np.asarray(X)
+    assert not view.flags.writeable
 
 
 @pytest.mark.parametrize("compression", ["lz4", "zstd"])
@@ -74,7 +85,7 @@ def test_compression_is_rejected_before_decoding(tmp_path, monkeypatch, compress
 
     monkeypatch.setattr(pa.ipc, "open_file", inspect)
     with pytest.raises(ValueError, match="uncompressed"):
-        ArrowDesign(path)
+        mmap_ipc(path)
 
 
 @pytest.mark.parametrize("compression", [None, "lz4", "zstd"])
@@ -124,9 +135,16 @@ def test_footer_must_select_preflight_batch(tmp_path, monkeypatch, compression):
             get_batch=forbidden,
         )
 
-    monkeypatch.setattr(pa.ipc, "open_file", inspect)
-    with pytest.raises(ValueError, match="footer|offset"):
-        ArrowDesign(target)
+    if compression is not None:
+        monkeypatch.setattr(pa.ipc, "open_file", inspect)
+    if compression is None:
+        # Unindexed messages are irrelevant: inspect the footer-selected batch.
+        assert mmap_ipc(target).equals(
+            pa.Table.from_batches([pa.record_batch(arrays, names=["x0"])])
+        )
+    else:
+        with pytest.raises(ValueError, match="uncompressed"):
+            mmap_ipc(target)
 
 
 @pytest.mark.parametrize("kind", ["bool", "int16"])
@@ -156,7 +174,7 @@ def test_public_prediction_row_indices_match_numpy(tmp_path, kind, nrow, case):
     values[-1] = 1
     path = tmp_path / "rows.arrow"
     write_ipc(path, [pa.array(values)])
-    design = ArrowDesign(path)
+    design = mmap_ipc(path)
     reference = values[:, None]
     model = BiglassoPath(
         lambdas=np.ones(1),
@@ -199,35 +217,38 @@ def test_public_prediction_row_indices_match_numpy(tmp_path, kind, nrow, case):
 
 
 @pytest.mark.parametrize("batches", [0, 2])
-def test_requires_one_batch(tmp_path, batches):
+def test_loads_zero_or_multiple_batches(tmp_path, batches):
     path = tmp_path / "batches.arrow"
     write_ipc(path, [pa.array([1, 2], type=pa.int8())], batches=batches)
-    with pytest.raises(ValueError, match="exactly one record batch"):
-        ArrowDesign(path)
+    table = mmap_ipc(path)
+    assert table.num_rows == 2 * batches
+    assert table.column(0).num_chunks == batches
 
 
 @pytest.mark.parametrize("values", [[None, 1], [1, None]])
 def test_rejects_nulls(tmp_path, values):
     path = tmp_path / "nulls.arrow"
     write_ipc(path, [pa.array(values, type=pa.int8())])
-    with pytest.raises(ValueError, match="null"):
-        ArrowDesign(path)
+    with pytest.raises(ValueError, match="Column.*chunk.*null"):
+        biglasso(mmap_ipc(path), [0, 1])
 
 
-@pytest.mark.parametrize("kind", [pa.int32(), pa.uint16(), pa.float16(), pa.string()])
+@pytest.mark.parametrize(
+    "kind", [pa.float16(), pa.string(), pa.timestamp("s"), pa.decimal128(4)]
+)
 def test_rejects_unsupported_types(tmp_path, kind):
     path = tmp_path / "unsupported.arrow"
     values = ["a", "b"] if kind == pa.string() else [1, 2]
     write_ipc(path, [pa.array(values, type=kind)])
-    with pytest.raises(ValueError, match="Arrow columns must"):
-        ArrowDesign(path)
+    with pytest.raises(ValueError, match="Column.*chunk.*unsupported Arrow type"):
+        biglasso(mmap_ipc(path), [0, 1])
 
 
 def test_rejects_empty_rows(tmp_path):
     path = tmp_path / "empty.arrow"
     write_ipc(path, [pa.array([], type=pa.int8())])
-    with pytest.raises(ValueError, match="at least one row"):
-        ArrowDesign(path)
+    with pytest.raises(ValueError, match="nonempty"):
+        biglasso(mmap_ipc(path), [])
 
 
 def test_unique_feature_names(tmp_path):
@@ -237,10 +258,22 @@ def test_unique_feature_names(tmp_path):
         with pa.ipc.new_file(sink, batch.schema) as writer:
             writer.write_batch(batch)
     with pytest.raises(ValueError, match="unique"):
-        ArrowDesign(path)
+        biglasso(mmap_ipc(path), [0, 1])
 
 
-KINDS = ["bool", "int8", "uint8", "int16", "float32", "float64"]
+KINDS = [
+    "bool",
+    "int8",
+    "uint8",
+    "int16",
+    "uint16",
+    "int32",
+    "uint32",
+    "int64",
+    "uint64",
+    "float32",
+    "float64",
+]
 
 
 def designs(tmp_path, kind="mixed", nrow=2057, ncol=9):
@@ -256,7 +289,7 @@ def designs(tmp_path, kind="mixed", nrow=2057, ncol=9):
     write_ipc(path, [pa.array(a) for a in arrays])
     npy = tmp_path / "design.npy"
     np.save(npy, np.asfortranarray(np.column_stack(arrays)))
-    return ArrowDesign(path), np.load(npy, mmap_mode="r")
+    return mmap_ipc(path), np.load(npy, mmap_mode="r")
 
 
 def same_path(actual, expected):
@@ -343,7 +376,7 @@ def test_cv_and_estimators_do_not_convert_design(tmp_path, family):
         with pytest.raises(ValueError, match="requires y.*None"):
             cls(**options).fit(X, None)
         actual, expected = cls(**options).fit(X, y), cls(**options).fit(reference, y)
-        assert tuple(actual.feature_names_in_) == X.columns
+        assert tuple(actual.feature_names_in_) == tuple(X.column_names)
         np.testing.assert_array_equal(actual.coef_, expected.coef_)
         np.testing.assert_array_equal(actual.predict(X), expected.predict(reference))
         assert actual.score(X, y) == expected.score(reference, y)
@@ -360,7 +393,7 @@ def test_cv_and_estimators_do_not_convert_design(tmp_path, family):
             with pa.ipc.new_file(sink, renamed.schema) as writer:
                 writer.write_batch(renamed)
         with pytest.raises(ValueError, match="feature names"):
-            actual.predict(ArrowDesign(path))
+            actual.predict(mmap_ipc(path))
 
 
 def test_auto_threads_and_callback_lifetime(tmp_path, monkeypatch):
@@ -379,13 +412,13 @@ def test_auto_threads_and_callback_lifetime(tmp_path, monkeypatch):
         gc.collect()
         return False
 
-    actual = biglasso(held.pop(), np.arange(107) % 2, nlambda=5, _stop=callback)
+    actual = biglasso(held[0], np.arange(107) % 2, nlambda=5, _stop=callback)
     same_path(actual, expected)
 
 
 def native_arguments(X, y):
     return dict(
-        x=(X.shape[0], X._columns),
+        x=(X.shape[0], _ArrowMatrix(X)._columns),
         y=y,
         row_indices=None,
         alpha=0.5,
@@ -418,14 +451,15 @@ def test_native_packed_bit_offsets_and_owner_lifetime(tmp_path, offset, checked)
         logical = np.r_[np.ones(offset, dtype=bool), reference[:, j]]
         bitmap = np.packbits(logical, bitorder="little")
         bitmap.flags.writeable = False
-        owners.append((bitmap, offset))
+        owners.append([(bitmap, offset, 2057)])
+    held = [X]
+    del X, bitmap
     args.update(x=(2057, owners), boundscheck=checked)
     expected = _rust.fit_path(**{**args, "x": reference})
 
     def callback(*unused):
         owners.clear()
-        X._columns = ()
-        X._source.close()
+        held.clear()
         gc.collect()
         return False
 
@@ -472,7 +506,7 @@ def test_native_rejects_malformed_descriptors(tmp_path, bad):
         elif bad == "wrong bit type":
             offset = 0
         elif bad == "unsupported":
-            array = array.astype(np.int32)
+            array = array.astype(np.float16)
         elif bad == "unaligned":
             array = np.ndarray(
                 41, dtype=np.float64, buffer=bytearray(41 * 8 + 1), offset=1
@@ -483,7 +517,7 @@ def test_native_rejects_malformed_descriptors(tmp_path, bad):
             array = array[:, None]
         if bad != "writeable":
             array.flags.writeable = False
-        args["x"] = (nrow, [(array, offset)])
+        args["x"] = (nrow, [[(array, offset, 41)]])
     with pytest.raises((ValueError, TypeError, OverflowError)):
         _rust.fit_path(**args)
 
@@ -495,7 +529,7 @@ def test_float_selected_rows_and_mask_fallback(tmp_path):
     values = np.array(reference, order="F")
     values[0, 0] = np.nan
     write_ipc(tmp_path / "nan.arrow", [pa.array(values[:, j]) for j in range(3)])
-    X = ArrowDesign(tmp_path / "nan.arrow")
+    X = mmap_ipc(tmp_path / "nan.arrow")
     y = (np.arange(107) % 5).astype(float)
     args = native_arguments(X, y)
     args.update(row_indices=np.arange(1, 107, dtype=np.int64), row_path="mask")
@@ -505,3 +539,471 @@ def test_float_selected_rows_and_mask_fallback(tmp_path):
     assert actual["deviance"].tobytes() == expected["deviance"].tobytes()
     with pytest.raises(ValueError, match="finite|NaN"):
         biglasso(X, y)
+
+
+def partitioned_table(partition, nrow):
+    """Same dyadic values; only physical type, chunks and offsets differ."""
+    rng = np.random.default_rng(228)
+    kinds = KINDS if partition != "work" else ["bool", "float64", "int64", "float32"]
+    arrays, columns = [], []
+    for j, kind in enumerate(kinds):
+        values = rng.integers(0, 2 if kind == "bool" else 7, nrow).astype(kind)
+        if kind.startswith("float"):
+            values /= 4
+        arrays.append(values)
+        if partition == "one-row":
+            ends = list(range(nrow + 1))
+        elif partition == "independent":
+            ends = list(range(0, nrow, (j + 1) * 19)) + [nrow]
+        else:
+            ends = sorted(
+                {
+                    0,
+                    nrow,
+                    *[
+                        i + j % 3
+                        for i in (
+                            1,
+                            7,
+                            8,
+                            9,
+                            15,
+                            16,
+                            17,
+                            2047,
+                            2048,
+                            2049,
+                            16383,
+                            16384,
+                            16385,
+                        )
+                        if i + j % 3 < nrow
+                    ],
+                }
+            )
+        chunks = [pa.array([], type=pa.from_numpy_dtype(values.dtype))]
+        for k, (start, stop) in enumerate(zip(ends[:-1], ends[1:], strict=True)):
+            offset = (k + j) % 8 + 1
+            # Each chunk is a slice of its own allocated backing buffer; bool
+            # starts at every bit offset, including slices beyond a full byte.
+            backing = pa.array(
+                np.r_[np.zeros(offset, dtype=values.dtype), values[start:stop]]
+            )
+            chunks.append(backing.slice(offset, stop - start))
+            if k % 3 == 0:
+                chunks.append(chunks[0])
+        chunks.append(chunks[0])
+        columns.append(pa.chunked_array(chunks))
+    table = pa.Table.from_arrays(columns, names=[f"x{j}" for j in range(len(columns))])
+    return table, np.asfortranarray(np.column_stack(arrays))
+
+
+@pytest.mark.parametrize("partition", ["lanes", "independent", "one-row", "work"])
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+@pytest.mark.parametrize("subset", ["all", "mask", "gather", "repeated"])
+@pytest.mark.parametrize("checked", [False, True])
+def test_partition_only_changes_addressing(
+    tmp_path, monkeypatch, partition, family, subset, checked
+):
+    from pybiglasso.config import Settings
+
+    nrow = 73 if partition == "one-row" else 16391 if partition == "work" else 2057
+    table, values = partitioned_table(partition, nrow)
+    np.save(tmp_path / "reference.npy", values)
+    reference = np.load(tmp_path / "reference.npy", mmap_mode="r")
+    y = (np.arange(nrow) % 2).astype(float)
+    if family == "gaussian":
+        y += values[:, 1] / 4 + 0.5
+    rows = {
+        "all": None,
+        "mask": np.arange(1, nrow),
+        "gather": np.arange(0, nrow, 5),
+        "repeated": np.arange(0, nrow, 3).repeat(2),
+    }[subset]
+    monkeypatch.setattr("pybiglasso.binomial.settings", Settings(boundscheck=checked))
+    for threads, alpha in ((1, 1.0), (2, 1.0), (1, 0.5), (2, 0.5)):
+        options = dict(
+            family=family,
+            alpha=alpha,
+            n_threads=threads,
+            row_indices=rows,
+            nlambda=5,
+            lambda_min=0.4,
+        )
+        npy_fit = biglasso(reference, y, **options)
+        arrow_fit = biglasso(
+            table, pa.chunked_array([pa.array(y[:7]), pa.array(y[7:])]), **options
+        )
+        same_path(arrow_fit, npy_fit)
+        same_path(
+            biglasso(table, y, lambdas=npy_fit.lambdas, **options),
+            biglasso(reference, y, lambdas=npy_fit.lambdas, **options),
+        )
+        np.testing.assert_array_equal(
+            arrow_fit.predict(table, row_indices=rows),
+            npy_fit.predict(reference, row_indices=rows),
+        )
+        np.testing.assert_array_equal(
+            arrow_fit.score(table, pa.array(y), row_indices=rows),
+            npy_fit.score(reference, y, row_indices=rows),
+        )
+
+
+@pytest.mark.parametrize("compression", [None, "lz4", "zstd"])
+def test_all_footer_batches_checked_before_any_decode(
+    tmp_path, monkeypatch, compression
+):
+    # Start with two compressed batches, then transplant a complete uncompressed
+    # first block of exactly the same byte length by composing independent files.
+    from pybiglasso.arrow import _field
+
+    batch = pa.record_batch([pa.array(np.arange(107), type=pa.int16())], names=["x0"])
+    plain = pa.BufferOutputStream()
+    with pa.ipc.new_file(plain, batch.schema) as writer:
+        writer.write_batch(batch)
+    reader = pa.BufferReader(plain.getvalue())
+    reader.seek(8)
+    pa.ipc.read_message(reader)
+    start = reader.tell()
+    pa.ipc.read_message(reader)
+    plain_block = plain.getvalue().to_pybytes()[start : reader.tell()]
+    target = tmp_path / "multi.arrow"
+    write_ipc(target, batch.columns, compression=compression, batches=2)
+    raw = bytearray(target.read_bytes())
+    footer_size = struct.unpack_from("<I", raw, len(raw) - 10)[0]
+    footer = memoryview(raw)[-10 - footer_size : -10]
+    root = struct.unpack_from("<I", footer)[0]
+    field = _field(footer, root, 3)
+    vector = field + struct.unpack_from("<I", footer, field)[0]
+    block0, block1 = vector + 4, vector + 28
+    offset0, offset1 = (
+        struct.unpack_from("<q", footer, k)[0] for k in (block0, block1)
+    )
+    # Point the first footer entry at the new plain block and shift the second.
+    struct.pack_into("<q", footer, block1, offset1 + len(plain_block))
+    metadata_len = struct.unpack_from("<i", plain_block, 4)[0] + 8
+    body_len = len(plain_block) - metadata_len
+    struct.pack_into("<qi", footer, block0, offset0, metadata_len)
+    struct.pack_into("<q", footer, block0 + 16, body_len)
+    del footer
+    raw = raw[:offset0] + plain_block + raw[offset0:]
+    target.write_bytes(raw)
+    real_open = pa.ipc.open_file
+    if compression:
+
+        def inspect(source):
+            actual = real_open(source)
+
+            def forbidden(*args):
+                pytest.fail("An earlier batch decoded before checking all batches")
+
+            return SimpleNamespace(
+                schema=actual.schema,
+                num_record_batches=actual.num_record_batches,
+                get_batch=forbidden,
+            )
+
+        monkeypatch.setattr(pa.ipc, "open_file", inspect)
+        with pytest.raises(ValueError, match="uncompressed"):
+            mmap_ipc(target)
+    else:
+        table = mmap_ipc(target)
+        assert table.num_rows == 214
+        assert table.column(0).num_chunks == 2
+
+
+def test_unaligned_arrow_is_rejected_without_copying():
+    values = np.ndarray(41, dtype=np.float64, buffer=bytearray(41 * 8 + 1), offset=1)
+    values[:] = np.arange(41)
+    assert not values.flags.aligned
+    array = pa.Array.from_buffers(pa.float64(), 41, [None, pa.py_buffer(values)])
+    with pytest.raises(
+        ValueError, match="Column 'bad', chunk 0: unaligned.*aligned Arrow buffers"
+    ):
+        biglasso(pa.table({"bad": array}), np.arange(41) % 2)
+
+
+def test_mutable_numpy_backed_table_borrows_readonly_views():
+    values = np.arange(73, dtype=float)
+    table = pa.table({"x": pa.array(values)})
+    descriptor = _ArrowMatrix(table)._columns[0][0]
+    assert descriptor[0].ctypes.data == values.ctypes.data
+    assert not descriptor[0].flags.writeable
+    assert values.flags.writeable
+    fit = biglasso(table, values / 4, nlambda=5)
+    assert values.flags.writeable
+    np.testing.assert_array_equal(values, np.arange(73))
+    assert fit.feature_names == ("x",)
+
+
+@pytest.mark.parametrize("form", ["table", "batch"])
+@pytest.mark.parametrize("labels", [False, True])
+def test_arrow_response_preserves_estimator_target_contract(form, labels):
+    from pybiglasso.sklearn import (
+        BiglassoClassifier,
+        BiglassoClassifierCV,
+        BiglassoRegressor,
+        BiglassoRegressorCV,
+    )
+
+    values = np.asfortranarray(np.arange(123).reshape(41, 3) % 7)
+    batch = pa.record_batch(
+        [pa.array(values[:, j]) for j in range(3)], names=["a", "b", "c"]
+    )
+    X = batch if form == "batch" else pa.Table.from_batches([batch])
+    y = (
+        np.where(np.arange(41) % 2, "case", "control")
+        if labels
+        else (np.arange(41) % 2).astype(float)
+    )
+    target = pa.chunked_array([pa.array(y[:3]), pa.array(y[3:])])
+    classes = (
+        [BiglassoClassifier, BiglassoClassifierCV]
+        if labels
+        else [BiglassoRegressor, BiglassoRegressorCV]
+    )
+    for cls in classes:
+        options = (
+            dict(n_alphas=5, cv=3, n_jobs=2)
+            if cls.__name__.endswith("CV")
+            else dict(alpha=0.1)
+        )
+        actual, reference = cls(**options).fit(X, target), cls(**options).fit(values, y)
+        np.testing.assert_array_equal(actual.coef_, reference.coef_)
+        np.testing.assert_array_equal(actual.predict(X), reference.predict(values))
+        if labels:
+            np.testing.assert_array_equal(actual.classes_, ["case", "control"])
+
+
+@pytest.mark.parametrize(
+    "protocol", ["__arrow_c_stream__", "__arrow_c_array__", "pandas", "polars"]
+)
+def test_implicit_exporters_are_rejected_before_conversion(protocol):
+    def forbidden(*args):
+        pytest.fail("Implicit exporter was invoked")
+
+    cls = type(
+        "Exporter",
+        (),
+        {
+            "__array__": forbidden,
+            **(
+                {"__module__": protocol}
+                if protocol in ("pandas", "polars")
+                else {protocol: forbidden}
+            ),
+        },
+    )
+    with pytest.raises(TypeError, match="Convert explicitly to a pyarrow.Table"):
+        biglasso(cls(), [0, 1])
+
+
+@pytest.mark.parametrize(
+    "kind", ["dictionary", "list", "struct", "extension", "timestamp", "string", "null"]
+)
+def test_column_chunk_validation_always_errors(kind):
+    if kind == "dictionary":
+        array = pa.array(["x", "y"]).dictionary_encode()
+    elif kind == "list":
+        array = pa.array([[1], [2]])
+    elif kind == "struct":
+        array = pa.array([{"x": 1}, {"x": 2}])
+    elif kind == "extension":
+
+        class Extension(pa.ExtensionType):
+            def __init__(self):
+                super().__init__(pa.int8(), "test-only")
+
+            def __arrow_ext_serialize__(self):
+                return b""
+
+        array = pa.ExtensionArray.from_storage(
+            Extension(), pa.array([1, 2], type=pa.int8())
+        )
+    elif kind == "timestamp":
+        array = pa.array([1, 2], type=pa.timestamp("s"))
+    elif kind == "null":
+        array = pa.array([1.0, None])
+    else:
+        array = pa.array(["x", "y"])
+    table = pa.table({"bad": pa.chunked_array([array.slice(0, 0), array])})
+    with pytest.raises(ValueError, match="Column 'bad', chunk [01]:"):
+        biglasso(table, [0, 1])
+
+
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_mapped_multibatch_and_allocated_tables_share_complete_paths(tmp_path, family):
+    table, reference = partitioned_table("lanes", 2057)
+    path = tmp_path / "partitioned.arrow"
+    with pa.ipc.new_file(path, table.schema) as writer:
+        writer.write_table(table, max_chunksize=13)
+    mapped = mmap_ipc(path)
+    assert isinstance(mapped, pa.Table)
+    assert mapped.column(0).num_chunks > 1
+    y = (np.arange(2057) % 2).astype(float)
+    options = dict(family=family, alpha=0.5, nlambda=5, n_threads=2)
+    same_path(
+        biglasso(mapped, pa.array(y), **options), biglasso(reference, y, **options)
+    )
+    same_path(biglasso(table, y, **options), biglasso(reference, y, **options))
+    gc.collect()
+    np.testing.assert_array_equal(mapped.column(0).to_numpy(), reference[:, 0])
+
+
+def test_chunked_nonfinite_excluded_rows_use_mask_fallback():
+    from pybiglasso import _rust
+
+    values = np.asfortranarray(np.random.default_rng(43).normal(size=(107, 3)))
+    values[0, 0] = np.nan
+    table = pa.Table.from_arrays(
+        [
+            pa.chunked_array(
+                [pa.array(values[: j + 1, j]), pa.array(values[j + 1 :, j])]
+            )
+            for j in range(3)
+        ],
+        names=[f"x{j}" for j in range(3)],
+    )
+    y = (np.arange(107) % 5).astype(float)
+    args = native_arguments(table, y)
+    args.update(row_indices=np.arange(1, 107, dtype=np.int64), row_path="mask")
+    actual, reference = _rust.fit_path(**args), _rust.fit_path(**{**args, "x": values})
+    assert actual["row_path"] == reference["row_path"] == "gather"
+    assert actual["deviance"].tobytes() == reference["deviance"].tobytes()
+    with pytest.raises(ValueError, match="finite|NaN"):
+        biglasso(table, y)
+
+
+@pytest.mark.parametrize("kind", ["int64", "uint64"])
+def test_wide_integer_conversion_matches_ndarray(kind):
+    values = ((1 << 53) + 1 + np.arange(41, dtype=kind) * 3).astype(kind)
+    table = pa.table({"x": pa.array(values)})
+    reference = np.asfortranarray(values[:, None])
+    y = (np.arange(41) % 7).astype(float)
+    same_path(biglasso(table, y, nlambda=5), biglasso(reference, y, nlambda=5))
+
+
+@pytest.mark.parametrize("compression", [None, "zstd"])
+def test_dictionary_compression_is_preflighted_and_projection_is_explicit(
+    tmp_path, compression, monkeypatch
+):
+    table = pa.table(
+        {
+            "x": np.arange(41) % 7,
+            "label": pa.array(
+                ["case" if i % 2 else "control" for i in range(41)]
+            ).dictionary_encode(),
+        }
+    )
+    path = tmp_path / "dictionary.arrow"
+    with pa.ipc.new_file(
+        path, table.schema, options=pa.ipc.IpcWriteOptions(compression=compression)
+    ) as writer:
+        writer.write_table(table)
+    if compression:
+        monkeypatch.setattr(
+            pa.ipc,
+            "open_file",
+            lambda *_: pytest.fail("Reader opened before dictionary preflight"),
+        )
+        with pytest.raises(ValueError, match="uncompressed"):
+            mmap_ipc(path)
+    else:
+        mapped = mmap_ipc(path)
+        assert mapped.equals(table)
+        with pytest.raises(ValueError, match="Column 'label', chunk 0: unsupported"):
+            biglasso(mapped, np.arange(41) % 2)
+        from pybiglasso.sklearn import BiglassoClassifier
+
+        fit = BiglassoClassifier().fit(mapped.select(["x"]), mapped.column("label"))
+        np.testing.assert_array_equal(fit.classes_, ["case", "control"])
+
+
+def test_dictionary_delta_rejected_before_reader_can_concatenate(tmp_path, monkeypatch):
+    path = tmp_path / "delta.arrow"
+    first = pa.record_batch(
+        [pa.DictionaryArray.from_arrays(pa.array([0, 1]), pa.array(["a", "b"]))],
+        names=["label"],
+    )
+    second = pa.record_batch(
+        [pa.DictionaryArray.from_arrays(pa.array([1, 2]), pa.array(["a", "b", "c"]))],
+        names=["label"],
+    )
+    with pa.ipc.new_file(
+        path, first.schema, options=pa.ipc.IpcWriteOptions(emit_dictionary_deltas=True)
+    ) as writer:
+        writer.write_batch(first)
+        writer.write_batch(second)
+    monkeypatch.setattr(
+        pa.ipc,
+        "open_file",
+        lambda *_: pytest.fail("Dictionary concatenated before preflight"),
+    )
+    with pytest.raises(ValueError, match="dictionary deltas"):
+        mmap_ipc(path)
+
+
+@pytest.mark.parametrize("storage", ["mapped", "allocated", "numpy"])
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_every_chunk_owner_survives_dropped_outer_references(tmp_path, storage, family):
+    from pybiglasso import _rust
+
+    table, reference = designs(tmp_path, nrow=107)
+    arrays = None
+    if storage == "allocated":
+        table = pa.Table.from_arrays(
+            [
+                pa.array(column.to_pylist(), type=column.type)
+                for column in table.itercolumns()
+            ],
+            names=table.column_names,
+        )
+    elif storage == "numpy":
+        arrays = [
+            np.array(reference[:, j], copy=True) for j in range(reference.shape[1])
+        ]
+        table = pa.Table.from_arrays(
+            [pa.array(values) for values in arrays], names=table.column_names
+        )
+    # Each column's independent boundaries also cross the kernel's fixed lanes.
+    table = pa.Table.from_arrays(
+        [
+            pa.chunked_array(
+                [column.chunk(0).slice(0, j + 1), column.chunk(0).slice(j + 1)]
+            )
+            for j, column in enumerate(table.itercolumns())
+        ],
+        names=table.column_names,
+    )
+    y = (np.arange(107) % 2).astype(float)
+    args = native_arguments(table, y)
+    columns = [list(column) for column in args["x"][1]]
+    args.update(x=(107, columns), family=family)
+    reference_fit = _rust.fit_path(**{**args, "x": reference})
+    held = [table, arrays]
+    del table, arrays
+
+    def callback(*unused):
+        columns.clear()
+        held.clear()
+        gc.collect()
+        return False
+
+    actual = _rust.fit_path(**args, on_lambda=callback)
+    for field in (
+        "center",
+        "scale",
+        "col_map",
+        "iters",
+        "n_reject",
+        "deviance",
+        "intercept",
+        "lambda_",
+    ):
+        assert actual[field].tobytes() == reference_fit[field].tobytes(), field
+    for field in ("coef_rows", "coef_vals"):
+        for a, b in zip(actual[field], reference_fit[field], strict=True):
+            if a is None or b is None:
+                assert a is b
+            else:
+                assert a.tobytes() == b.tobytes(), field
