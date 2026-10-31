@@ -33,6 +33,7 @@ def _check_uncompressed(source, pa):
     if source.read(8)[:6] != b"ARROW1":
         raise ValueError("ArrowDesign requires an Arrow IPC file (Feather v2).")
     schema = pa.ipc.read_message(source)
+    batch_offset = source.tell()
     batch = pa.ipc.read_message(source)
     if schema.type != "schema" or batch.type != "record batch":
         raise ValueError("Expected one schema followed by one Arrow record batch.")
@@ -44,6 +45,26 @@ def _check_uncompressed(source, pa):
     table = header + struct.unpack_from("<I", metadata, header)[0]
     if _field(metadata, table, 3) is not None:  # RecordBatch.compression
         raise ValueError("ArrowDesign requires uncompressed IPC buffers.")
+    # get_batch follows the footer, not the sequential message stream. Require
+    # its sole block to select the message just checked, before it can decode X.
+    source.seek(source.size() - 10)
+    trailer = source.read(10)
+    if trailer[4:] != b"ARROW1":
+        raise ValueError("Invalid Arrow IPC footer.")
+    length = struct.unpack_from("<I", trailer)[0]
+    if length > source.size() - 10:
+        raise ValueError("Invalid Arrow IPC footer length.")
+    source.seek(source.size() - 10 - length)
+    footer = memoryview(source.read_buffer(length))
+    root = struct.unpack_from("<I", footer)[0]
+    field = _field(footer, root, 3)  # Footer.recordBatches vector of Blocks
+    if field is None:
+        raise ValueError("Missing Arrow IPC footer record batches.")
+    vector = field + struct.unpack_from("<I", footer, field)[0]
+    count = struct.unpack_from("<I", footer, vector)[0]
+    offset = struct.unpack_from("<q", footer, vector + 4)[0]
+    if count != 1 or offset != batch_offset:
+        raise ValueError("Arrow IPC footer offset must select the preflight batch.")
 
 
 class ArrowDesign:
@@ -141,8 +162,21 @@ class ArrowDesign:
     def _block(self, rows, columns):
         """Bounded prediction workspace, never a conversion of the design."""
         indices = (
-            np.arange(*rows.indices(self.shape[0])) if isinstance(rows, slice) else rows
+            np.arange(*rows.indices(self.shape[0]))
+            if isinstance(rows, slice)
+            else np.asarray(rows)
         )
+        if indices.size == 0 and not isinstance(rows, np.ndarray):
+            indices = indices.astype(np.intp)
+        if indices.ndim != 1 or indices.dtype.kind not in "iu":
+            raise IndexError("row_indices must be a one-dimensional integer array.")
+        # Match NumPy's signed indexing before computing bitmap addresses;
+        # negative indices refer to logical rows, never bitmap bytes or padding.
+        indices = indices.astype(np.intp, copy=False)
+        nrow = self.shape[0]
+        if np.any(indices < -nrow) or np.any(indices >= nrow):
+            raise IndexError("row_indices has indices outside the design.")
+        indices = np.where(indices < 0, indices + nrow, indices)
         block = np.empty((len(indices), len(columns)), dtype=np.float64)
         for k, j in enumerate(columns):
             values, offset = self._columns[j]

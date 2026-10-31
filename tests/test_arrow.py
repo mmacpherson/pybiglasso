@@ -2,6 +2,7 @@
 
 import gc
 import math
+import struct
 from types import SimpleNamespace
 
 import numpy as np
@@ -74,6 +75,127 @@ def test_compression_is_rejected_before_decoding(tmp_path, monkeypatch, compress
     monkeypatch.setattr(pa.ipc, "open_file", inspect)
     with pytest.raises(ValueError, match="uncompressed"):
         ArrowDesign(path)
+
+
+@pytest.mark.parametrize("compression", [None, "lz4", "zstd"])
+def test_footer_must_select_preflight_batch(tmp_path, monkeypatch, compression):
+    from pybiglasso.arrow import _field
+
+    arrays = [pa.array(np.arange(107), type=pa.int16())]
+    plain = tmp_path / "plain.arrow"
+    target = tmp_path / "target.arrow"
+    write_ipc(plain, arrays)
+    write_ipc(target, arrays, compression=compression)
+    raw = plain.read_bytes()
+    source = pa.BufferReader(raw)
+    source.seek(8)
+    pa.ipc.read_message(source)
+    start = source.tell()
+    pa.ipc.read_message(source)
+    extra = raw[start : source.tell()]
+    indexed = target.read_bytes()
+    patched = bytearray(indexed[:start] + extra + indexed[start:])
+    footer_length = struct.unpack_from("<I", patched, len(patched) - 10)[0]
+    footer = memoryview(patched)[-10 - footer_length : -10]
+    root = struct.unpack_from("<I", footer)[0]
+    field = _field(footer, root, 3)
+    vector = field + struct.unpack_from("<I", footer, field)[0]
+    block = vector + 4
+    offset = struct.unpack_from("<q", footer, block)[0]
+    struct.pack_into("<q", footer, block, offset + len(extra))
+    target.write_bytes(patched)
+    # The file reader genuinely follows the adjusted footer, not the extra batch.
+    assert (
+        pa.ipc.open_file(target)
+        .get_batch(0)
+        .equals(pa.record_batch(arrays, names=["x0"]))
+    )
+    open_file = pa.ipc.open_file
+
+    def inspect(source):
+        reader = open_file(source)
+
+        def forbidden(*args):
+            pytest.fail("Footer-selected batch decoded before offset validation")
+
+        return SimpleNamespace(
+            num_record_batches=reader.num_record_batches,
+            schema=reader.schema,
+            get_batch=forbidden,
+        )
+
+    monkeypatch.setattr(pa.ipc, "open_file", inspect)
+    with pytest.raises(ValueError, match="footer|offset"):
+        ArrowDesign(target)
+
+
+@pytest.mark.parametrize("kind", ["bool", "int16"])
+@pytest.mark.parametrize("nrow", [9, 17])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "list",
+        "negative",
+        "negative list",
+        "first",
+        "repeated",
+        "empty",
+        "unsigned",
+        "past end",
+        "before start",
+        "huge unsigned",
+        "float",
+    ],
+)
+def test_public_prediction_row_indices_match_numpy(tmp_path, kind, nrow, case):
+    import scipy.sparse as sps
+
+    from pybiglasso.path import BiglassoPath
+
+    values = np.zeros(nrow, dtype=kind)
+    values[-1] = 1
+    path = tmp_path / "rows.arrow"
+    write_ipc(path, [pa.array(values)])
+    design = ArrowDesign(path)
+    reference = values[:, None]
+    model = BiglassoPath(
+        lambdas=np.ones(1),
+        intercept=np.zeros(1),
+        coef=sps.csc_array([[1.0]]),
+        deviance=np.zeros(1),
+        iterations=np.zeros(1, dtype=int),
+        n_rejected=np.zeros(1, dtype=int),
+        center=np.zeros(1),
+        scale=np.ones(1),
+        penalty_factor=np.ones(1),
+        feature_names=("x0",),
+        alpha=1.0,
+        family="gaussian",
+    )
+    rows = {
+        "list": [nrow - 1],
+        "negative": np.array([-1]),
+        "negative list": [-1],
+        "first": np.array([-nrow]),
+        "repeated": [0, -1, nrow - 1, -nrow],
+        "empty": [],
+        "unsigned": np.array([nrow - 1], dtype=np.uint64),
+        "past end": np.array([nrow]),
+        "before start": np.array([-nrow - 1]),
+        "huge unsigned": np.array([2**64 - 1], dtype=np.uint64),
+        "float": np.array([1.5]),
+    }[case]
+    if case in ("past end", "before start", "float"):
+        with pytest.raises(IndexError):
+            model.predict(reference, row_indices=rows)
+        with pytest.raises(IndexError):
+            model.predict(design, row_indices=rows)
+    else:
+        expected = values[np.asarray(rows, dtype=np.intp)][:, None].astype(float)
+        np.testing.assert_array_equal(
+            model.predict(reference, row_indices=rows), expected
+        )
+        np.testing.assert_array_equal(model.predict(design, row_indices=rows), expected)
 
 
 @pytest.mark.parametrize("batches", [0, 2])
