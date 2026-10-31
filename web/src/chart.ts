@@ -8,11 +8,12 @@ export const featureColor = (index: number) => colors[index % colors.length];
 function frame(canvas: HTMLCanvasElement, path: ModelPath) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return undefined;
-  const width = canvas.clientWidth;
-  const height = canvas.clientHeight;
+  const { width, height } = canvas.getBoundingClientRect();
+  if (!width || !height) return undefined;
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
-  ctx.scale(ratio, ratio);
+  // Preserve CSS coordinates even when layout or the bitmap size is fractional.
+  ctx.scale(canvas.width / width, canvas.height / height);
   const style = getComputedStyle(canvas);
   const left = parseFloat(style.getPropertyValue("--plot-left"));
   const right = width - parseFloat(style.getPropertyValue("--plot-right"));
