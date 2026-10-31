@@ -41,7 +41,7 @@ needs them, so the data can be larger than memory, **as long as the file is
 uncompressed**. PyArrow's `write_feather` compresses by default, and a
 compressed file is decompressed into memory when you open it. If yours is
 compressed, or you're not sure, [rewrite it uncompressed](docs/arrow.md#rewrite-an-arrow-file-uncompressed)
-once.
+once, or [convert it with ingest](docs/ingest.md).
 
 Pick features with `select` or `drop_columns` after opening. Avoid
 `read_table(..., columns=...)`, which copies the whole file's data in PyArrow
@@ -51,6 +51,9 @@ Columns can be bool (kept at one bit per value), integers or floats, with no
 missing values; encode text and categories as numbers first.
 [Arrow inputs](docs/arrow.md) covers the details: files split into batches,
 and what not to change while a fit runs.
+
+Ingest also handles CSV, Parquet and Excel files, returning the feature Table
+and response separately.
 
 To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
@@ -88,6 +91,7 @@ wheel. Extras add optional integrations:
 | `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs |
+| `pybiglasso[ingest]` | explicit file conversion with Arrow and openpyxl |
 | `pybiglasso[all]` | all of the above |
 
 ## Quick start
