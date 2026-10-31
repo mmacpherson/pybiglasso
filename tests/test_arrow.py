@@ -27,11 +27,16 @@ def write_ipc(path, arrays, *, compression=None, batches=1):
                 writer.write_batch(batch)
 
 
-@pytest.mark.parametrize("compression", ["uncompressed", "lz4", "zstd"])
-def test_documented_feather_allocation_one_liner(tmp_path, compression):
+def _allocation_recipe():
     documentation = Path(__file__).resolve().parents[1] / "docs" / "arrow.md"
     recipes = re.findall(r"```python\n(.*?)\n```", documentation.read_text(), re.S)
     [recipe] = [block for block in recipes if "pa.total_allocated_bytes()" in block]
+    return recipe
+
+
+@pytest.mark.parametrize("compression", ["uncompressed", "lz4", "zstd"])
+def test_documented_feather_allocation_one_liner(tmp_path, compression):
+    recipe = _allocation_recipe()
     assert len(recipe.splitlines()) == 1
     rows = np.arange(12288)
     import pyarrow.feather as pf
@@ -61,6 +66,72 @@ def test_documented_feather_allocation_one_liner(tmp_path, compression):
         assert allocated == 0
     else:
         assert allocated > 0
+
+
+@pytest.mark.parametrize("compression", ["uncompressed", "lz4", "zstd"])
+def test_documented_allocation_check_stays_within_one_column(tmp_path, compression):
+    import pyarrow.feather as pf
+
+    recipe = _allocation_recipe()
+    first_column = np.arange(12288, dtype=np.float64)
+    pf.write_feather(
+        pa.table(
+            {
+                "x1": first_column,
+                "x2": first_column,
+                "response": first_column,
+                **{f"extra_{i}": first_column for i in range(61)},
+            }
+        ),
+        tmp_path / "data.feather",
+        compression=compression,
+        chunksize=4096,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            recipe + "; print(pa.default_memory_pool().max_memory())",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    retained, peak = map(int, result.stdout.splitlines())
+    assert peak <= first_column.nbytes
+    assert retained <= first_column.nbytes
+
+
+def test_allocation_recipe_rejects_unselected_dictionaries_before_decoding(tmp_path):
+    import pyarrow.feather as pf
+
+    pf.write_feather(
+        pa.table(
+            {
+                "x": np.arange(41),
+                "category": pa.array(["a", "b"] * 20 + ["a"]).dictionary_encode(),
+            }
+        ),
+        tmp_path / "data.feather",
+        compression="lz4",
+    )
+    forbid_decode = """import pyarrow as pa
+
+def forbidden(*args, **kwargs):
+    raise RuntimeError("data decode was reached")
+
+pa.ipc.open_stream = forbidden
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", forbid_decode + _allocation_recipe()],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "Diagnostic needs flat primitive/string columns" in result.stderr
+    assert "data decode was reached" not in result.stderr
 
 
 @pytest.mark.parametrize("compression", ["uncompressed", "lz4"])
