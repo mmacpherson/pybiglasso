@@ -40,21 +40,34 @@ fit = biglasso(X, y, family="gaussian")
 prediction = fit.predict(X)
 ```
 
-Run this allocation diagnostic in a fresh Python process. It maps the file
-first and then projects the resulting Table:
+Run this one-column allocation diagnostic in a fresh Python process. It gets
+the first column's name and batch count from the schema/footer without reading
+data, then reads only that column across the batches:
 
 ```python
-import pyarrow as pa; import pyarrow.feather as pf; before = pa.total_allocated_bytes(); table = pf.read_table("data.feather", memory_map=True).select(["x1", "x2", "response"]); print(pa.total_allocated_bytes() - before)
+import sys; import pyarrow as pa; source = pa.memory_map("data.feather"); metadata = pa.ipc.open_file(source); first_name = metadata.schema.names[0]; all(pa.types.is_primitive(f.type) or pa.types.is_string(f.type) for f in metadata.schema) or sys.exit("Diagnostic needs flat primitive/string columns; convert with ingest"); source.seek(8); before = pa.total_allocated_bytes(); reader = pa.ipc.open_stream(source, options=pa.ipc.IpcReadOptions(included_fields=[0])); reader.schema.names == [first_name] or sys.exit("Header/footer schema differs"); column = pa.Table.from_batches([reader.read_next_batch() for _ in range(metadata.num_record_batches)], schema=reader.schema); print(pa.total_allocated_bytes() - before)
 ```
 
-It reads (and, if compressed, decompresses) the file. The result is the bytes
-still held in Arrow's memory pool while `table` remains alive; zero means no
-retained pool allocation. This is an allocation diagnostic, not a compression
-preflight or a measurement of peak memory/RSS. Other reader conversions may
-allocate too. In particular, PyArrow 26's `columns=` reader path allocates batch
-buffers even for an uncompressed mapped file. Omit `columns=` and select/drop
-columns on the resulting Table to keep its existing buffers, as in the
-diagnostic. Converting once with ingest avoids decompression on subsequent reads; its
+The result is the bytes retained in Arrow's memory pool while `column` is
+alive: compare it with zero. The diagnostic may decompress **one column**
+(O(n) for fixed-width data), rather than all X. It supports ordinary
+standard-writer Arrow files with flat primitive/string columns; the schema
+guard rejects dictionary, nested and extension types before reading data,
+because stream readers may decode even unselected dictionaries.
+
+The Arrow format permits per-buffer compression. Standard writers apply one
+codec to the file, so checking one nonempty column is useful for files they
+wrote; **it is not proof that every buffer is uncompressed**. Empty/all-null
+columns are inconclusive. This reads data, not just compression metadata, and
+reports retained Arrow-pool bytes, not total/peak RAM or RSS. Other conversions
+can allocate too.
+
+The diagnostic uses Arrow's stream API after the file magic, with a one-field
+projection and the footer's batch count. This avoids PyArrow 26's file-reader
+`columns=` path, which can copy all uncompressed batch buffers even when only
+one column is requested. These ordinary-file assumptions are not validation
+of arbitrary file layouts. For normal loading use the Feather API above.
+Converting once with ingest avoids decompression on subsequent reads; its
 conversion still has to decode each compressed source record batch.
 
 Use PyArrow to read files, just as NumPy files use `np.load(mmap_mode="r")`.
