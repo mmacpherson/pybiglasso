@@ -9,7 +9,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from ._threads import resolve_threads
-from .arrow import ArrowDesign
+from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
 from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
@@ -66,7 +66,7 @@ def biglasso(
     and uses its parameter names: `alpha` mixes the L1 and L2
     penalties (1 is the lasso), and `lambdas` are penalty strengths.
 
-    X may be an ArrowDesign or a numpy array/memmap, ideally in Fortran order;
+    X may be a pyarrow Table/RecordBatch or a NumPy array/memmap in Fortran order;
     it is read a column at a time and never copied.
 
     Like R, a binomial path stops early once training deviance falls below 1% of the
@@ -81,7 +81,7 @@ def biglasso(
     glmnet's pmin=1e-9 boundary with a positive weight floor; compatibility
     mode retains R's |eta| > 10 cutoff and 1e-4 weights.
 
-    `n_threads="auto"` (or None) uses one thread for memory-mapped X or fewer
+    `n_threads="auto"` (or None) uses one thread for Arrow Tables/RecordBatches, memory-mapped X or fewer
     than 10 million fitted-row/column entries, otherwise the available physical
     cores (performance cores on Apple silicon). A positive RAYON_NUM_THREADS
     caps auto mode; an explicit positive integer overrides the policy.
@@ -106,9 +106,11 @@ def biglasso(
     # the whole grid and that fit's nonzero coefficients on X's scale; a true
     # result ends the path there, as dfmax does, but without a warning
 
+    X = _as_arrow_matrix(X)
+    y = _response(y)
     if feature_names is None and hasattr(X, "columns"):
         feature_names = [str(c) for c in X.columns]
-    mapped = isinstance(X, ArrowDesign)
+    mapped = isinstance(X, _ArrowMatrix)
     if not mapped and not isinstance(X, np.ndarray):
         X = np.asarray(X)
     y = np.asarray(y)
@@ -336,12 +338,12 @@ def fit_path_rust(
     """fit_path, run by the Rust backend in one call."""
     from . import _rust
 
-    if not isinstance(X, ArrowDesign) and not X.flags.aligned:
+    if not isinstance(X, _ArrowMatrix) and not X.flags.aligned:
         # the kernels read X through typed pointers; numpy can build arrays
         # whose elements aren't aligned for their type (offset buffers)
         raise ValueError("X must be aligned to its dtype for the Rust solver.")
     path = _rust.fit_path(
-        (X.shape[0], X._columns) if isinstance(X, ArrowDesign) else X,
+        (X.shape[0], X._columns) if isinstance(X, _ArrowMatrix) else X,
         y,
         None if row_indices is None else row_indices.astype(np.int64),
         float(params.alpha),

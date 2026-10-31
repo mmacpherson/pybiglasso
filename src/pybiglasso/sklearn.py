@@ -19,7 +19,7 @@ from sklearn.model_selection import check_cv
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
 from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
-from .arrow import ArrowDesign
+from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
 from .binomial import biglasso
 from .path import METRICS, _expit, linear_predictor, score_logits
 
@@ -39,7 +39,7 @@ def _as_design(X):
     genotype memmap stays an int8 memmap. Finiteness is checked by `biglasso`
     and `linear_predictor` as they read X, not by a separate pass here.
     """
-    if isinstance(X, ArrowDesign):
+    if isinstance(X, _ArrowMatrix):
         return X
     if X.dtype.kind == "b":
         return X.view(np.uint8)
@@ -49,7 +49,9 @@ def _as_design(X):
 
 
 def _validate_data(estimator, X, y="no_validation", **kwargs):
-    if not isinstance(X, ArrowDesign):
+    X = _as_arrow_matrix(X)
+    y = _response(y)
+    if not isinstance(X, _ArrowMatrix):
         return validate_data(estimator, X, y, **kwargs)
     if y is None:
         raise ValueError(

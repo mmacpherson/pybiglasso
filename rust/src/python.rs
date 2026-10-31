@@ -191,10 +191,17 @@ enum ColumnOwner<'py> {
     I8(PyReadonlyArray1<'py, i8>),
     U8(PyReadonlyArray1<'py, u8>),
     I16(PyReadonlyArray1<'py, i16>),
+    U64(PyReadonlyArray1<'py, u64>),
+    I64(PyReadonlyArray1<'py, i64>),
+    U32(PyReadonlyArray1<'py, u32>),
+    I32(PyReadonlyArray1<'py, i32>),
+    U16(PyReadonlyArray1<'py, u16>),
     Bits(PyReadonlyArray1<'py, u8>, usize),
 }
 
-type MappedDescriptor<'py> = (usize, Vec<(Bound<'py, PyUntypedArray>, Option<usize>)>);
+type ChunkDescriptor<'py> = (Bound<'py, PyUntypedArray>, Option<usize>, usize);
+type MappedDescriptor<'py> = (usize, Vec<Vec<ChunkDescriptor<'py>>>);
+type ColumnChunks<'py> = Vec<(ColumnOwner<'py>, usize)>;
 
 impl<'py> ColumnOwner<'py> {
     fn extract(array: &Bound<'py, PyUntypedArray>, offset: Option<usize>) -> PyResult<Self> {
@@ -222,6 +229,21 @@ impl<'py> ColumnOwner<'py> {
         if dtype.is_equiv_to(&numpy::dtype::<i16>(array.py())) {
             return Ok(Self::I16(array.extract()?));
         }
+        if dtype.is_equiv_to(&numpy::dtype::<u16>(array.py())) {
+            return Ok(Self::U16(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<i32>(array.py())) {
+            return Ok(Self::I32(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<u32>(array.py())) {
+            return Ok(Self::U32(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<i64>(array.py())) {
+            return Ok(Self::I64(array.extract()?));
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<u64>(array.py())) {
+            return Ok(Self::U64(array.extract()?));
+        }
         Err(PyValueError::new_err("Unsupported mapped column dtype."))
     }
 
@@ -232,6 +254,11 @@ impl<'py> ColumnOwner<'py> {
             Self::I8(a) => MappedCol::I8(a.as_slice()?),
             Self::U8(a) => MappedCol::U8(a.as_slice()?),
             Self::I16(a) => MappedCol::I16(a.as_slice()?),
+            Self::U64(a) => MappedCol::U64(a.as_slice()?),
+            Self::I64(a) => MappedCol::I64(a.as_slice()?),
+            Self::U32(a) => MappedCol::U32(a.as_slice()?),
+            Self::I32(a) => MappedCol::I32(a.as_slice()?),
+            Self::U16(a) => MappedCol::U16(a.as_slice()?),
             Self::Bits(a, offset) => {
                 let bytes = a.as_slice()?;
                 let end = offset.checked_add(nrow).ok_or_else(|| PyValueError::new_err("Bitmap offset overflows."))?;
@@ -251,14 +278,27 @@ impl<'py> ColumnOwner<'py> {
 #[allow(clippy::too_many_arguments)]
 fn run_mapped(
     py: Python<'_>,
-    owners: &[ColumnOwner<'_>],
+    owners: &[ColumnChunks<'_>],
     nrow: usize,
     y_all: &[f64],
     rows: Selection<'_>,
     params: &Params,
     n_threads: usize,
 ) -> PyResult<(Path, &'static str)> {
-    let columns = owners.iter().map(|a| a.column(nrow)).collect::<PyResult<Vec<_>>>()?;
+    let columns = owners
+        .iter()
+        .enumerate()
+        .map(|(j, chunks)| {
+            let chunks = chunks
+                .iter()
+                .enumerate()
+                .map(|(k, (owner, len))| {
+                    owner.column(*len).map_err(|e| PyValueError::new_err(format!("Column {j}, chunk {k}: {e}")))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            ChunkedColumn::new(chunks, nrow).map_err(|e| PyValueError::new_err(format!("Column {j}: {e}")))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(n_threads)
         .build()
@@ -344,7 +384,21 @@ fn fit_path<'py>(
     } else {
         let (nrow, columns): MappedDescriptor<'py> = x.extract()?;
         let shape = vec![nrow, columns.len()];
-        let owners = columns.iter().map(|(a, bit)| ColumnOwner::extract(a, *bit)).collect::<PyResult<Vec<_>>>()?;
+        let owners = columns
+            .iter()
+            .enumerate()
+            .map(|(j, chunks)| {
+                chunks
+                    .iter()
+                    .enumerate()
+                    .map(|(k, (a, bit, len))| {
+                        ColumnOwner::extract(a, *bit)
+                            .map(|owner| (owner, *len))
+                            .map_err(|e| PyValueError::new_err(format!("Column {j}, chunk {k}: {e}")))
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         (shape, owners)
     };
     for (name, a) in [("y", y.as_any()), ("penalty factors", penalty_factor.as_any())]
