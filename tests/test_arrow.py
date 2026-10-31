@@ -27,137 +27,112 @@ def write_ipc(path, arrays, *, compression=None, batches=1):
                 writer.write_batch(batch)
 
 
-def _allocation_recipe():
+def _arrow_recipe(marker):
     documentation = Path(__file__).resolve().parents[1] / "docs" / "arrow.md"
     recipes = re.findall(r"```python\n(.*?)\n```", documentation.read_text(), re.S)
-    [recipe] = [block for block in recipes if "pa.total_allocated_bytes()" in block]
+    [recipe] = [block for block in recipes if marker in block]
     return recipe
 
 
-@pytest.mark.parametrize("compression", ["uncompressed", "lz4", "zstd"])
-def test_documented_feather_allocation_one_liner(tmp_path, compression):
-    recipe = _allocation_recipe()
-    assert len(recipe.splitlines()) == 1
+def _mapped_read_allocations(recipe, directory):
+    probe = (
+        "import pyarrow as pa\nbefore = pa.total_allocated_bytes()\n"
+        + recipe
+        + "\nprint(pa.total_allocated_bytes() - before, pa.default_memory_pool().max_memory())"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=directory,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(map(int, result.stdout.split()))
+
+
+def _write_uncompressed_recipe_file(directory, extra_columns):
+    import pyarrow.feather as pf
+
     rows = np.arange(12288)
-    import pyarrow.feather as pf
-
+    columns = {
+        "x1": rows.astype(np.float64),
+        "x2": rows % 2 == 0,
+        "y": (rows % 3).astype(np.float64),
+        "id": ["unused"] * len(rows),
+        **{f"extra_{i}": rows.astype(np.float64) for i in range(extra_columns)},
+    }
     pf.write_feather(
-        pa.table(
-            {
-                "x1": rows.astype(np.int16),
-                "x2": rows % 2 == 0,
-                "response": (rows % 3).astype(np.int8),
-                "id": ["unused"] * len(rows),
-            }
-        ),
-        tmp_path / "data.feather",
-        compression=compression,
+        pa.table(columns),
+        directory / "data.feather",
+        compression="uncompressed",
         chunksize=4096,
     )
-    result = subprocess.run(
-        [sys.executable, "-c", recipe],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
+
+
+@pytest.mark.parametrize("extra_columns", [0, 62])
+def test_documented_mapped_read_then_select_allocates_zero(
+    tmp_path, monkeypatch, extra_columns
+):
+    _write_uncompressed_recipe_file(tmp_path, extra_columns)
+    recipe = _arrow_recipe("table = pf.read_table")
+    assert _mapped_read_allocations(recipe, tmp_path) == (0, 0)
+    namespace = {}
+    monkeypatch.chdir(tmp_path)
+    exec(compile(recipe, "docs/arrow.md", "exec"), namespace)
+    assert namespace["X"].column_names == ["x1", "x2"]
+    assert namespace["X"].column(0).num_chunks == 3
+    np.testing.assert_array_equal(namespace["y"].to_numpy(), np.arange(12288) % 3)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="PyArrow 26.0.0 copies uncompressed batch bodies with columns=; remove this marker when fixed",
+)
+def test_feather_columns_projection_allocates_zero(tmp_path):
+    _write_uncompressed_recipe_file(tmp_path, extra_columns=62)
+    recipe = (
+        "import pyarrow.feather as pf\n"
+        "table = pf.read_table('data.feather', memory_map=True, columns=['x1', 'x2', 'y'])"
     )
-    allocated = int(result.stdout.strip())
-    if compression == "uncompressed":
-        assert allocated == 0
-    else:
-        assert allocated > 0
+    assert _mapped_read_allocations(recipe, tmp_path) == (0, 0)
 
 
-@pytest.mark.parametrize("compression", ["uncompressed", "lz4", "zstd"])
-def test_documented_allocation_check_stays_within_one_column(tmp_path, compression):
+@pytest.mark.parametrize("compression", ["lz4", "zstd"])
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_documented_batch_rewrite_preserves_values_and_complete_path(
+    tmp_path, monkeypatch, compression, family
+):
     import pyarrow.feather as pf
 
-    recipe = _allocation_recipe()
-    first_column = np.arange(12288, dtype=np.float64)
+    rows = np.arange(123)
+    rng = np.random.default_rng(57)
+    x1 = rng.integers(-3, 4, len(rows)).astype(float) / 4
+    x2 = rows % 3 == 0
+    response = rng.integers(0, 2, len(rows)).astype(float)
+    original = pa.table(
+        {"x1": x1, "x2": x2, "y": response, "id": ["unused"] * len(rows)}
+    )
     pf.write_feather(
-        pa.table(
-            {
-                "x1": first_column,
-                "x2": first_column,
-                "response": first_column,
-                **{f"extra_{i}": first_column for i in range(61)},
-            }
-        ),
-        tmp_path / "data.feather",
-        compression=compression,
-        chunksize=4096,
+        original, tmp_path / "data.feather", compression=compression, chunksize=41
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            recipe + "; print(pa.default_memory_pool().max_memory())",
-        ],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    retained, peak = map(int, result.stdout.splitlines())
-    assert peak <= first_column.nbytes
-    assert retained <= first_column.nbytes
-
-
-def test_allocation_recipe_rejects_unselected_dictionaries_before_decoding(tmp_path):
-    import pyarrow.feather as pf
-
-    pf.write_feather(
-        pa.table(
-            {
-                "x": np.arange(41),
-                "category": pa.array(["a", "b"] * 20 + ["a"]).dictionary_encode(),
-            }
-        ),
-        tmp_path / "data.feather",
-        compression="lz4",
-    )
-    forbid_decode = """import pyarrow as pa
-
-def forbidden(*args, **kwargs):
-    raise RuntimeError("data decode was reached")
-
-pa.ipc.open_stream = forbidden
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", forbid_decode + _allocation_recipe()],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0
-    assert "Diagnostic needs flat primitive/string columns" in result.stderr
-    assert "data decode was reached" not in result.stderr
-
-
-@pytest.mark.parametrize("compression", ["uncompressed", "lz4"])
-def test_feather_read_table_projection_and_multiple_batches(tmp_path, compression):
-    import pyarrow.feather as pf
-
-    rows = np.arange(39)
-    values = (rows % 7).astype(float)
-    flags = rows % 3 == 0
-    response = rows % 2
-    path = tmp_path / "data.feather"
-    pf.write_feather(
-        pa.table({"x": values, "flag": flags, "response": response, "id": ["id"] * 39}),
-        path,
-        compression=compression,
-        chunksize=13,
-    )
-    table = pf.read_table(path, memory_map=True, columns=["x", "flag", "response"])
-    X = table.drop_columns(["response"])
-    assert X.column_names == ["x", "flag"]
-    assert [len(chunk) for chunk in X.column(0).chunks] == [13, 13, 13]
-    reference_path = tmp_path / "features.npy"
-    np.save(reference_path, np.asfortranarray(np.column_stack([values, flags])))
+    monkeypatch.chdir(tmp_path)
+    recipe = _arrow_recipe("pa.ipc.IpcWriteOptions(compression=None)")
+    exec(compile(recipe, "docs/arrow.md", "exec"), {})
+    rewritten = _open_mapped(tmp_path / "data-uncompressed.feather")
+    assert rewritten.equals(original)
+    assert rewritten.column(0).num_chunks == 3
+    np.save(tmp_path / "features.npy", np.asfortranarray(np.column_stack([x1, x2])))
     same_path(
-        biglasso(X, table.column("response"), nlambda=5),
-        biglasso(np.load(reference_path, mmap_mode="r"), response, nlambda=5),
+        biglasso(
+            rewritten.select(["x1", "x2"]), rewritten["y"], family=family, nlambda=5
+        ),
+        biglasso(
+            np.load(tmp_path / "features.npy", mmap_mode="r"),
+            response,
+            family=family,
+            nlambda=5,
+        ),
     )
 
 

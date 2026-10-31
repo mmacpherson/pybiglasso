@@ -27,13 +27,14 @@ Inputs can also be `pyarrow.Table` or `RecordBatch`: non-null bool,
 8/16/32/64-bit signed or unsigned integers, or float32/float64 columns with
 aligned buffers. Columns may be chunked or sliced; pybiglasso never copies X.
 Read Arrow files (Feather v2) with
-`pyarrow.feather.read_table(path, memory_map=True, columns=...)`. Uncompressed,
-native-endian files can remain mapped. **Compressed files are decompressed into
-RAM by PyArrow before pybiglasso sees them, even with `memory_map=True`.**
-See the [tested allocation one-liner](docs/arrow.md) or convert once with `ingest`,
-which always writes uncompressed feature files. Select/drop columns explicitly; y is supplied separately as NumPy or an
-Arrow Array/ChunkedArray. See [Arrow inputs](docs/arrow.md) for loading, mutation
-and lifetime details.
+`table = pyarrow.feather.read_table(path, memory_map=True)`, then
+`X = table.select(features)` and `y = table["y"]`. **PyArrow 26.0.0 copies all
+uncompressed batch bodies when `columns=` is passed to `read_table`; project
+the Table afterward. Compressed files are decompressed into RAM even with
+`memory_map=True`.** If you did not write the file uncompressed yourself,
+[rewrite it one batch at a time](docs/arrow.md), or convert once with ingest,
+which always writes uncompressed feature files. See [Arrow inputs](docs/arrow.md)
+for loading, mutation and lifetime details.
 For CSV, Parquet, compressed Feather or Excel sources, optional
 [`ingest(path, out=..., response=...)`](docs/ingest.md) materializes an
 uncompressed feature file explicitly. Pass the receipt's ordinary Table
@@ -490,9 +491,11 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   non-null primitive numeric/bool columns and aligned buffers. Chunked and
   sliced columns are borrowed without copying; bool stays bit-packed.
   Read an Arrow file (Feather v2) with
-  `pyarrow.feather.read_table(path, memory_map=True, columns=...)`. Uncompressed
-  native-endian files can remain mapped; PyArrow decompresses compressed files.
-  Select/drop columns explicitly and supply y separately (NumPy or an Arrow array).
+  `table = pyarrow.feather.read_table(path, memory_map=True)`, then
+  `X = table.select(features)` and `y = table["y"]`. Avoid `columns=`: PyArrow
+  26.0.0 copies the uncompressed batch bodies through that reader path. Compressed
+  files decompress into RAM; [rewrite unknown storage batch by batch](docs/arrow.md)
+  or use ingest. Supply y separately (NumPy or an Arrow array).
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).

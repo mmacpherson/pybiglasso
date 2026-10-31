@@ -15,67 +15,75 @@ memory used by its producer. Bool remains bit-packed. The small response can
 be materialized as a contiguous array using O(n) memory.
 
 **Compressed files are decompressed into RAM by PyArrow before pybiglasso
-sees them, even with `memory_map=True`.** Check the reader's allocations with
-the one-liner below, or convert once with `ingest`, which always writes
-uncompressed feature files. For NumPy files, the counterpart is
-`np.load(path, mmap_mode="r")`.
+sees them, even with `memory_map=True`. If you did not write the file
+uncompressed yourself, rewrite it uncompressed as shown below, or use ingest.**
+Ingest always writes uncompressed feature files.
+
+For NumPy files, use `np.load(path, mmap_mode="r")`:
 
 ```python
 import numpy as np
+
+X = np.load("features.npy", mmap_mode="r")
+y = np.load("response.npy", mmap_mode="r")
+```
+
+For a native-endian uncompressed Arrow file, read first and then select/drop
+columns on the resulting Table:
+
+```python
 import pyarrow.feather as pf
+
+table = pf.read_table("data.feather", memory_map=True)
+features = ["x1", "x2"]
+X = table.select(features)
+y = table["y"]
+```
+
+**Do not pass `columns=` to `pf.read_table` for mapped loading. In PyArrow
+26.0.0, that reader path copies all uncompressed batch bodies, including
+unselected columns, into RAM.** Reading without `columns=` and projecting the
+Table afterward allocates zero Arrow-pool bytes on the tested uncompressed
+files. This reader behavior may change in future PyArrow versions.
+
+Fit either input in the usual way:
+
+```python
 from pybiglasso import biglasso
 
-# Existing NumPy storage needs no Arrow step.
-X_numpy = np.load("features.npy", mmap_mode="r")
-y = np.load("response.npy", mmap_mode="r")
-fit_numpy = biglasso(X_numpy, y, family="gaussian")
-
-# Map an existing uncompressed Arrow file into an ordinary Table.
-table = pf.read_table(
-    "data.feather", memory_map=True, columns=["x1", "x2", "response"]
-)
-y = table.column("response")
-X = table.drop_columns(["response"])
 fit = biglasso(X, y, family="gaussian")
 prediction = fit.predict(X)
 ```
 
-Run this one-column allocation diagnostic in a fresh Python process. It gets
-the first column's name and batch count from the schema/footer without reading
-data, then reads only that column across the batches:
+To create known-uncompressed storage, use standard PyArrow APIs to rewrite
+one record batch at a time to a new output file:
 
 ```python
-import sys; import pyarrow as pa; source = pa.memory_map("data.feather"); metadata = pa.ipc.open_file(source); first_name = metadata.schema.names[0]; all(pa.types.is_primitive(f.type) or pa.types.is_string(f.type) for f in metadata.schema) or sys.exit("Diagnostic needs flat primitive/string columns; convert with ingest"); source.seek(8); before = pa.total_allocated_bytes(); reader = pa.ipc.open_stream(source, options=pa.ipc.IpcReadOptions(included_fields=[0])); reader.schema.names == [first_name] or sys.exit("Header/footer schema differs"); column = pa.Table.from_batches([reader.read_next_batch() for _ in range(metadata.num_record_batches)], schema=reader.schema); print(pa.total_allocated_bytes() - before)
+import pyarrow as pa
+
+with pa.memory_map("data.feather", "r") as source:
+    reader = pa.ipc.open_file(source)
+    with pa.OSFile("data-uncompressed.feather", "wb") as target:
+        options = pa.ipc.IpcWriteOptions(compression=None)
+        with pa.ipc.new_file(target, reader.schema, options=options) as writer:
+            for index in range(reader.num_record_batches):
+                writer.write_batch(reader.get_batch(index))
 ```
 
-The result is the bytes retained in Arrow's memory pool while `column` is
-alive: compare it with zero. The diagnostic may decompress **one column**
-(O(n) for fixed-width data), rather than all X. It supports ordinary
-standard-writer Arrow files with flat primitive/string columns; the schema
-guard rejects dictionary, nested and extension types before reading data,
-because stream readers may decode even unselected dictionaries.
+For the supported primitive features this holds one decoded batch at a time;
+memory scales with the largest source batch, plus Arrow's writer/codec
+workspaces. A source with one very large batch can still require substantial
+RAM. The loop preserves the source batch boundaries. The uncompressed result
+opens directly with
+`pf.read_table("data-uncompressed.feather", memory_map=True)` and supports
+Table projection as above; multiple batches need not be combined.
+Alternatively, ingest converts supported source files and always writes
+uncompressed feature storage, with its documented conversion-memory limits.
 
-The Arrow format permits per-buffer compression. Standard writers apply one
-codec to the file, so checking one nonempty column is useful for files they
-wrote; **it is not proof that every buffer is uncompressed**. Empty/all-null
-columns are inconclusive. This reads data, not just compression metadata, and
-reports retained Arrow-pool bytes, not total/peak RAM or RSS. Other conversions
-can allocate too.
-
-The diagnostic uses Arrow's stream API after the file magic, with a one-field
-projection and the footer's batch count. This avoids PyArrow 26's file-reader
-`columns=` path, which can copy all uncompressed batch buffers even when only
-one column is requested. These ordinary-file assumptions are not validation
-of arbitrary file layouts. For normal loading use the Feather API above.
-Converting once with ingest avoids decompression on subsequent reads; its
-conversion still has to decode each compressed source record batch.
-
-Use PyArrow to read files, just as NumPy files use `np.load(mmap_mode="r")`.
-The ordinary Table can be projected with Arrow's `select`/`drop_columns`, sliced, or handed to another
-library. Feature names come from `column_names` and must be unique. Projection,
+Feature names come from `column_names` and must be unique. Projection,
 response extraction and row alignment are the caller's responsibility.
 Generic `__arrow_c_stream__`/`__arrow_c_array__` exporters, pandas and Polars
-frames are not fitting inputs: explicitly produce a Table first, or use `ingest`
+frames are not fitting inputs: explicitly produce a Table first, or use ingest
 on a source file. Exporting or building a Table upstream may itself allocate.
 
 All classifier/regressor estimators, including CV, accept these Arrow X types.
@@ -120,9 +128,9 @@ to gathering. sklearn prediction retains its existing finite-value check.
 
 ## Loading, mutability and lifetime
 
-`pf.read_table(path, memory_map=True, columns=...)` reads an Arrow file
-(Feather v2) as an ordinary Table, including files with multiple record batches.
-Use `columns` to project while reading, or select/drop columns on the Table.
+`pf.read_table(path, memory_map=True)` reads an Arrow file (Feather v2) as an
+ordinary Table, including files with multiple record batches. Select/drop
+columns on that Table; the `columns=` reader behavior is described above.
 No JSON sidecar is needed, including for feature files written by ingest.
 
 `memory_map=True` does not promise that the reader allocates nothing: PyArrow
