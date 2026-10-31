@@ -30,6 +30,8 @@ and uses one worker; an explicit positive worker count overrides this policy.
 - The reader validates compression metadata before decoding a record batch, and verifies
   every values buffer lies within the mapping. Do not silently decode a
   compressed Feather file into allocated columns.
+  The footer must select the batch message that passed preflight; files with
+  an unindexed batch before the selected batch are rejected before decoding.
 - It rejects nulls, unsupported types, empty designs and multiple record batches.
   In particular, nulls are rejected even outside a row subset. NaN/infinity
   retain the solver's existing selected-row policy for floating columns.
@@ -67,6 +69,9 @@ fits, as on NumPy inputs; it does not expand the whole bool design. sklearn
 validates design metadata without `check_array` on X, and validates the response
 separately. Its prediction also checks floating values in bounded blocks.
 Generic `np.asarray(X)` raises instead of silently materializing a matrix.
+Prediction accepts integer row lists or arrays, resolves negative indices from
+the end of the logical design and rejects out-of-range rows before accessing
+primitive values or packed bits. Bitmap padding is never a logical row.
 
 ## Checks
 
