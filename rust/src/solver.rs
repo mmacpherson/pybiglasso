@@ -308,7 +308,7 @@ impl Col for MappedCol<'_> {
             Self::I32(v) => Contig::<_, true>(v).block(i0),
             Self::U16(v) => Contig::<_, true>(v).block(i0),
             Self::Bits { bytes, offset, len } => {
-                assert!(i0 + LANES <= *len);
+                assert!(*len >= LANES && i0 <= *len - LANES);
                 // The block's LANES bits span at most two bytes: read them
                 // once rather than locating each bit.
                 let bit = offset + i0;
