@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from xml.parsers import expat
 
 import numpy as np
 
@@ -207,18 +208,64 @@ def _check_zip_directory(source):
         raise ValueError("XLSX ZIP directory exceeds the v1 size/entry limits.")
 
 
+def _shared_string_parts(archive):
+    # The reader selects by content type, not by the usual part filename.
+    manifest_limit = 1 << 20
+    manifest = archive.getinfo("[Content_Types].xml")
+    if manifest.file_size > manifest_limit:
+        raise ValueError("XLSX content-types manifest exceeds the 1 MiB limit.")
+    with archive.open(manifest) as stream:
+        data = stream.read(manifest_limit + 1)
+    if len(data) > manifest_limit:
+        raise ValueError("XLSX content-types manifest exceeds the 1 MiB limit.")
+    parts = set()
+    parser = expat.ParserCreate(namespace_separator="}")
+
+    def start(name, attributes):
+        if (
+            name.rsplit("}", 1)[-1] == "Override"
+            and attributes.get("ContentType")
+            == "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"
+        ):
+            part = attributes.get("PartName", "")
+            if not part.startswith("/"):
+                raise ValueError("Invalid XLSX shared-string part name.")
+            parts.add(part[1:])
+
+    def reject_doctype(*args):
+        raise ValueError("XLSX content-types manifest must not contain a DTD.")
+
+    parser.StartElementHandler = start
+    parser.StartDoctypeDeclHandler = reject_doctype
+    try:
+        parser.Parse(data, True)
+    except expat.ExpatError as error:
+        raise ValueError("Invalid XLSX content-types manifest.") from error
+    return parts
+
+
 def _check_shared_strings(source, limit):
     # ZipInfo.file_size is the uncompressed size recorded in the directory.
     # Do not open/decompress the table merely to decide whether it is too big.
     _check_zip_directory(source)
     with zipfile.ZipFile(source) as archive:
-        if len(archive.infolist()) > 1024:
+        members = archive.infolist()
+        if len(members) > 1024:
             raise ValueError("XLSX ZIP directory exceeds the v1 size/entry limits.")
-        size = sum(
-            member.file_size
-            for member in archive.infolist()
-            if member.filename.rsplit("/", 1)[-1] == "sharedStrings.xml"
-        )
+        by_name = {member.filename: member for member in members}
+        if len(by_name) != len(members):
+            raise ValueError("XLSX ZIP contains duplicate part names.")
+        parts = {
+            name for name in by_name if name.rsplit("/", 1)[-1] == "sharedStrings.xml"
+        }
+        # Keep the cheap conventional-name rejection before manifest decoding.
+        size = sum(by_name[name].file_size for name in parts)
+        if size <= limit:
+            parts.update(_shared_string_parts(archive))
+            try:
+                size = sum(by_name[name].file_size for name in parts)
+            except KeyError as error:
+                raise ValueError("XLSX shared-string part is missing.") from error
     if size > limit:
         raise ValueError(
             "XLSX sharedStrings.xml exceeds excel_shared_strings_limit; "

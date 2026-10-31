@@ -73,8 +73,12 @@ bool columns. Source size and modification time are checked between passes.
   Excel's per-sheet limits are 1,048,576 rows × 16,384 columns; these dimension
   limits are not a practical RAM budget for workbook-wide shared strings.
 
-Before each workbook open, a cheap ZIP-directory preflight reads the declared
-uncompressed size of `sharedStrings.xml` without opening or decompressing it.
+Before each workbook open, a preflight checks the declared uncompressed sizes
+of all shared-string parts, including parts with nonstandard filenames. It
+reads `[Content_Types].xml` within a 1 MiB limit to discover those parts by
+content type, then checks their ZIP-directory sizes without decompressing the
+shared strings. Malformed manifests, DTDs, missing declared parts and duplicate
+ZIP part names are rejected.
 `excel_shared_strings_limit` defaults to **1 GiB (1,073,741,824 bytes)**. Above
 that ceiling, ingestion refuses with guidance to convert to CSV or Parquet.
 The ceiling can be explicitly raised, accepting the associated memory cost:

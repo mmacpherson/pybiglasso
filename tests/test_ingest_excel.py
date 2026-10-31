@@ -88,6 +88,44 @@ def test_over_ceiling_rejected_without_decompression(
     assert not (tmp_path / "X.arrow").exists()
 
 
+@pytest.mark.parametrize("over_ceiling", [False, True])
+def test_renamed_shared_strings_part(
+    shared_strings_workbook, tmp_path, monkeypatch, over_ceiling
+):
+    with zipfile.ZipFile(shared_strings_workbook) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    files["xl/strings.xml"] = files.pop("xl/sharedStrings.xml")
+    for name in ("[Content_Types].xml", "xl/_rels/workbook.xml.rels"):
+        files[name] = files[name].replace(b"sharedStrings.xml", b"strings.xml")
+    source = tmp_path / "renamed.xlsx"
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    output = tmp_path / "renamed.arrow"
+    if over_ceiling:
+        original_open = zipfile.ZipFile.open
+
+        def checked_open(archive, name, *args, **kwargs):
+            assert name != "xl/strings.xml", "Shared strings decompressed"
+            return original_open(archive, name, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", checked_open)
+        monkeypatch.setattr(
+            openpyxl, "load_workbook", lambda *_, **__: pytest.fail("Workbook opened")
+        )
+        with pytest.raises(ValueError, match="exceeds excel_shared_strings_limit"):
+            ingest(source, output, features=["x"], excel_shared_strings_limit=1)
+        assert not output.exists()
+    else:
+        result = ingest(
+            source,
+            output,
+            features=["x"],
+            excel_shared_strings_limit=len(files["xl/strings.xml"]),
+        )
+        np.testing.assert_array_equal(result.design._columns[0][0], np.arange(4096))
+
+
 @pytest.mark.parametrize("explicit_ceiling", [False, True])
 def test_under_ceiling_ingests_with_workbook_memory_exception(
     shared_strings_workbook, tmp_path, monkeypatch, explicit_ceiling
@@ -160,10 +198,60 @@ def test_explicit_ceiling_can_be_raised(shared_strings_workbook, monkeypatch):
         return members
 
     monkeypatch.setattr(zipfile.ZipFile, "infolist", declared_large)
-    monkeypatch.setattr(
-        zipfile.ZipFile, "open", lambda *_, **__: pytest.fail("Member decompressed")
-    )
+    original_open = zipfile.ZipFile.open
+
+    def manifest_only(archive, member, *args, **kwargs):
+        assert member.filename == "[Content_Types].xml"
+        return original_open(archive, member, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", manifest_only)
     module._check_shared_strings(shared_strings_workbook, (1 << 30) + 1)
+
+
+@pytest.mark.parametrize("case", ["oversized", "malformed", "dtd", "missing part"])
+def test_unverifiable_manifest_is_rejected_before_workbook_open(
+    tmp_path, monkeypatch, case
+):
+    source = tmp_path / "manifest.xlsx"
+    manifest = {
+        "oversized": b" " * ((1 << 20) + 1),
+        "malformed": b"<Types>",
+        "dtd": b'<!DOCTYPE Types [<!ENTITY part "strings">]><Types/>',
+        "missing part": (
+            b'<Types><Override PartName="/xl/missing.xml" ContentType="application/'
+            b'vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>'
+        ),
+    }[case]
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", manifest)
+    monkeypatch.setattr(
+        openpyxl, "load_workbook", lambda *_, **__: pytest.fail("Workbook opened")
+    )
+    if case == "oversized":
+        monkeypatch.setattr(
+            zipfile.ZipFile, "open", lambda *_, **__: pytest.fail("Manifest decoded")
+        )
+    with pytest.raises(ValueError, match="XLSX"):
+        ingest(source, tmp_path / "X.arrow", features=["x"])
+
+
+def test_all_declared_shared_string_parts_count_toward_ceiling(tmp_path):
+    module = importlib.import_module("pybiglasso.ingest")
+    source = tmp_path / "multiple.xlsx"
+    manifest = ElementTree.Element("Types")
+    with zipfile.ZipFile(source, "w") as archive:
+        for name in ("xl/first.xml", "xl/second.xml"):
+            ElementTree.SubElement(
+                manifest,
+                "Override",
+                PartName="/" + name,
+                ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml",
+            )
+            archive.writestr(name, b"12345")
+        archive.writestr("[Content_Types].xml", ElementTree.tostring(manifest))
+    with pytest.raises(ValueError, match="exceeds excel_shared_strings_limit"):
+        module._check_shared_strings(source, 9)
+    module._check_shared_strings(source, 10)
 
 
 def test_preflight_is_checked_before_each_pass(
