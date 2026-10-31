@@ -21,7 +21,7 @@ from xml.parsers import expat
 
 import numpy as np
 
-from .arrow import mmap_ipc
+from .arrow import open_mapped
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -184,7 +184,7 @@ def _headers(source, pa, sheet, excel_shared_strings_limit):
             return _names(next(worksheet.iter_rows(values_only=True), ()))
         finally:
             workbook.close()
-    raise ValueError("Source must be CSV, Parquet, Feather/IPC file, or .xlsx.")
+    raise ValueError("Source must be CSV, Parquet, Arrow file (Feather v2), or .xlsx.")
 
 
 def _check_zip_directory(source):
@@ -443,7 +443,7 @@ def _open_result(path, metadata):
             dtype=np.float64,
             shape=(metadata["rows"],),
         )
-    design = mmap_ipc(path)
+    design = open_mapped(path)
     if design.shape != (
         metadata["rows"],
         len(metadata["features"]),
@@ -494,7 +494,7 @@ def ingest(
     cache=False,
     cache_dir=None,
 ):
-    """Convert a numeric source to persistent, feature-only Arrow IPC storage.
+    """Convert a numeric source to persistent, feature-only Arrow file storage.
 
     ``match`` is a glob string or compiled regex. ``dtypes`` is ``'auto'`` or
     a partial mapping of feature names to exact supported physical types.

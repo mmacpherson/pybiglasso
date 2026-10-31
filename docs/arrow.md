@@ -4,7 +4,7 @@ X can be a `pyarrow.Table` or `pyarrow.RecordBatch` with non-null bool,
 int8/uint8/int16/uint16/int32/uint32/int64/uint64, float32 or float64 columns.
 String, dictionary/categorical, nested, extension, decimal and temporal columns
 are rejected. Buffers must be aligned. For mapped storage, use an uncompressed,
-native-endian Arrow IPC/Feather v2 **file**, with one or multiple record batches.
+native-endian **Arrow file** (Feather v2), with one or multiple record batches.
 PyArrow is optional (`pip install 'pybiglasso[arrow]'`). NumPy arrays and
 Fortran `.npy` memmaps remain direct inputs; no conversion to Arrow is required.
 
@@ -18,23 +18,23 @@ be materialized as a contiguous array using O(n) memory.
 import numpy as np
 import pyarrow as pa
 from pybiglasso import biglasso
-from pybiglasso.arrow import mmap_ipc
+from pybiglasso.arrow import open_mapped
 
 # Existing NumPy storage needs no Arrow step.
 X_numpy = np.load("features.npy", mmap_mode="r")
 y = np.load("response.npy", mmap_mode="r")
 fit_numpy = biglasso(X_numpy, y, family="gaussian")
 
-# Map an existing uncompressed IPC file into an ordinary Table.
-table = mmap_ipc("data.feather")
+# Map an existing uncompressed Arrow file into an ordinary Table.
+table = open_mapped("data.feather")
 y = table.column("response")
 X = table.drop_columns(["response", "id"])
 fit = biglasso(X, y, family="gaussian")
 prediction = fit.predict(X)
 ```
 
-`mmap_ipc` names a single storage operation: map an IPC file, returning a standard
-Table. There is no public X wrapper or file registration. Its result can be
+`open_mapped` opens a mapped Arrow file and returns a standard Table. There is
+no public X wrapper or file registration. Its result can be
 projected with Arrow's `select`/`drop_columns`, sliced, or handed to another
 library. Feature names come from `column_names` and must be unique. Projection,
 response extraction and row alignment are the caller's responsibility.
@@ -84,15 +84,15 @@ to gathering. sklearn prediction retains its existing finite-value check.
 
 ## Loading, mutability and lifetime
 
-`mmap_ipc` checks compression on **every footer-selected dictionary/record batch
+`open_mapped` checks compression on **every footer-selected dictionary/record batch
 before decoding any batch**. It rejects compressed files with guidance to
 convert explicitly using ingest. Dictionary delta batches are also rejected
 before decoding because the reader would concatenate their dictionary values.
 The ordinary Table retains its mapped buffers;
 no JSON sidecar is needed to reopen the file. Standard Arrow readers/writers
 can also consume it. PyArrow's default Feather writer often compresses; request
-uncompressed IPC explicitly when writing mapped storage. Multiple batches need
-not be concatenated or rewritten to fit.
+uncompressed Arrow files explicitly when writing mapped storage. Multiple
+batches need not be concatenated or rewritten to fit.
 
 In-memory and mutable Arrow buffers are accepted through private read-only
 views. As with ndarray inputs, **do not mutate the underlying buffers during a

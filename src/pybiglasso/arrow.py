@@ -1,4 +1,4 @@
-"""Ordinary Arrow inputs and explicit, uncompressed IPC memory mapping."""
+"""Ordinary Arrow inputs and explicit, uncompressed Arrow file memory mapping."""
 
 import struct
 import sys
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["mmap_ipc"]
+__all__ = ["open_mapped"]
 
 
 def _is_arrow(value, names=("Table", "RecordBatch")):
@@ -47,7 +47,7 @@ def _field(metadata, table, index):
 
     def read(fmt, offset):
         if offset < 0 or offset + struct.calcsize(fmt) > len(metadata):
-            raise ValueError("Invalid Arrow IPC metadata offsets.")
+            raise ValueError("Invalid Arrow file metadata offsets.")
         return struct.unpack_from(fmt, metadata, offset)[0]
 
     vtable = table - read("<i", table)
@@ -62,26 +62,26 @@ def _field(metadata, table, index):
 def _check_uncompressed(source, pa):
     source.seek(0)
     if source.read(8)[:6] != b"ARROW1":
-        raise ValueError("mmap_ipc requires an Arrow IPC file (Feather v2).")
+        raise ValueError("open_mapped requires an Arrow file (Feather v2).")
     source.seek(source.size() - 10)
     trailer = source.read(10)
     if trailer[4:] != b"ARROW1":
-        raise ValueError("Invalid Arrow IPC footer.")
+        raise ValueError("Invalid Arrow file footer.")
     length = struct.unpack_from("<I", trailer)[0]
     if length > source.size() - 10:
-        raise ValueError("Invalid Arrow IPC footer length.")
+        raise ValueError("Invalid Arrow file footer length.")
     source.seek(source.size() - 10 - length)
     footer = memoryview(source.read_buffer(length))
     root = struct.unpack_from("<I", footer)[0]
     schema = _field(footer, root, 1)
     if schema is None:
-        raise ValueError("Missing Arrow IPC schema.")
+        raise ValueError("Missing Arrow file schema.")
     schema += struct.unpack_from("<I", footer, schema)[0]
     endian = _field(footer, schema, 0)
     endian = struct.unpack_from("<h", footer, endian)[0] if endian else 0
     if endian != (sys.byteorder == "big"):
         raise ValueError(
-            "Mapped IPC must have native byte order; convert explicitly first."
+            "Mapped Arrow files must have native byte order; convert explicitly first."
         )
     # The footer, not the sequential message stream, determines what the reader
     # decodes. Check *all* indexed dictionary and record batches before any decode.
@@ -92,11 +92,11 @@ def _check_uncompressed(source, pa):
         vector = field + struct.unpack_from("<I", footer, field)[0]
         count = struct.unpack_from("<I", footer, vector)[0]
         if vector + 4 + 24 * count > len(footer):
-            raise ValueError("Invalid Arrow IPC footer blocks.")
+            raise ValueError("Invalid Arrow file footer blocks.")
         for k in range(count):
             offset = struct.unpack_from("<q", footer, vector + 4 + 24 * k)[0]
             if offset < 8 or offset >= source.size() - 10 - length:
-                raise ValueError("Invalid Arrow IPC footer batch offset.")
+                raise ValueError("Invalid Arrow file footer batch offset.")
             source.seek(offset)
             message = pa.ipc.read_message(source)
             metadata = memoryview(message.metadata)
@@ -111,7 +111,7 @@ def _check_uncompressed(source, pa):
                 delta = _field(metadata, table, 2)
                 if delta is not None and struct.unpack_from("<?", metadata, delta)[0]:
                     raise ValueError(
-                        "mmap_ipc cannot borrow dictionary deltas; use ingest to convert the file."
+                        "open_mapped cannot borrow dictionary deltas; use ingest to convert the file."
                     )
                 data = _field(metadata, table, 1)
                 if data is None:
@@ -121,12 +121,12 @@ def _check_uncompressed(source, pa):
                 raise ValueError("Expected an Arrow record batch.")
             if _field(metadata, table, 3) is not None:
                 raise ValueError(
-                    "mmap_ipc requires uncompressed IPC buffers; use ingest to convert the file."
+                    "open_mapped requires uncompressed Arrow buffers; use ingest to convert the file."
                 )
 
 
-def mmap_ipc(path):
-    """Map an uncompressed IPC/Feather v2 file as an ordinary pyarrow.Table.
+def open_mapped(path):
+    """Map an uncompressed Arrow file (Feather v2) as an ordinary pyarrow.Table.
 
     All footer-selected batches are preflighted before decoding. The Table's
     buffers retain the mapping; no sidecar or custom X wrapper is needed.
@@ -136,7 +136,9 @@ def mmap_ipc(path):
     try:
         import pyarrow as pa
     except ImportError as error:
-        raise ImportError("mmap_ipc needs pip install 'pybiglasso[arrow]'") from error
+        raise ImportError(
+            "open_mapped needs pip install 'pybiglasso[arrow]'"
+        ) from error
     source = pa.memory_map(str(Path(path)), "r")
     try:
         _check_uncompressed(source, pa)
@@ -158,12 +160,12 @@ def mmap_ipc(path):
                         )
                     ):
                         raise ValueError(
-                            "IPC buffers must be borrowed from the mapping."
+                            "Arrow buffers must be borrowed from the mapping."
                         )
             batches.append(batch)
         return pa.Table.from_batches(batches, schema=reader.schema)
     except (pa.ArrowException, struct.error) as error:
-        raise ValueError(f"Invalid Arrow IPC file: {error}") from error
+        raise ValueError(f"Invalid Arrow file: {error}") from error
     finally:
         source.close()
 
