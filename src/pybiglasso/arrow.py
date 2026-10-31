@@ -31,12 +31,10 @@ def _as_arrow_matrix(X):
     if _is_arrow(X):
         return _ArrowMatrix(X)
     if (
-        type(X).__module__.split(".")[0] in ("pandas", "polars")
-        or hasattr(X, "__arrow_c_stream__")
-        or hasattr(X, "__arrow_c_array__")
-    ):
+        hasattr(X, "__arrow_c_stream__") or hasattr(X, "__arrow_c_array__")
+    ) and not hasattr(X, "__array__"):
         raise TypeError(
-            "X must be a NumPy array, pyarrow.Table or pyarrow.RecordBatch. "
+            "X must be array-like, a pyarrow.Table or a pyarrow.RecordBatch. "
             "Convert explicitly to a pyarrow.Table, or use ingest on a file."
         )
     return X

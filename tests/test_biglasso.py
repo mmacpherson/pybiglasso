@@ -77,16 +77,11 @@ def test_path_shapes(path, data):
     assert path.feature_names == tuple(f"x{j}" for j in range(X.shape[1]))
 
 
-def test_dataframe_requires_explicit_arrow_conversion(data):
+def test_feature_names_from_dataframe(data):
     pd = pytest.importorskip("pandas")
-    pa = pytest.importorskip("pyarrow")
     X, y = data
     df = pd.DataFrame(X, columns=[f"snp{j}" for j in range(X.shape[1])])
-    with pytest.raises(TypeError, match="Convert explicitly to a pyarrow.Table"):
-        bl.biglasso(df, y, nlambda=3, family="binomial")
-    p = bl.biglasso(
-        pa.Table.from_pandas(df, preserve_index=False), y, nlambda=3, family="binomial"
-    )
+    p = bl.biglasso(df, pd.Series(y), nlambda=3, family="binomial")
     assert p.feature_names[0] == "snp0"
 
 
