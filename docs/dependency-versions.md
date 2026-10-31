@@ -32,7 +32,7 @@ fixed while changing released PyArrow versions. Each passing candidate ran
 | NumPy | 2.0.0 | PyArrow 26.0.0 refuses NumPy 1.26.4 at import. NumPy 2.0.0 passes the Arrow/ingest suite and is the shared baseline for both minimum and current Arrow. Older NumPy can work with older Arrow; that mixed-version range is not the supported 0.5 baseline. |
 | SciPy | 1.13.0 | SciPy 1.12.0 declares `numpy<1.29` and cannot resolve with NumPy 2.0.0. The 1.13.0 baseline passes the Arrow/ingest suite and the full minimum gate. |
 | PyArrow | 16.0.0 | Bisect: 26.0.0 and 16.1.0 pass; 14.0.0 fails to import with NumPy 2; 15.0.0 and 15.0.2 require `numpy<2`; 16.0.0 passes. The adjacent lower release, 15.0.2, cannot resolve the fixed baseline. |
-| scikit-learn | 1.9.0 | The six Polars estimator cases in `test_arraylike_frame_fit_matches_fortran_ndarray` lose `feature_names_in_` with 1.6.0, 1.7.0 and 1.8.0. All sixteen pandas/Polars functional and estimator cases pass with 1.9.0. |
+| scikit-learn | 1.6.0 | The existing floor is retained. Polars feature names in the estimators need scikit-learn 1.9 or newer: six cases lose `feature_names_in_` with 1.6.0, 1.7.0 and 1.8.0, and are strict xfails below 1.9. All sixteen pandas/Polars functional and estimator cases pass normally with 1.9.0. |
 | seaborn | 0.13.0 | `test_plots` passes at the existing floor with pandas 3.0.6 and NumPy 2.0.0. |
 | openpyxl | 3.0.6 | Excel bisect: 3.1.5, 3.0.10 and 3.0.6 pass all 21 Excel cases; 3.0.4 and the adjacent 3.0.5 fail on removed NumPy aliases during import. |
 

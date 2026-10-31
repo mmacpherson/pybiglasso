@@ -2134,7 +2134,7 @@ requires-dist = [
     { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=16.0" },
     { name = "pybiglasso", extras = ["arrow"], marker = "extra == 'ingest'" },
     { name = "pybiglasso", extras = ["arrow", "ingest", "sklearn", "viz"], marker = "extra == 'all'" },
-    { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.9" },
+    { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.6" },
     { name = "scipy", specifier = ">=1.13" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13" },
 ]

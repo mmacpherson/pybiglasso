@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from packaging.version import Version
 
 from pybiglasso import biglasso
 from pybiglasso.arrow import _ArrowMatrix, _open_mapped
@@ -940,7 +941,7 @@ def test_arrow_response_preserves_estimator_target_contract(form, labels):
         "BiglassoClassifierCV_strings",
     ],
 )
-def test_arraylike_frame_fit_matches_fortran_ndarray(framework, model):
+def test_arraylike_frame_fit_matches_fortran_ndarray(framework, model, request):
     import pybiglasso as bl
 
     module = pytest.importorskip(framework)
@@ -974,7 +975,15 @@ def test_arraylike_frame_fit_matches_fortran_ndarray(framework, model):
         same_path(actual, reference)
         assert list(actual.feature_names) == names
     else:
-        pytest.importorskip("sklearn")
+        sklearn = pytest.importorskip("sklearn")
+        if framework == "polars":
+            request.applymarker(
+                pytest.mark.xfail(
+                    condition=Version(sklearn.__version__) < Version("1.9"),
+                    strict=True,
+                    reason="scikit-learn < 1.9 drops feature names from Polars DataFrames",
+                )
+            )
         cls = getattr(bl, model.removesuffix("_strings"))
         options = (
             dict(n_alphas=7, cv=3, n_jobs=1)
