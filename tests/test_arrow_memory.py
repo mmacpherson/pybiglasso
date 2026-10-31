@@ -19,16 +19,16 @@ CHILD = textwrap.dedent("""
     import numpy as np
     import pyarrow as pa
     from pybiglasso import biglasso
-    from pybiglasso.arrow import _ArrowMatrix, mmap_ipc
+    from pybiglasso.arrow import _ArrowMatrix, open_mapped
 
     target, warm, case, storage = sys.argv[1:]
     # Imports, worker pools and small allocator arenas are initialized with
     # a different design. The target is not even opened until under the cap.
-    small = mmap_ipc(warm)
+    small = open_mapped(warm)
     biglasso(small, np.arange(small.shape[0]) % 3, nlambda=3, n_threads=2)
     del small
     if storage == 'allocated':
-        mapped = mmap_ipc(target)
+        mapped = open_mapped(target)
         columns = []
         for column in mapped.itercolumns():
             chunks = [pa.Array.from_buffers(chunk.type, len(chunk),
@@ -44,7 +44,7 @@ CHILD = textwrap.dedent("""
     stage = 'open'
     try:
         if storage == 'mapped':
-            X = mmap_ipc(target)
+            X = open_mapped(target)
         stage = case
         if case == 'copy':
             # Smallest primitive matrix copy; for packed bool this is the
