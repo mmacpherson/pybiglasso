@@ -2,7 +2,11 @@
 
 import gc
 import math
+import re
 import struct
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,6 +25,42 @@ def write_ipc(path, arrays, *, compression=None, batches=1):
         with pa.ipc.new_file(sink, batch.schema, options=options) as writer:
             for _ in range(batches):
                 writer.write_batch(batch)
+
+
+@pytest.mark.parametrize("compression", ["uncompressed", "lz4", "zstd"])
+def test_documented_feather_allocation_one_liner(tmp_path, compression):
+    documentation = Path(__file__).resolve().parents[1] / "docs" / "arrow.md"
+    recipes = re.findall(r"```python\n(.*?)\n```", documentation.read_text(), re.S)
+    [recipe] = [block for block in recipes if "pa.total_allocated_bytes()" in block]
+    assert len(recipe.splitlines()) == 1
+    rows = np.arange(12288)
+    import pyarrow.feather as pf
+
+    pf.write_feather(
+        pa.table(
+            {
+                "x1": rows.astype(np.int16),
+                "x2": rows % 2 == 0,
+                "response": (rows % 3).astype(np.int8),
+                "id": ["unused"] * len(rows),
+            }
+        ),
+        tmp_path / "data.feather",
+        compression=compression,
+        chunksize=4096,
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", recipe],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    allocated = int(result.stdout.strip())
+    if compression == "uncompressed":
+        assert allocated == 0
+    else:
+        assert allocated > 0
 
 
 @pytest.mark.parametrize("compression", ["uncompressed", "lz4"])

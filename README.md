@@ -28,8 +28,10 @@ Inputs can also be `pyarrow.Table` or `RecordBatch`: non-null bool,
 aligned buffers. Columns may be chunked or sliced; pybiglasso never copies X.
 Read Arrow files (Feather v2) with
 `pyarrow.feather.read_table(path, memory_map=True, columns=...)`. Uncompressed,
-native-endian files can remain mapped; compressed files are decompressed by
-PyArrow. Select/drop columns explicitly; y is supplied separately as NumPy or an
+native-endian files can remain mapped. **Compressed files are decompressed into
+RAM by PyArrow before pybiglasso sees them, even with `memory_map=True`.**
+See the [tested allocation one-liner](docs/arrow.md) or convert once with `ingest`,
+which always writes uncompressed feature files. Select/drop columns explicitly; y is supplied separately as NumPy or an
 Arrow Array/ChunkedArray. See [Arrow inputs](docs/arrow.md) for loading, mutation
 and lifetime details.
 
