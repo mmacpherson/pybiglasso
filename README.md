@@ -26,10 +26,12 @@ memory.
 Inputs can also be `pyarrow.Table` or `RecordBatch`: non-null bool,
 8/16/32/64-bit signed or unsigned integers, or float32/float64 columns with
 aligned buffers. Columns may be chunked or sliced; pybiglasso never copies X.
-Use `pybiglasso.arrow.open_mapped(path)` for an ordinary Table over an uncompressed,
-native-endian Arrow file (Feather v2). Select/drop columns explicitly; y is supplied
-separately as NumPy or an Arrow Array/ChunkedArray. See [Arrow inputs](docs/arrow.md)
-for the mutation and lifetime contract.
+Read Arrow files (Feather v2) with
+`pyarrow.feather.read_table(path, memory_map=True, columns=...)`. Uncompressed,
+native-endian files can remain mapped; compressed files are decompressed by
+PyArrow. Select/drop columns explicitly; y is supplied separately as NumPy or an
+Arrow Array/ChunkedArray. See [Arrow inputs](docs/arrow.md) for loading, mutation
+and lifetime details.
 
 To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
@@ -66,7 +68,7 @@ wheel. Extras add optional integrations:
 | `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
 | `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
-| `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs and `open_mapped()` |
+| `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs |
 | `pybiglasso[all]` | all of the above |
 
 ## Quick start
@@ -480,9 +482,10 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   X can also be a [`pyarrow.Table` or `RecordBatch`](docs/arrow.md) with
   non-null primitive numeric/bool columns and aligned buffers. Chunked and
   sliced columns are borrowed without copying; bool stays bit-packed.
-  `pybiglasso.arrow.open_mapped(path)` returns an ordinary Table over an
-  uncompressed Arrow file (Feather v2), including multi-batch files. Select/drop
-  columns explicitly and supply y separately (NumPy or an Arrow array).
+  Read an Arrow file (Feather v2) with
+  `pyarrow.feather.read_table(path, memory_map=True, columns=...)`. Uncompressed
+  native-endian files can remain mapped; PyArrow decompresses compressed files.
+  Select/drop columns explicitly and supply y separately (NumPy or an Arrow array).
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).

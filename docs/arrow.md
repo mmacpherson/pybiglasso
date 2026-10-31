@@ -16,9 +16,8 @@ be materialized as a contiguous array using O(n) memory.
 
 ```python
 import numpy as np
-import pyarrow as pa
+import pyarrow.feather as pf
 from pybiglasso import biglasso
-from pybiglasso.arrow import open_mapped
 
 # Existing NumPy storage needs no Arrow step.
 X_numpy = np.load("features.npy", mmap_mode="r")
@@ -26,16 +25,17 @@ y = np.load("response.npy", mmap_mode="r")
 fit_numpy = biglasso(X_numpy, y, family="gaussian")
 
 # Map an existing uncompressed Arrow file into an ordinary Table.
-table = open_mapped("data.feather")
+table = pf.read_table(
+    "data.feather", memory_map=True, columns=["x1", "x2", "response"]
+)
 y = table.column("response")
-X = table.drop_columns(["response", "id"])
+X = table.drop_columns(["response"])
 fit = biglasso(X, y, family="gaussian")
 prediction = fit.predict(X)
 ```
 
-`open_mapped` opens a mapped Arrow file and returns a standard Table. There is
-no public X wrapper or file registration. Its result can be
-projected with Arrow's `select`/`drop_columns`, sliced, or handed to another
+Use PyArrow to read files, just as NumPy files use `np.load(mmap_mode="r")`.
+The ordinary Table can be projected with Arrow's `select`/`drop_columns`, sliced, or handed to another
 library. Feature names come from `column_names` and must be unique. Projection,
 response extraction and row alignment are the caller's responsibility.
 Generic `__arrow_c_stream__`/`__arrow_c_array__` exporters, pandas and Polars
@@ -84,15 +84,18 @@ to gathering. sklearn prediction retains its existing finite-value check.
 
 ## Loading, mutability and lifetime
 
-`open_mapped` checks compression on **every footer-selected dictionary/record batch
-before decoding any batch**. It rejects compressed files with guidance to
-convert explicitly using ingest. Dictionary delta batches are also rejected
-before decoding because the reader would concatenate their dictionary values.
-The ordinary Table retains its mapped buffers;
-no JSON sidecar is needed to reopen the file. Standard Arrow readers/writers
-can also consume it. PyArrow's default Feather writer often compresses; request
-uncompressed Arrow files explicitly when writing mapped storage. Multiple
-batches need not be concatenated or rewritten to fit.
+`pf.read_table(path, memory_map=True, columns=...)` reads an Arrow file
+(Feather v2) as an ordinary Table, including files with multiple record batches.
+Use `columns` to project while reading, or select/drop columns on the Table.
+No JSON sidecar is needed, including for feature files written by ingest.
+
+`memory_map=True` does not promise that the reader allocates nothing: PyArrow
+silently decompresses compressed files, and other storage conversions can
+allocate too. For mapped storage, use native-endian uncompressed files; request
+`compression="uncompressed"` when writing with `pf.write_feather`. File loading
+and its allocations belong to PyArrow. Once a Table is passed to pybiglasso,
+pybiglasso borrows its existing buffers without copying X. Multiple batches
+need not be concatenated or rewritten to fit.
 
 In-memory and mutable Arrow buffers are accepted through private read-only
 views. As with ndarray inputs, **do not mutate the underlying buffers during a

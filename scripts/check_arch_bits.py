@@ -47,7 +47,7 @@ def record(output):
     import pyarrow as pa
 
     import pybiglasso as bl
-    from pybiglasso.arrow import open_mapped
+    from pybiglasso.arrow import _open_mapped
 
     cases = {}
     for name, (nrow, ncol) in PROBLEMS.items():
@@ -90,7 +90,7 @@ def record(output):
                 cuts = sorted({0, min(7, nrow), min(2047, nrow), min(2048, nrow), nrow})
                 for start, stop in zip(cuts[:-1], cuts[1:], strict=True):
                     writer.write_batch(batch.slice(start, stop - start))
-        designs["arrow-mixed"] = open_mapped(arrow_path)
+        designs["arrow-mixed"] = _open_mapped(arrow_path)
         for dtype in DTYPES:
             X = designs[dtype]
             values = reference if dtype == "arrow-mixed" else X
