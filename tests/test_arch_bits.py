@@ -20,7 +20,7 @@ def expected_cases():
     return {
         f"{shape}/dtype={dtype}/family={family}/alpha={alpha}"
         for shape in ("tall", "wide", "parallel-irls")
-        for dtype in ("float64", "int8")
+        for dtype in ("float64", "int8", "arrow-mixed")
         for family in ("binomial", "gaussian")
         for alpha in (1.0, 0.5)
     }
@@ -39,9 +39,13 @@ def test_record_fits_fortran_int8_and_float64_in_both_families(
     real_fit = bl.biglasso
 
     def observe(X, y, **options):
-        assert X.flags.f_contiguous
+        from pybiglasso.arrow import _is_arrow
+
+        kind = "arrow-mixed" if _is_arrow(X) else X.dtype.name
+        if kind != "arrow-mixed":
+            assert X.flags.f_contiguous
         assert y.dtype == np.float64
-        calls.append((X.shape, X.dtype.name, options["family"], options["alpha"]))
+        calls.append((X.shape, kind, options["family"], options["alpha"]))
         return real_fit(X, y, **options)
 
     monkeypatch.setattr(bl, "biglasso", observe)
@@ -49,11 +53,11 @@ def test_record_fits_fortran_int8_and_float64_in_both_families(
     arch_bits.record(output)
     snapshot = json.loads(output.read_text())
     assert set(snapshot["cases"]) == expected_cases()
-    assert len(calls) == 24
+    assert len(calls) == 36
     assert set(calls) == {
         (shape, dtype, family, alpha)
         for shape in ((2057, 17), (97, 129), (16391, 9))
-        for dtype in ("float64", "int8")
+        for dtype in ("float64", "int8", "arrow-mixed")
         for family in ("binomial", "gaussian")
         for alpha in (1.0, 0.5)
     }

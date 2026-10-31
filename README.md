@@ -23,6 +23,35 @@ Save the matrix as a numpy memmap and pybiglasso fits the whole regularization
 path, with cross-validation to choose the penalty, without loading it into
 memory.
 
+### Arrow files
+
+A PyArrow Table works as X just like a NumPy array. Open an Arrow (Feather)
+file memory-mapped, keep the feature columns, and fit:
+
+```python
+import pyarrow.feather as pf
+import pybiglasso as bl
+
+table = pf.read_table("data.arrow", memory_map=True)  # uncompressed data stays mapped
+fit = bl.biglasso(table.drop_columns(["y", "id"]), table["y"])
+```
+
+As with `np.load(..., mmap_mode="r")`, columns are read from disk as the fit
+needs them, so the data can be larger than memory, **as long as the file is
+uncompressed**. PyArrow's `write_feather` compresses by default, and a
+compressed file is decompressed into memory when you open it. If yours is
+compressed, or you're not sure, [rewrite it uncompressed](docs/arrow.md#rewrite-an-arrow-file-uncompressed)
+once.
+
+Pick features with `select` or `drop_columns` after opening. Avoid
+`read_table(..., columns=...)`, which copies the whole file's data in PyArrow
+26.0.0.
+
+Columns can be bool (kept at one bit per value), integers or floats, with no
+missing values; encode text and categories as numbers first.
+[Arrow inputs](docs/arrow.md) covers the details: files split into batches,
+and what not to change while a fit runs.
+
 To try it without installing anything, open the
 [playground](https://mmacpherson.github.io/pybiglasso/). It runs the same Rust
 solver, compiled to WebAssembly, in your browser, on example datasets or your
@@ -58,6 +87,7 @@ wheel. Extras add optional integrations:
 | `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
 | `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
+| `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs |
 | `pybiglasso[all]` | all of the above |
 
 ## Quick start
@@ -468,6 +498,9 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   1.3–1.6x faster in memory; `float32` halves the memory and is about as fast.
   Each value is read as a float64, so values that a narrower dtype holds
   exactly give bit-identical results.
+  Arrow files keep bool columns at one bit per value. They can stay on disk
+  during the fit if the file is uncompressed. See [Arrow files](#arrow-files)
+  for opening a file and choosing feature columns.
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).

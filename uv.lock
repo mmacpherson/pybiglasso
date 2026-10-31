@@ -2068,8 +2068,12 @@ dependencies = [
 all = [
     { name = "pandas" },
     { name = "polars" },
+    { name = "pyarrow" },
     { name = "scikit-learn" },
     { name = "seaborn" },
+]
+arrow = [
+    { name = "pyarrow" },
 ]
 pandas = [
     { name = "pandas" },
@@ -2108,12 +2112,13 @@ requires-dist = [
     { name = "numpy" },
     { name = "pandas", marker = "extra == 'pandas'" },
     { name = "polars", marker = "extra == 'polars'" },
-    { name = "pybiglasso", extras = ["polars", "pandas", "sklearn", "viz"], marker = "extra == 'all'" },
+    { name = "pyarrow", marker = "extra == 'arrow'" },
+    { name = "pybiglasso", extras = ["arrow", "polars", "pandas", "sklearn", "viz"], marker = "extra == 'all'" },
     { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.6" },
     { name = "scipy" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13" },
 ]
-provides-extras = ["all", "pandas", "polars", "sklearn", "viz"]
+provides-extras = ["all", "arrow", "pandas", "polars", "sklearn", "viz"]
 
 [package.metadata.requires-dev]
 bench = [

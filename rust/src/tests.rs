@@ -369,6 +369,58 @@ fn passes_contiguous() {
 }
 
 #[test]
+fn packed_bits_preserve_pass_order_at_every_offset_and_tail() {
+    for n in SIZES {
+        for offset in 0..8 {
+            let x: Vec<f64> = (0..n).map(|i| ((i * 17 + 3) % 7 < 3) as u8 as f64).collect();
+            let mut bytes = vec![0u8; (n + offset).div_ceil(8)];
+            for i in 0..n {
+                bytes[(offset + i) / 8] |= (x[i] as u8) << ((offset + i) % 8);
+            }
+            let col = MappedCol::Bits { bytes: &bytes, offset, len: n };
+            check_passes("packed bits", &col, &col, &x, &x);
+        }
+    }
+}
+
+#[test]
+fn independently_chunked_columns_preserve_kernel_blocks() {
+    for n in SIZES {
+        let x: Vec<f64> = (0..n).map(|i| ((i * 17 + 3) % 7 < 3) as u8 as f64).collect();
+        for size in [1, 7, 8, 9, 2047, 2048, 2049] {
+            let mut primitive = vec![MappedCol::F64(&[])];
+            primitive.extend(x.chunks(size).map(MappedCol::F64));
+            primitive.push(MappedCol::F64(&[]));
+            let storage = ChunkedColumn::new(primitive, n).unwrap();
+            let col = MappedX { columns: vec![storage] };
+            check_passes("chunked primitive", &col.col(0), &col.col(0), &x, &x);
+
+            let bytes: Vec<Vec<u8>> = x
+                .chunks(size)
+                .enumerate()
+                .map(|(k, chunk)| {
+                    let offset = k % 8;
+                    let mut bitmap = vec![0u8; (offset + chunk.len()).div_ceil(8)];
+                    for (i, &v) in chunk.iter().enumerate() {
+                        bitmap[(offset + i) / 8] |= (v as u8) << ((offset + i) % 8);
+                    }
+                    bitmap
+                })
+                .collect();
+            let mut packed = vec![MappedCol::Bits { bytes: &[], offset: 0, len: 0 }];
+            packed.extend(bytes.iter().zip(x.chunks(size)).enumerate().map(|(k, (bytes, chunk))| MappedCol::Bits {
+                bytes,
+                offset: k % 8,
+                len: chunk.len(),
+            }));
+            let storage = ChunkedColumn::new(packed, n).unwrap();
+            let col = MappedX { columns: vec![storage] };
+            check_passes("chunked packed", &col.col(0), &col.col(0), &x, &x);
+        }
+    }
+}
+
+#[test]
 fn passes_strided() {
     fn run<const CHECKED: bool>(how: &str) {
         for n in SIZES {

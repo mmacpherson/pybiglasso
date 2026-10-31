@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .arrow import _ArrowMatrix, _is_arrow
+
 # Logarithmic midpoint between the recorded 5M-entry near-neutral cases and
 # the smallest sustained parallel win (20M entries). Not a measured crossover.
 PARALLEL_WORK = 10_000_000
@@ -144,7 +146,12 @@ def resolve_threads(requested, X, n_fit):
         if requested >= 1:
             return int(requested)
     elif requested is None or (isinstance(requested, str) and requested == "auto"):
-        if _mapped_array(X) or n_fit * X.shape[1] < PARALLEL_WORK:
+        if (
+            isinstance(X, _ArrowMatrix)
+            or _is_arrow(X)
+            or _mapped_array(X)
+            or n_fit * X.shape[1] < PARALLEL_WORK
+        ):
             return 1
         count = physical_cores()
         # Preserve the existing environment control as an auto-mode ceiling;

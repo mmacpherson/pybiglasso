@@ -81,7 +81,7 @@ def test_feature_names_from_dataframe(data):
     pd = pytest.importorskip("pandas")
     X, y = data
     df = pd.DataFrame(X, columns=[f"snp{j}" for j in range(X.shape[1])])
-    p = bl.biglasso(df, y, nlambda=3, family="binomial")
+    p = bl.biglasso(df, pd.Series(y), nlambda=3, family="binomial")
     assert p.feature_names[0] == "snp0"
 
 

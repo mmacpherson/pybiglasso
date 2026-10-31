@@ -17,8 +17,9 @@ import scipy.sparse as sps
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.model_selection import check_cv
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
-from sklearn.utils.validation import check_is_fitted, validate_data
+from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
+from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
 from .binomial import biglasso
 from .path import METRICS, _expit, linear_predictor, score_logits
 
@@ -38,6 +39,8 @@ def _as_design(X):
     genotype memmap stays an int8 memmap. Finiteness is checked by `biglasso`
     and `linear_predictor` as they read X, not by a separate pass here.
     """
+    if isinstance(X, _ArrowMatrix):
+        return X
     if X.dtype.kind == "b":
         return X.view(np.uint8)
     if X.dtype.kind == "f" and X.dtype.itemsize < 4:
@@ -45,9 +48,45 @@ def _as_design(X):
     return X
 
 
+def _validate_data(estimator, X, y="no_validation", **kwargs):
+    X = _as_arrow_matrix(X)
+    y = _response(y)
+    if not isinstance(X, _ArrowMatrix):
+        return validate_data(estimator, X, y, **kwargs)
+    if y is None:
+        raise ValueError(
+            f"This {type(estimator).__name__} estimator "
+            "requires y to be passed, but the target y is None."
+        )
+    # sklearn's generic check_array calls __array__. Validate metadata here,
+    # and the small response separately; the solver checks selected X values.
+    if kwargs.get("reset", True):
+        estimator.n_features_in_ = X.shape[1]
+        estimator.feature_names_in_ = np.asarray(X.columns, dtype=object)
+    else:
+        if X.shape[1] != estimator.n_features_in_:
+            raise ValueError(
+                "X has a different number of features than the fitted design."
+            )
+        names = getattr(estimator, "feature_names_in_", None)
+        if names is not None and not np.array_equal(names, X.columns):
+            raise ValueError("Arrow feature names must match those used during fit.")
+    if X.shape[0] < kwargs.get("ensure_min_samples", 1):
+        raise ValueError("Not enough samples in X.")
+    if isinstance(y, str) and y == "no_validation":
+        X._check_finite()
+        return X
+    y = check_array(
+        y, ensure_2d=False, dtype="numeric" if kwargs.get("y_numeric") else None
+    )
+    if y.ndim != 1 or len(y) != X.shape[0]:
+        raise ValueError("y must have one entry per row of X.")
+    return X, y
+
+
 class _BiglassoBase(ClassifierMixin, BaseEstimator):
     def _validate_xy(self, X, y):
-        X, y = validate_data(
+        X, y = _validate_data(
             self, X, y, dtype="numeric", order=None, copy=False, ensure_all_finite=False
         )
         X = _as_design(X)
@@ -82,7 +121,7 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
         check_is_fitted(self)
         # unlike fit, check every column for NaN/inf: scikit-learn requires it,
         # and for float X it costs one read (a sum), not a copy
-        X = validate_data(self, X, reset=False, dtype="numeric", order=None)
+        X = _validate_data(self, X, reset=False, dtype="numeric", order=None)
         return linear_predictor(_as_design(X), self.coef_.T, self.intercept_)[:, 0]
 
     def predict(self, X):
@@ -105,7 +144,7 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
 
 class _RegressionBase(RegressorMixin, BaseEstimator):
     def _validate_xy(self, X, y):
-        X, y = validate_data(
+        X, y = _validate_data(
             self,
             X,
             y,
@@ -132,7 +171,7 @@ class _RegressionBase(RegressorMixin, BaseEstimator):
 
     def predict(self, X):
         check_is_fitted(self)
-        X = validate_data(self, X, reset=False, dtype="numeric", order=None)
+        X = _validate_data(self, X, reset=False, dtype="numeric", order=None)
         return linear_predictor(
             _as_design(X), self.coef_[:, None], np.atleast_1d(self.intercept_)
         )[:, 0]

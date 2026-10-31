@@ -5,6 +5,8 @@ import dataclasses
 import numpy as np
 import scipy.sparse as sps
 
+from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
+
 INTERCEPT = "(Intercept)"
 METRICS = ("deviance", "auc", "accuracy")
 
@@ -83,6 +85,7 @@ class BiglassoPath:
         selected lambdas are read, which matters when X is a large memmap.
         With `row_indices`, predict for those rows of X only.
         """
+        X = _as_arrow_matrix(X)
         index = self._lambda_index(lambdas)
         if X.shape[1] != self.coef.shape[0]:
             raise ValueError(
@@ -114,7 +117,7 @@ class BiglassoPath:
         metrics = ("deviance", "mse", "r2") if self.family == "gaussian" else METRICS
         if metric not in metrics:
             raise ValueError(f"metric must be one of {metrics}, not {metric!r}")
-        y = np.asarray(y, dtype=np.float64)
+        y = np.asarray(_response(y), dtype=np.float64)
         if row_indices is not None:
             y = y[row_indices]
         eta = self.decision_function(X, lambdas, row_indices)
@@ -204,6 +207,7 @@ def linear_predictor(X, coef, intercept, row_indices=None):
     that bounds the memory used. Raises ValueError if the values read aren't
     all finite.
     """
+    X = _as_arrow_matrix(X)
     coef = sps.csc_array(coef)
     used = np.unique(coef.indices)
     nrow = X.shape[0] if row_indices is None else len(row_indices)
@@ -217,7 +221,14 @@ def linear_predictor(X, coef, intercept, row_indices=None):
         beta = sps.csr_array(coef[cols, :])
         for start in range(0, nrow, height):
             stop = min(start + height, nrow)
-            if row_indices is None:
+            if isinstance(X, _ArrowMatrix):
+                rows = (
+                    slice(start, stop)
+                    if row_indices is None
+                    else row_indices[start:stop]
+                )
+                block = X._block(rows, cols)
+            elif row_indices is None:
                 block = X[start:stop][:, cols]
             else:
                 block = X[np.ix_(row_indices[start:stop], cols)]
@@ -241,7 +252,7 @@ def binomial_deviance(y, eta):
 
     `eta` is (nrow,) or (nrow, k); returns a scalar or (k,) array.
     """
-    y = np.asarray(y, dtype=np.float64)
+    y = np.asarray(_response(y), dtype=np.float64)
     if eta.ndim == 2:
         y = y[:, np.newaxis]
     # log(1 + exp(eta)) - y * eta, computed stably

@@ -9,6 +9,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from ._threads import resolve_threads
+from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
 from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
@@ -65,7 +66,7 @@ def biglasso(
     and uses its parameter names: `alpha` mixes the L1 and L2
     penalties (1 is the lasso), and `lambdas` are penalty strengths.
 
-    X may be a numpy array or memmap, ideally in Fortran (column-major) order;
+    X may be a pyarrow Table/RecordBatch or a NumPy array/memmap in Fortran order;
     it is read a column at a time and never copied.
 
     Like R, a binomial path stops early once training deviance falls below 1% of the
@@ -80,7 +81,7 @@ def biglasso(
     glmnet's pmin=1e-9 boundary with a positive weight floor; compatibility
     mode retains R's |eta| > 10 cutoff and 1e-4 weights.
 
-    `n_threads="auto"` (or None) uses one thread for memory-mapped X or fewer
+    `n_threads="auto"` (or None) uses one thread for Arrow Tables/RecordBatches, memory-mapped X or fewer
     than 10 million fitted-row/column entries, otherwise the available physical
     cores (performance cores on Apple silicon). A positive RAYON_NUM_THREADS
     caps auto mode; an explicit positive integer overrides the policy.
@@ -105,20 +106,25 @@ def biglasso(
     # the whole grid and that fit's nonzero coefficients on X's scale; a true
     # result ends the path there, as dfmax does, but without a warning
 
+    X = _as_arrow_matrix(X)
+    y = _response(y)
     if feature_names is None and hasattr(X, "columns"):
         feature_names = [str(c) for c in X.columns]
-    if not isinstance(X, np.ndarray):
+    mapped = isinstance(X, _ArrowMatrix)
+    if not mapped and not isinstance(X, np.ndarray):
         X = np.asarray(X)
     y = np.asarray(y)
 
     # first, a few checks on data shape and type
-    if X.ndim != 2 or not all(X.shape):
+    if (not mapped and X.ndim != 2) or not all(X.shape):
         raise ValueError("X must be a non-empty two-dimensional design matrix.")
-    if X.dtype.kind not in "biuf" or X.dtype == np.float16 or not X.dtype.isnative:
+    if not mapped and (
+        X.dtype.kind not in "biuf" or X.dtype == np.float16 or not X.dtype.isnative
+    ):
         raise ValueError(
             "X must have a native real numeric dtype (float32/64 or integer)."
         )
-    if X.dtype.kind == "f" and X.dtype.itemsize not in (4, 8):
+    if not mapped and X.dtype.kind == "f" and X.dtype.itemsize not in (4, 8):
         raise ValueError("Floating-point X must have dtype float32 or float64.")
     if y.ndim != 1 or y.dtype.kind not in "biuf":
         raise ValueError("y must be a one-dimensional numeric response.")
@@ -143,7 +149,7 @@ def biglasso(
     if family not in ("binomial", "gaussian"):
         raise NotImplementedError("Supported families are 'binomial' and 'gaussian'.")
     # not np.isfortran, which is False for one column: both C and F order
-    if not X.flags.f_contiguous:
+    if not mapped and not X.flags.f_contiguous:
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
             "this algorithm performs best on Fortran-ordered arrays.",
@@ -332,12 +338,12 @@ def fit_path_rust(
     """fit_path, run by the Rust backend in one call."""
     from . import _rust
 
-    if not X.flags.aligned:
+    if not isinstance(X, _ArrowMatrix) and not X.flags.aligned:
         # the kernels read X through typed pointers; numpy can build arrays
         # whose elements aren't aligned for their type (offset buffers)
         raise ValueError("X must be aligned to its dtype for the Rust solver.")
     path = _rust.fit_path(
-        X,
+        (X.shape[0], X._columns) if isinstance(X, _ArrowMatrix) else X,
         y,
         None if row_indices is None else row_indices.astype(np.int64),
         float(params.alpha),
