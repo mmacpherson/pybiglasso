@@ -12,6 +12,12 @@ test:
 test-latest:
 	UV_LOCKED=false uv run --upgrade pytest -n auto
 
+# Exercise declared floors on the oldest supported Python, without changing uv.lock.
+MINIMUM_PYTHON ?= 3.11
+.PHONY: test-minimum
+test-minimum:
+	UV_LOCKED=false uv run --isolated --no-project --python $(MINIMUM_PYTHON) --with packaging python scripts/test_minimum_versions.py
+
 .PHONY: lint
 lint:
 	uv run ruff check src tests

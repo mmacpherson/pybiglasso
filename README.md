@@ -86,13 +86,17 @@ wheel. Extras add optional integrations:
 
 | extra | adds |
 |---|---|
-| `pybiglasso[polars]` | `BiglassoPath.to_polars()` |
-| `pybiglasso[pandas]` | `BiglassoPath.to_pandas()` |
 | `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
 | `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs |
 | `pybiglasso[ingest]` | explicit file conversion with Arrow and openpyxl |
 | `pybiglasso[all]` | all of the above |
+
+For `BiglassoPath.to_pandas()` or `.to_polars()`, install the package directly
+with `pip install pandas` or `pip install polars`.
+
+CI tests the declared minimum versions too; [dependency notes](docs/dependency-versions.md)
+record the checks behind those bounds.
 
 ## Quick start
 
