@@ -24,6 +24,86 @@ async function pathDownload(page) {
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 
+// Record the actual canvas marker strokes, including the device-pixel transform.
+async function observeLambdaMarkers(page) {
+  await page.addInitScript(() => {
+    const proto = CanvasRenderingContext2D.prototype;
+    const moveTo = proto.moveTo, stroke = proto.stroke;
+    proto.moveTo = function (x, y) { this.__startX = x; return moveTo.call(this, x, y); };
+    proto.stroke = function (...args) {
+      const kind = this.strokeStyle === "#ba783b" && this.globalAlpha === 1 && this.getLineDash().length === 0 ? "best"
+        : this.strokeStyle === "#283f30" && this.getLineDash().join() === "3,4" ? "selected" : undefined;
+      if (kind && ["chart", "cv-chart"].includes(this.canvas.id)) {
+        const transform = this.getTransform(), bounds = this.canvas.getBoundingClientRect();
+        (window.__lambdaMarkers ??= {})[`${this.canvas.id}/${kind}`] = bounds.left
+          + (transform.a * this.__startX + transform.e) * bounds.width / this.canvas.width;
+      }
+      return stroke.apply(this, args);
+    };
+  });
+}
+
+async function lambdaAlignment(page) {
+  const slider = page.locator("#lambda");
+  const bounds = await slider.boundingBox();
+  const pixels = await slider.screenshot({ scale: "css" });
+  // Locate the thumb itself above the track, rather than assuming a browser's
+  // default inset or deriving the answer from the application's layout rules.
+  return page.evaluate(async ({ bounds, png }) => {
+    const blob = await (await fetch(`data:image/png;base64,${png}`)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas"); canvas.width = bitmap.width; canvas.height = bitmap.height;
+    const ctx = canvas.getContext("2d"); ctx.drawImage(bitmap, 0, 0);
+    const row = ctx.getImageData(0, 2, canvas.width, 1).data, green = [];
+    for (let x = 0; x < canvas.width; x++) {
+      const [r, g, b] = row.slice(4 * x, 4 * x + 3);
+      if (g > r * 1.2 && g > b * 1.1) green.push(x);
+    }
+    if (!green.length) throw new Error("Could not locate the range thumb above the track");
+    return { thumb: bounds.x + (green[0] + green.at(-1) + 1) / 2, markers: window.__lambdaMarkers };
+  }, { bounds, png: pixels.toString("base64") });
+}
+
+for (const width of [1446, 390]) {
+  test(`lambda thumb aligns with both plots at ${width}px and after resize`, async ({ page }, testInfo) => {
+    await observeLambdaMarkers(page);
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto("/");
+    await page.locator("#example").selectOption("colon");
+    await page.getByText("Cross-validate to choose λ").click();
+    await page.locator("#load-example").click();
+    await expect(page.locator("#cv-panel")).toBeVisible();
+    await expect(page.locator("#cancel")).toBeHidden();
+    await page.locator("#go-best").click();
+    const best = await page.locator("#lambda").inputValue();
+    for (const viewport of [width, width === 390 ? 1446 : 390]) {
+      await page.setViewportSize({ width: viewport, height: 1000 });
+      // Wait for the existing plot resize observer; don't move the slider or
+      // otherwise force a render that could conceal stale resize geometry.
+      await expect.poll(() => page.evaluate(() => ["chart", "cv-chart"].every((id) => {
+        const canvas = document.getElementById(id);
+        return canvas.width === Math.round(canvas.clientWidth * (window.devicePixelRatio || 1));
+      }))).toBe(true);
+      for (const index of [best, "0", await page.locator("#lambda").getAttribute("max")]) {
+        if (index !== best) await page.locator("#lambda").fill(index);
+        const measurement = { viewport, index, ...await lambdaAlignment(page) };
+        await testInfo.attach(`lambda-alignment-${viewport}-${index}`, { body: JSON.stringify(measurement, null, 2), contentType: "application/json" });
+        console.log(`lambda alignment ${testInfo.project.name}: ${JSON.stringify(measurement)}`);
+        const kind = index === best ? "best" : "selected";
+        for (const id of ["chart", "cv-chart"]) {
+          expect(Math.abs(measurement.thumb - measurement.markers[`${id}/${kind}`])).toBeLessThanOrEqual(2);
+        }
+        if (index !== best) {
+          const label = await page.locator(index === "0" ? "#lambda-max" : "#lambda-min").boundingBox();
+          const edge = index === "0" ? label.x : label.x + label.width;
+          expect(Math.abs(edge - measurement.markers["chart/selected"])).toBeLessThanOrEqual(2);
+        }
+      }
+      await page.locator("#lambda").fill(best);
+    }
+  });
+}
+
 test("colon fits locally, lambda changes the model, and enet refits", async ({ page }) => {
   const errors = []; page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");

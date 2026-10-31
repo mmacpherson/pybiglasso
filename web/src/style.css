@@ -79,6 +79,15 @@ progress { width: 100%; accent-color: var(--green); height: 5px; }
 #cv-chart { width: 100%; height: 190px; display: block; margin-top: 8px; }
 .chart-caption { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; }
 .lambda-controls { border-top: 1px solid var(--line); padding-top: 17px; margin-top: 19px; }
+.path-card { --plot-left: 47px; --plot-right: 14px; --lambda-thumb-size: 16px; }
+.lambda-axis { margin-inline: var(--plot-left) var(--plot-right); }
+/* The input extends half a thumb beyond each axis end, so its thumb centers
+   travel between the plot endpoints. Labels use the axis width itself. */
+#lambda { appearance: none; display: block; width: calc(100% + var(--lambda-thumb-size)); height: var(--lambda-thumb-size); margin: 7px calc(var(--lambda-thumb-size) / -2); padding: 0; border: 0; background: transparent; }
+#lambda::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--line); }
+#lambda::-moz-range-track { height: 4px; border-radius: 2px; background: var(--line); }
+#lambda::-webkit-slider-thumb { appearance: none; width: var(--lambda-thumb-size); height: var(--lambda-thumb-size); margin-top: calc(2px - var(--lambda-thumb-size) / 2); border: 0; border-radius: 50%; background: var(--green); }
+#lambda::-moz-range-thumb { width: var(--lambda-thumb-size); height: var(--lambda-thumb-size); border: 0; border-radius: 50%; background: var(--green); }
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 10px; background: #ecefe5; margin: 0 0 18px; }
 .metrics > div { padding: 16px 18px; border-right: 1px solid #d4dccd; }
 .metrics > div:last-child { border: 0; }

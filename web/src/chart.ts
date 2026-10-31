@@ -13,7 +13,10 @@ function frame(canvas: HTMLCanvasElement, path: ModelPath) {
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
   ctx.scale(ratio, ratio);
-  const left = 47, right = width - 14, top = 14, bottom = height - 28;
+  const style = getComputedStyle(canvas);
+  const left = parseFloat(style.getPropertyValue("--plot-left"));
+  const right = width - parseFloat(style.getPropertyValue("--plot-right"));
+  const top = 14, bottom = height - 28;
   const first = path.lambdas[0], last = path.lambdas.at(-1)!;
   const x = (k: number) => {
     const fraction = last > 0 && first > last
