@@ -53,6 +53,10 @@ slices or a bool bitmap. Choose the representation once per column; reuse the
 existing `Col` kernels and fixed logical row/chunk order, not Arrow's buffer
 boundaries. No new arithmetic, unsafe pointer access or numerical policy.
 
+Arrow designs always use checked indexing, including primitive blocks and
+packed-bit reads. `PYBIGLASSO_BOUNDSCHECK=False` does not disable these checks
+for Arrow inputs.
+
 It reuses the Python binding's row selection, including the mask-safety fallback
 to a gather. Both paths refer to the same mapped columns and never materialize
 X or a row-subset matrix. Keep the existing ndarray path and direct-call
@@ -68,8 +72,9 @@ Generic `np.asarray(X)` raises instead of silently materializing a matrix.
 
 1. Bit-identical complete paths against the same values in a Fortran .npy:
    every supported type, mixed columns, both families and penalties, supplied
-   and automatic grids, bounds on/off, mask/gather/repeated rows, chunk/tail
-   boundaries and multiple thread counts.
+   and automatic grids, mask/gather/repeated rows, chunk/tail boundaries and
+   multiple thread counts. The comparison runs under both bounds settings;
+   only the NumPy reference changes indexing mode, while Arrow stays checked.
 2. Bool offset/tail probes and malformed buffer/type/size/alignment checks.
 3. Null, compression and multiple-batch rejection, without a fallback copy.
 4. A native-memory cap starting before the target design is opened, with
