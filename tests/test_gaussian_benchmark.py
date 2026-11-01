@@ -204,3 +204,115 @@ def test_native_glmnet_mapping_matches_generic_optimality(
         distance = np.sqrt(Z.shape[1]) * sum(residuals) / curvature
         rounding = 64 * len(y) * np.finfo(float).eps * (1 + np.linalg.norm(y))
         assert np.linalg.norm(a - b) <= distance + rounding / curvature
+
+
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+@pytest.mark.parametrize("response_scale", [0.25, 3.0])
+def test_sklearn_gaussian_adapter_matches_orthogonal_solution(
+    benchmark, orthogonal, alpha, response_scale
+):
+    Xs, y = orthogonal
+    y = 3 + response_scale * (y - 3)
+    # Raw features are deliberately different: Python competitors must use Xs.
+    X = np.asfortranarray(7 + Xs * [2, 4])
+    lambdas = np.array([1.0, 0.5]) * response_scale
+    coef, intercept, seconds = benchmark.fit_sklearn_cd(
+        X, Xs, y, lambdas, alpha, 1, family="gaussian"
+    )
+    # For orthogonal unit-variance columns, soft threshold the raw score,
+    # then divide by the elastic-net curvature. Intercept is unpenalized.
+    expected = np.maximum(2 * response_scale - lambdas * alpha, 0) / (
+        1 + lambdas * (1 - alpha)
+    )
+    np.testing.assert_allclose(
+        coef[:, 0], expected, atol=32 * np.finfo(float).eps, rtol=0
+    )
+    np.testing.assert_array_equal(coef[:, 1], 0)
+    np.testing.assert_allclose(intercept, 3, atol=32 * np.finfo(float).eps, rtol=0)
+    assert benchmark.gaussian_kkt(Xs, y, lambdas, alpha, coef, intercept) < (
+        64 * np.finfo(float).eps * (1 + response_scale)
+    )
+    assert seconds > 0
+
+
+def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
+    benchmark, monkeypatch, tmp_path, orthogonal
+):
+    import sys
+
+    X, y = orthogonal
+    monkeypatch.setattr(benchmark, "make_data", lambda *a, **kw: (X, X, y))
+    monkeypatch.setattr(benchmark, "environment", lambda: {})
+    # OLS coordinate descent does not use Logit's SLSQP workspace.
+    monkeypatch.setattr(
+        benchmark,
+        "statsmodels_memory_gb",
+        lambda _: pytest.fail("Gaussian OLS must not use the SLSQP memory guard"),
+    )
+    calls = []
+
+    def run(cmd, env, cap):
+        solver = cmd[cmd.index("--solver") + 1]
+        lambdas = np.load(cmd[cmd.index("--lambdas") + 1])
+        # Independent orthogonal solution; no solver-generated expectations.
+        beta = np.maximum(2 - lambdas / 2, 0) / (1 + lambdas / 2)
+        np.savez(
+            cmd[-1],
+            coef=np.column_stack([beta, np.zeros_like(beta)]),
+            intercept=np.full(len(lambdas), 3.0),
+            seconds=2.1 if solver == "statsmodels" else 0.6,
+            versions="{}",
+            input_digest=benchmark.input_digest(X, y),
+        )
+        calls.append((solver, env, cap))
+        return True
+
+    monkeypatch.setattr(benchmark, "run_capped", run)
+    output = tmp_path / "results.jsonl"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "path.py",
+            "--family",
+            "gaussian",
+            "--dataset",
+            "smoke-500-100",
+            "--solver",
+            "pybiglasso",
+            "--solver",
+            "statsmodels",
+            "--solver",
+            "r-glmnet",
+            "--alpha",
+            "0.5",
+            "--threads",
+            "1",
+            "--threads",
+            "2",
+            "--out",
+            str(output),
+        ],
+    )
+    benchmark.main()
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    (stats,) = [r for r in records if r["solver"] == "statsmodels"]
+    assert stats["threads"] == 1
+    assert stats["times"] == [2.1]  # slow: one measurement, rather than three
+    assert stats["cap"] == stats["ratio_cap"] * 0.6 == 6
+    assert stats["ratio_cap"] == 10
+    for record in records:
+        assert record["fitted_lambdas"] == record["nlambda"] == 100
+        assert record["max_kkt_residual"] < 64 * np.finfo(float).eps
+        assert record["max_rel_objective_difference_vs_glmnet"] == 0
+    solver, env, cap = next(c for c in calls if c[0] == "statsmodels")
+    assert cap == 6
+    assert all(
+        env[k] == "1"
+        for k in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMBA_NUM_THREADS",
+        )
+    )

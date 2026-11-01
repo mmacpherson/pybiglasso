@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark full lasso / elastic-net logistic regression paths, in memory.
+"""Benchmark full lasso / elastic-net regression paths, in memory.
 
 Every solver fits the same problem, (1/n) * NLL + lambda * (alpha * |b|_1 +
 (1 - alpha) / 2 * |b|_2^2) on standardized features, along the same decreasing
@@ -11,13 +11,22 @@ its objective, over the path, against the best solution any solver found.
 Each (dataset, solver, threads) run happens in a fresh subprocess, with thread
 counts set before numpy loads and a hard time cap.
 
-    uv run --group bench benchmarks/path.py --threads 1 --threads 12
+    uv run -p 3.14 --group bench python benchmarks/path.py --threads 1 --threads 12
 
-With --family gaussian, compare Rust, R biglasso SSR and glmnet's native
-Gaussian path on RSS/(2n) plus the same standardized penalty. The input
-grid is computed analytically; KKT residuals and objective differences versus
-glmnet accompany the timings. An analytic alpha/lambda map compensates for
-glmnet's internal response scaling; returned coefficients are already unscaled.
+With --family gaussian, compare Rust, R biglasso SSR, glmnet's native path,
+scikit-learn coordinate descent, skglm, glum and statsmodels on RSS/(2n)
+plus the same standardized penalty. Python competitors receive pre-standardized
+Xs; pybiglasso and the R solvers standardize raw X themselves. The 100-lambda
+grid is computed analytically; maximum KKT residuals and relative objective
+differences versus glmnet accompany every completed path. An analytic
+alpha/lambda map compensates for glmnet's internal response scaling.
+
+    uv run -p 3.14 --group bench python benchmarks/path.py --family gaussian
+
+The Gaussian runner defaults to all seven solvers. Python competitors use a
+10x relative cap (at least five seconds), with one measurement when a run is
+slow. Override with --solver, --ratio-cap or --cap. Python 3.14 has wheels for
+the bench group.
 """
 
 import argparse
@@ -63,8 +72,23 @@ ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
 R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
 # these don't use more than one thread; running them at more is redundant
-SINGLE_THREADED = {"skglm", "sklearn-liblinear", "sklearn-saga", "r-glmnet"}
-GAUSSIAN_SOLVERS = ["pybiglasso", "r-biglasso-ssr", "r-glmnet"]
+SINGLE_THREADED = {
+    "skglm",
+    "sklearn-cd",
+    "sklearn-liblinear",
+    "sklearn-saga",
+    "r-glmnet",
+}
+GAUSSIAN_SINGLE_THREADED = SINGLE_THREADED | {"statsmodels"}
+GAUSSIAN_SOLVERS = [
+    "pybiglasso",
+    "r-biglasso-ssr",
+    "r-glmnet",
+    "glum",
+    "skglm",
+    "sklearn-cd",
+    "statsmodels",
+]
 # statsmodels' L1 fit needs memory quadratic in the column count
 STATSMODELS_MAX_GB = 8
 
@@ -156,40 +180,74 @@ def fit_pybiglasso(
     return out
 
 
-def fit_glum(X, Xs, y, lambdas, alpha, threads):
+def fit_glum(X, Xs, y, lambdas, alpha, threads, family="binomial"):
     from glum import GeneralizedLinearRegressor
 
+    # glum minimizes deviance/(2n) + lambda * the elastic-net penalty.
+    # Normal deviance is RSS, so alpha=lambda and l1_ratio=alpha need no
+    # response rescaling (glum's GeneralizedLinearRegressor objective).
     m = GeneralizedLinearRegressor(
-        family="binomial",
+        family="normal" if family == "gaussian" else family,
         alpha_search=True,
-        alphas=lambdas,
+        # A list also works around glum 3.4.1's scalar alpha==0 check
+        # during auto solver selection (an ndarray raises there).
+        alpha=list(lambdas),
         l1_ratio=alpha,
         scale_predictors=False,
-    ).fit(Xs, y)
+    )
+    started = time.perf_counter()
+    m.fit(Xs, y)
+    seconds = time.perf_counter() - started
+    if family == "gaussian":
+        return m.coef_path_, m.intercept_path_, seconds
     return m.coef_path_, m.intercept_path_
 
 
-def _warm_loop(model, Xs, y, lambdas, set_lambda):
+def _warm_loop(model, Xs, y, lambdas, set_lambda, *, timed=False):
     import numpy as np
 
-    coefs, intercepts = [], []
+    coefs, intercepts, seconds = [], [], 0.0
     for lam in lambdas:
         set_lambda(model, lam)
+        started = time.perf_counter()
         model.fit(Xs, y)
+        seconds += time.perf_counter() - started
         coefs.append(np.ravel(model.coef_).copy())
         intercepts.append(float(np.ravel(model.intercept_)[0]))
-    return np.array(coefs), np.array(intercepts)
+    out = np.array(coefs), np.array(intercepts)
+    return (*out, seconds) if timed else out
 
 
-def fit_skglm(X, Xs, y, lambdas, alpha, threads):
-    from skglm import SparseLogisticRegression
+def fit_skglm(X, Xs, y, lambdas, alpha, threads, family="binomial"):
+    from skglm import ElasticNet, Lasso, SparseLogisticRegression
 
     # its penalty, alpha * (l1_ratio * |b|_1 + (1 - l1_ratio) / 2 * |b|_2^2),
     # is R's with lambda and alpha renamed
-    m = SparseLogisticRegression(
-        alpha=lambdas[0], l1_ratio=alpha, fit_intercept=True, warm_start=True
+    # skglm's Gaussian loss is RSS/(2n), with the same penalty scaling.
+    cls = SparseLogisticRegression if family == "binomial" else ElasticNet
+    options = dict(l1_ratio=alpha)
+    if family == "gaussian" and alpha == 1:
+        cls, options = Lasso, {}
+    m = cls(alpha=lambdas[0], fit_intercept=True, warm_start=True, **options)
+    return _warm_loop(
+        m,
+        Xs,
+        y,
+        lambdas,
+        lambda m, lam: m.set_params(alpha=lam),
+        timed=family == "gaussian",
     )
-    return _warm_loop(m, Xs, y, lambdas, lambda m, lam: m.set_params(alpha=lam))
+
+
+def fit_sklearn_cd(X, Xs, y, lambdas, alpha, threads, family="gaussian"):
+    from sklearn.linear_model import ElasticNet
+
+    # RSS/(2n) + a*(l1_ratio*|b|_1 + (1-l1_ratio)*|b|_2^2/2):
+    # a=lambda and l1_ratio=alpha, including the lasso at alpha=1.
+    m = ElasticNet(l1_ratio=alpha, warm_start=True)
+    return _warm_loop(
+        m, Xs, y, lambdas, lambda m, lam: m.set_params(alpha=lam), timed=True
+    )
 
 
 def _fit_sklearn(solver, Xs, y, lambdas, alpha):
@@ -214,25 +272,35 @@ def fit_sklearn_saga(X, Xs, y, lambdas, alpha, threads):
     return _fit_sklearn("saga", Xs, y, lambdas, alpha)
 
 
-def fit_statsmodels(X, Xs, y, lambdas, alpha, threads):
+def fit_statsmodels(X, Xs, y, lambdas, alpha, threads, family="binomial"):
     import numpy as np
     import statsmodels.api as sm
 
     n, p = Xs.shape
-    model = sm.Logit(y, np.column_stack([np.ones(n), Xs]))
-    coefs, intercepts, start = [], [], None
+    design = np.column_stack([np.ones(n), Xs])
+    model = sm.OLS(y, design) if family == "gaussian" else sm.Logit(y, design)
+    coefs, intercepts, start, seconds = [], [], None, 0.0
     for lam in lambdas:
         # statsmodels penalizes the summed log-likelihood, per coefficient;
         # n * lambda matches the mean-scaled objective. Intercept unpenalized.
-        weights = np.full(p + 1, n * lam)
+        # OLS.fit_regularized instead uses RSS/(2n) + alpha * penalty:
+        # weights=lambda, L1_wt=alpha (profile_scale=False, its default).
+        # See statsmodels' OLS.fit_regularized objective; unlike Logit, no n.
+        weights = np.full(p + 1, lam if family == "gaussian" else n * lam)
         weights[0] = 0.0
-        res = model.fit_regularized(
-            method="l1", alpha=weights, start_params=start, disp=False
+        options = (
+            dict(method="elastic_net", L1_wt=alpha)
+            if family == "gaussian"
+            else dict(method="l1", disp=False)
         )
+        started = time.perf_counter()
+        res = model.fit_regularized(alpha=weights, start_params=start, **options)
+        seconds += time.perf_counter() - started
         start = res.params
         coefs.append(res.params[1:].copy())
         intercepts.append(float(res.params[0]))
-    return np.array(coefs), np.array(intercepts)
+    out = np.array(coefs), np.array(intercepts)
+    return (*out, seconds) if family == "gaussian" else out
 
 
 def statsmodels_memory_gb(ncol):
@@ -400,6 +468,7 @@ FITTERS = {
     "skglm": fit_skglm,
     "sklearn-liblinear": fit_sklearn_liblinear,
     "sklearn-saga": fit_sklearn_saga,
+    "sklearn-cd": fit_sklearn_cd,
     "statsmodels": fit_statsmodels,
 }
 
@@ -545,7 +614,11 @@ def environment():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dataset", action="append", choices=list(DATASETS))
-    ap.add_argument("--solver", action="append", choices=SOLVERS)
+    ap.add_argument(
+        "--solver",
+        action="append",
+        choices=list(dict.fromkeys(SOLVERS + GAUSSIAN_SOLVERS)),
+    )
     ap.add_argument("--family", choices=["binomial", "gaussian"], default="binomial")
     ap.add_argument("--alpha", type=float, action="append", help="L1/L2 mix (R's)")
     ap.add_argument("--threads", type=int, action="append")
@@ -554,7 +627,7 @@ def main():
     ap.add_argument(
         "--ratio-cap",
         type=float,
-        default=100,
+        default=10,
         help="also cap each run at this multiple of pybiglasso's single-threaded "
         "time on the same problem; a timeout then means 'over this many times "
         "slower'",
@@ -576,8 +649,12 @@ def main():
     solvers = args.solver or (
         GAUSSIAN_SOLVERS if args.family == "gaussian" else SOLVERS
     )
-    if args.family == "gaussian" and any(s not in GAUSSIAN_SOLVERS for s in solvers):
-        ap.error("Gaussian benchmarks support pybiglasso, r-biglasso-ssr and r-glmnet.")
+    supported = GAUSSIAN_SOLVERS if args.family == "gaussian" else SOLVERS
+    if any(s not in supported for s in solvers):
+        ap.error(f"{args.family} benchmarks support {', '.join(supported)}.")
+    single_threaded = (
+        GAUSSIAN_SINGLE_THREADED if args.family == "gaussian" else SINGLE_THREADED
+    )
     alphas = args.alpha or [1.0]
     threads = args.threads or [1]
     filename = "path-gaussian.jsonl" if args.family == "gaussian" else "path.jsonl"
@@ -595,12 +672,15 @@ def main():
             with tempfile.TemporaryDirectory() as tmp:
                 np.save(f"{tmp}/lambdas.npy", lambdas)
                 for solver in solvers:
-                    if alpha < 1 and solver in LASSO_ONLY:
+                    if args.family == "binomial" and alpha < 1 and solver in LASSO_ONLY:
                         continue
                     if alpha == 1 and solver in ENET_ONLY:
                         continue
                     if (
                         solver == "statsmodels"
+                        # Only Logit's SLSQP needs quadratic workspace;
+                        # Gaussian OLS uses coordinate descent.
+                        and args.family == "binomial"
                         and statsmodels_memory_gb(X.shape[1]) > STATSMODELS_MAX_GB
                     ):
                         print(
@@ -610,7 +690,7 @@ def main():
                         )
                         continue
                     for t in threads:
-                        if solver in SINGLE_THREADED and t != min(threads):
+                        if solver in single_threaded and t != min(threads):
                             continue
                         times, result, versions = [], None, {}
                         for rep in range(args.repeats):
