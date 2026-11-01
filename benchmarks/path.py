@@ -847,8 +847,8 @@ def main():
                                 "--lambdas", f"{tmp}/lambdas.npy",
                                 res,
                             ]  # fmt: skip
-                            # R's clock covers container start and data
-                            # loading, which its reported time excludes
+                            # R retains its absolute budget, now applied to
+                            # native fit intervals by the timing markers.
                             cap = args.cap if solver in R_SOLVERS else run_cap
                             if not run_capped(cmd, env, cap):
                                 times.append(float("inf"))
