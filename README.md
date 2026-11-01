@@ -160,8 +160,9 @@ The estimators use scikit-learn's parameter names, which differ from R's:
 
 ### What X can be
 
-X is one of these. The first two are memory-mapped from a file: their data
-stays on disk and is read a column at a time, so it can be larger than memory.
+The design matrix X can be any of the types below. The first two are
+memory-mapped from a file: their data stays on disk and is read a column at a
+time, so it can be larger than memory.
 
 | X | Made with | Its data during the fit |
 |---|---|---|

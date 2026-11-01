@@ -1,8 +1,8 @@
 # Getting your data in
 
-X is one of four things. The first two are memory-mapped from a file: their
-data stays on disk and is read a column at a time, so it can be larger than
-memory.
+The design matrix X can be any of the types below. The first two are
+memory-mapped from a file: their data stays on disk and is read a column at a
+time, so it can be larger than memory.
 
 | X | Made with | Its data during the fit |
 |---|---|---|
