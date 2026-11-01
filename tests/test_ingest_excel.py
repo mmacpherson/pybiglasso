@@ -123,9 +123,7 @@ def test_renamed_shared_strings_part(
             features=["x"],
             excel_shared_strings_limit=len(files["xl/strings.xml"]),
         )
-        np.testing.assert_array_equal(
-            result.design.column(0).to_numpy(), np.arange(4096)
-        )
+        np.testing.assert_array_equal(result.X.column(0).to_numpy(), np.arange(4096))
 
 
 @pytest.mark.parametrize("explicit_ceiling", [False, True])
@@ -161,7 +159,7 @@ def test_under_ceiling_ingests_with_workbook_memory_exception(
     # This is an intentional format exception, not a block-bounded claim.
     assert loads == [4096, 4096, 4096]
     np.testing.assert_array_equal(
-        result.design.column(0).to_numpy(), [row[0] for row in rows[1:]]
+        result.X.column(0).to_numpy(), [row[0] for row in rows[1:]]
     )
 
 

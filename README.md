@@ -56,8 +56,8 @@ wheel. Extras add optional integrations:
 |---|---|
 | `pybiglasso[sklearn]` | `BiglassoRegressor`, `BiglassoRegressorCV`, `BiglassoClassifier`, `BiglassoClassifierCV` |
 | `pybiglasso[viz]` | `plot_coefficients()`, `plot_deviance()` (seaborn.objects) |
-| `pybiglasso[arrow]` | PyArrow Table/RecordBatch inputs |
-| `pybiglasso[ingest]` | explicit file conversion with Arrow and openpyxl |
+| `pybiglasso[arrow]` | Feather files and other PyArrow Tables as X |
+| `pybiglasso[ingest]` | converting CSV, Parquet, Feather and Excel files with `ingest` |
 | `pybiglasso[all]` | all of the above |
 
 For `BiglassoPath.to_pandas()` or `.to_polars()`, install the package directly
@@ -102,32 +102,10 @@ for start, block in read_blocks():
 X.flush()
 ```
 
-X can be float64, float32, any integer type, or bool (a byte per value, read as
-0 or 1). Use the narrowest type that holds your values exactly: the fit is
-mostly reading X, so a narrower type is faster as well as smaller (see
+The values can be float64, float32, any integer type, or bool (a byte per
+value, read as 0 or 1). Use the narrowest type that holds them exactly: the fit
+is mostly reading X, so a narrower type is faster as well as smaller (see
 [storage](#threads-cross-validation-and-storage)).
-
-A pandas DataFrame works too, in memory, with feature names from its columns.
-For a file larger than memory with columns of different types, open an
-uncompressed Arrow (Feather) file memory-mapped and pass the Table:
-
-```python
-import pyarrow.feather as pf
-import pybiglasso as bl
-
-table = pf.read_table("data.arrow", memory_map=True)
-path = bl.biglasso(table.drop_columns(["y", "id"]), table["y"])
-```
-
-Bool columns stay at one bit per value. A compressed file is decompressed into
-memory when it's opened: [rewrite it uncompressed](docs/arrow.md#rewrite-an-arrow-file-uncompressed)
-once, or convert it with [ingest](docs/ingest.md), which also reads CSV,
-Parquet and Excel. [Arrow inputs](docs/arrow.md) has the details, including why
-to choose columns after opening rather than with `read_table(columns=...)`.
-
-[Getting your data in](docs/data.md) has tested recipes for the other places
-data lives: `.npz`, CSV, Parquet, a DuckDB query, SQLite, PostgreSQL, and
-genotypes in PLINK or VCF files.
 
 Unpenalized covariates (say age, sex, and principal components) take a penalty
 factor of 0:
@@ -179,6 +157,22 @@ The estimators use scikit-learn's parameter names, which differ from R's:
 |---|---|---|
 | `alpha` | `lambda` | penalty strength |
 | `l1_ratio` | `alpha` | L1/L2 mix; 1 is the lasso |
+
+### What X can be
+
+The design matrix X can be any of the types below. The first two are
+memory-mapped from a file: their data stays on disk and is read a column at a
+time, so it can be larger than memory.
+
+| X | Made with | Its data during the fit |
+|---|---|---|
+| NumPy memmap of a `.npy` file | `np.load(path, mmap_mode="r")` | on disk; one type for the whole matrix |
+| PyArrow Table mapped from a Feather file | `pyarrow.feather.read_table(path, memory_map=True)` | on disk if the file is uncompressed; a type per column, bools at one bit |
+| NumPy array | — | in memory |
+| pandas or Polars DataFrame | — | copied into one NumPy array, in memory; feature names come from its columns |
+
+[Getting your data in](docs/data.md) has tested recipes for getting from CSV,
+Parquet, Excel, databases, or PLINK and VCF genotypes to one of these.
 
 ## Why this exists
 
@@ -496,9 +490,8 @@ steps. Cross-validation folds are row indices into the same matrix on disk.
   1.3–1.6x faster in memory; `float32` halves the memory and is about as fast.
   Each value is read as a float64, so values that a narrower dtype holds
   exactly give bit-identical results.
-  Arrow files keep bool columns at one bit per value. They can stay on disk
-  during the fit if the file is uncompressed. See [Arrow files](#arrow-files)
-  for opening a file and choosing feature columns.
+  Feather files keep bool columns at one bit per value, and each column can
+  have its own type (see [What X can be](#what-x-can-be)).
 - **Bounds checking is on by default.** Every index into an array is checked,
   which guards against a bug in pybiglasso reading past the end of X (inputs,
   `row_indices` among them, are validated before a fit either way).

@@ -1,11 +1,30 @@
 # Getting your data in
 
-pybiglasso fits a NumPy array, a memory-mapped `.npy`, or a pyarrow Table. Each
-recipe below starts from somewhere data really lives and ends with a fit, using
-the tools you'd use anyway. Every snippet on this page is run verbatim by the
-test suite: `make test-recipes` runs most of them, `make test-recipes-postgres`
-the PostgreSQL one (CI runs both), and `make test-recipes-tools` the PLINK 2
-one, on a machine that has `plink2`.
+The design matrix X can be any of the types below. The first two are
+memory-mapped from a file: their data stays on disk and is read a column at a
+time, so it can be larger than memory.
+
+| X | Made with | Its data during the fit |
+|---|---|---|
+| NumPy memmap of a `.npy` file | `np.load(path, mmap_mode="r")` | on disk; one type for the whole matrix |
+| PyArrow Table mapped from a Feather file | `pyarrow.feather.read_table(path, memory_map=True)` | on disk if the file is uncompressed; a type per column, bools at one bit |
+| NumPy array | — | in memory |
+| pandas or Polars DataFrame | — | copied into one NumPy array, in memory; feature names come from its columns |
+
+y is a separate one-dimensional array with one value per row, or a column of
+the same DataFrame or Table.
+
+The rest of this page gets data from where it usually lives into one of those,
+and ends each recipe with a fit:
+
+- **Ready to fit:** [NumPy arrays](#numpy-arrays),
+  [pandas or Polars](#pandas-or-polars-dataframes), [a `.npy` file](#a-npy-file),
+  [a Feather file](#a-feather-file)
+- **Files to convert:** [a `.npz` archive](#a-npz-archive),
+  [CSV, Parquet, compressed Feather or Excel](#csv-parquet-compressed-feather-or-excel)
+- **Databases:** [transforming with DuckDB](#transforming-with-duckdb),
+  [SQLite](#sqlite), [PostgreSQL](#postgresql)
+- **Genotypes:** [PLINK `.bed`](#plink-bed), [VCF or BCF](#vcf-or-bcf)
 
 A few things hold for every route:
 
@@ -19,7 +38,14 @@ A few things hold for every route:
 - **Use the narrowest type that holds your values**: bool or int8 rather than
   float64 means less to read from disk on every pass.
 
-## NumPy arrays in memory
+Every snippet on this page is run verbatim by the test suite:
+`make test-recipes` runs most of them, `make test-recipes-postgres` the
+PostgreSQL one (CI runs both), and `make test-recipes-tools` the PLINK 2 one,
+on a machine that has `plink2`.
+
+## Ready to fit
+
+### NumPy arrays
 
 <!-- recipe: numpy -->
 ```python
@@ -31,7 +57,30 @@ y = np.load("y.npy")
 fit = bl.biglasso(X, y)
 ```
 
-## A `.npy` file larger than memory
+### pandas or Polars DataFrames
+
+The DataFrame is copied into a NumPy array, so it and the copy must both fit
+in memory:
+
+<!-- recipe: pandas -->
+```python
+import pandas as pd
+import pybiglasso as bl
+
+frame = pd.read_csv("data.csv")
+fit = bl.biglasso(frame.drop(columns=["id", "y"]), frame["y"])
+```
+
+<!-- recipe: polars -->
+```python
+import polars as pl
+import pybiglasso as bl
+
+frame = pl.read_csv("data.csv")
+fit = bl.biglasso(frame.drop("id", "y"), frame["y"])
+```
+
+### A `.npy` file
 
 Open it memory-mapped, so columns are read from disk as the fit needs them.
 The solver reads a column at a time, so store X in Fortran (column-major)
@@ -56,7 +105,25 @@ y = np.load("y.npy")
 fit = bl.biglasso(X, y)
 ```
 
-## A `.npz` archive
+### A Feather file
+
+Open it memory-mapped and keep the feature columns. It stays on disk only if
+it's uncompressed; a compressed file is decompressed into memory when it's
+opened. [Feather files and Arrow Tables](arrow.md) shows how to rewrite one uncompressed, or
+convert it with `ingest` as [below](#csv-parquet-compressed-feather-or-excel).
+
+<!-- recipe: feather -->
+```python
+import pyarrow.feather as pf
+import pybiglasso as bl
+
+table = pf.read_table("data.feather", memory_map=True)
+fit = bl.biglasso(table.drop_columns(["id", "y"]), table["y"])
+```
+
+## Files to convert
+
+### A `.npz` archive
 
 `np.load` loads `.npz` members into memory and ignores `mmap_mode`. Extract X
 to its own `.npy` first; `zipfile` streams it to disk, decompressing as it
@@ -76,55 +143,34 @@ X = np.load("X.npy", mmap_mode="r")
 fit = bl.biglasso(X, y)
 ```
 
-If X was saved in C order, convert it as in the `.npy` recipe.
+If X was saved in C order, convert it as in the [`.npy` recipe](#a-npy-file).
 
-## A pandas DataFrame
-
-pandas keeps the data in memory, which is fine when it fits. Feature names come
-from the columns:
-
-<!-- recipe: pandas -->
-```python
-import pandas as pd
-import pybiglasso as bl
-
-frame = pd.read_csv("data.csv")
-fit = bl.biglasso(frame.drop(columns=["id", "y"]), frame["y"])
-```
-
-## An Arrow (Feather) file
-
-Open it memory-mapped and keep the feature columns. This stays on disk only if
-the file is uncompressed; see [Arrow inputs](arrow.md) for compressed files.
-
-<!-- recipe: arrow -->
-```python
-import pyarrow.feather as pf
-import pybiglasso as bl
-
-table = pf.read_table("data.arrow", memory_map=True)
-fit = bl.biglasso(table.drop_columns(["id", "y"]), table["y"])
-```
-
-## CSV, Parquet, compressed Feather or Excel
+### CSV, Parquet, compressed Feather or Excel
 
 Convert once with `ingest`. It reads the file in blocks, picks the narrowest
-exact type for each column, and writes an uncompressed Arrow file you can reuse
-(see [ingest](ingest.md)). Two formats can hold more than a block in memory: a
-compressed Feather file is decompressed a whole record batch at a time (one
-batch can be the whole file), and an Excel workbook's shared-strings table is
-read whole.
+exact type for each column, and writes the features to an uncompressed Feather
+file, wherever you name it. It returns X, memory-mapped from that file, and the
+response you name as y. Next time, open the file you kept as
+[above](#a-feather-file) instead of converting again. See [ingest](ingest.md)
+for choosing columns and types.
 
 <!-- recipe: ingest-csv -->
 ```python
 import pybiglasso as bl
 from pybiglasso.ingest import ingest
 
-data = ingest("data.csv", "design.arrow", response="y", exclude=["id"])
-fit = bl.biglasso(data.design, data.response)
+data = ingest("data.csv", "data.feather", response="y", exclude=["id"])
+fit = bl.biglasso(data.X, data.y)
 ```
 
-## Data that needs transforming first
+Two formats can hold more than a block in memory while converting: a
+compressed Feather file is decompressed a whole record batch at a time (one
+batch can be the whole file), and an Excel workbook's shared-strings table is
+read whole.
+
+## Databases
+
+### Transforming with DuckDB
 
 Filter, join, derive and encode with a query engine, write the result, then
 ingest it. With DuckDB, reading and writing Parquet stream, but some steps
@@ -147,14 +193,14 @@ duckdb.sql("""
         ORDER BY id
     ) TO 'model.parquet' (FORMAT parquet)
 """)
-data = ingest("model.parquet", "design.arrow", response="y")
-fit = bl.biglasso(data.design, data.response)
+data = ingest("model.parquet", "data.feather", response="y")
+fit = bl.biglasso(data.X, data.y)
 ```
 
 The same query reads a directory of Parquet files with
 `FROM read_parquet('raw/**/*.parquet')`.
 
-## A SQLite database
+### SQLite
 
 Stream the query to CSV with the standard library, then ingest it:
 
@@ -171,11 +217,11 @@ with sqlite3.connect("study.db") as db, open("data.csv", "w", newline="") as out
     writer = csv.writer(out)
     writer.writerow(column[0] for column in rows.description)
     writer.writerows(rows)
-data = ingest("data.csv", "design.arrow", response="y", exclude=["id"])
-fit = bl.biglasso(data.design, data.response)
+data = ingest("data.csv", "data.feather", response="y", exclude=["id"])
+fit = bl.biglasso(data.X, data.y)
 ```
 
-## A PostgreSQL database
+### PostgreSQL
 
 Have the server write the query result as CSV, streamed to a local file with
 [psycopg](https://www.psycopg.org/), then ingest it:
@@ -193,14 +239,16 @@ with psycopg.connect(os.environ["DATABASE_URL"]) as db, open("data.csv", "wb") a
     with db.cursor().copy(f"COPY ({query}) TO STDOUT WITH (FORMAT csv, HEADER)") as copy:
         for block in copy:
             out.write(block)
-data = ingest("data.csv", "design.arrow", response="y", exclude=["id"])
-fit = bl.biglasso(data.design, data.response)
+data = ingest("data.csv", "data.feather", response="y", exclude=["id"])
+fit = bl.biglasso(data.X, data.y)
 ```
 
 asyncpg works the same way, with `copy_from_query`. DuckDB can also read
 PostgreSQL directly through its `postgres` extension.
 
-## Genotypes in PLINK `.bed`
+## Genotypes
+
+### PLINK `.bed`
 
 Read blocks of variants with [bed-reader](https://pypi.org/project/bed-reader/)
 into an int8 `.npy`, one byte per genotype. bed-reader marks a missing call
@@ -230,10 +278,10 @@ fit = bl.biglasso(X, y)
 
 Dosages (0, 1, 2) are integers, not bools: keep them in int8.
 
-## Genotypes in VCF or BCF
+### VCF or BCF
 
 Convert to `.bed` with [PLINK 2](https://www.cog-genomics.org/plink/2.0/),
-then follow the `.bed` recipe above:
+then follow the [`.bed` recipe](#plink-bed):
 
 <!-- recipe: vcf-plink2 -->
 ```sh
