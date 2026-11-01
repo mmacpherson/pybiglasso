@@ -1,13 +1,15 @@
 """Run each recipe in docs/data.md verbatim, and check its fit.
 
 Every snippet runs in a fresh process, in a directory holding the input files
-it expects, and must leave a `fit`. That fit must be bit-identical to fitting
-the same values from NumPy directly: an invariance across storage and loading
+it expects, and must leave a `fit`. Every array in that fit must be byte for
+byte the one from fitting the same values from NumPy directly, and its feature
+names the columns the recipe kept: an invariance across storage and loading
 routes, not an expected value.
 
 Values are multiples of 1/8, so every CSV writer and parser round-trips them.
 """
 
+import ast
 import csv
 import json
 import os
@@ -73,9 +75,15 @@ def run_recipe(name, workdir):
     """Run the snippet as written, then save what its `fit` holds."""
     dump = """
 import numpy as _np
-_np.savez("fit.npz", lambdas=fit.lambdas, intercept=fit.intercept,
-          coef=fit.coef.toarray(), iterations=fit.iterations)
-"""
+_np.savez(
+    "fit.npz",
+    **{f: getattr(fit, f) for f in _FIELDS},
+    **{"coef_" + f: getattr(fit.coef, f) for f in ("data", "indices", "indptr")},
+    feature_names=_np.asarray(
+        [] if fit.feature_names is None else list(fit.feature_names), dtype=str
+    ),
+)
+""".replace("_FIELDS", repr(FIELDS))
     subprocess.run(
         [sys.executable, "-c", recipe(name) + dump],
         cwd=workdir,
@@ -86,12 +94,23 @@ _np.savez("fit.npz", lambdas=fit.lambdas, intercept=fit.intercept,
     return np.load(workdir / "fit.npz")
 
 
-def assert_same_fit(result, X, y):
+FIELDS = (
+    "lambdas", "intercept", "iterations", "n_rejected", "center", "scale", "deviance",
+)  # fmt: skip
+
+
+def assert_same_fit(result, X, y, names=None):
+    """Byte-for-byte (so -0.0 differs from 0.0) against the NumPy fit."""
     reference = bl.biglasso(np.asfortranarray(X), y)
-    assert np.array_equal(result["lambdas"], reference.lambdas)
-    assert np.array_equal(result["intercept"], reference.intercept)
-    assert np.array_equal(result["coef"], reference.coef.toarray())
-    assert np.array_equal(result["iterations"], reference.iterations)
+    for field in FIELDS:
+        expected = getattr(reference, field)
+        assert result[field].dtype == expected.dtype, field
+        assert result[field].tobytes() == expected.tobytes(), field
+    for field in ("data", "indices", "indptr"):
+        expected = getattr(reference.coef, field)
+        assert result["coef_" + field].tobytes() == expected.tobytes(), field
+    if names is not None:
+        assert result["feature_names"].tolist() == names
 
 
 def test_numpy(tmp_path):
@@ -118,7 +137,7 @@ def test_npz(tmp_path):
 def test_pandas(tmp_path):
     X, y = design()
     write_csv(tmp_path / "data.csv", table_columns(X, y))
-    assert_same_fit(run_recipe("pandas", tmp_path), X, y)
+    assert_same_fit(run_recipe("pandas", tmp_path), X, y, names())
 
 
 def test_arrow_file(tmp_path):
@@ -131,13 +150,13 @@ def test_arrow_file(tmp_path):
         tmp_path / "data.arrow",
         compression="uncompressed",
     )
-    assert_same_fit(run_recipe("arrow", tmp_path), X, y)
+    assert_same_fit(run_recipe("arrow", tmp_path), X, y, names())
 
 
 def test_ingest_csv(tmp_path):
     X, y = design()
     write_csv(tmp_path / "data.csv", table_columns(X, y))
-    assert_same_fit(run_recipe("ingest-csv", tmp_path), X, y)
+    assert_same_fit(run_recipe("ingest-csv", tmp_path), X, y, names())
 
 
 def test_duckdb_transform(tmp_path):
@@ -157,7 +176,12 @@ def test_duckdb_transform(tmp_path):
     # the same transform, by hand: keep rows in id order, x columns, then
     # one-hot site with 'a' as the baseline
     expected = np.column_stack([X, site == "b", site == "c"])[keep].astype(np.float64)
-    assert_same_fit(run_recipe("duckdb-transform", tmp_path), expected, y[keep])
+    assert_same_fit(
+        run_recipe("duckdb-transform", tmp_path),
+        expected,
+        y[keep],
+        names() + ["site_b", "site_c"],
+    )
 
 
 def test_sqlite(tmp_path):
@@ -173,7 +197,7 @@ def test_sqlite(tmp_path):
             f"INSERT INTO observations VALUES ({', '.join('?' * len(columns))})",
             rows[::-1],
         )
-    assert_same_fit(run_recipe("sqlite", tmp_path), X, y)
+    assert_same_fit(run_recipe("sqlite", tmp_path), X, y, names())
 
 
 def test_plink_bed(tmp_path):
@@ -223,7 +247,7 @@ def test_postgres(tmp_path):
                 f"INSERT INTO observations VALUES ({', '.join(['%s'] * len(columns))})",
                 rows[::-1],
             )
-    assert_same_fit(run_recipe("postgres", tmp_path), X, y)
+    assert_same_fit(run_recipe("postgres", tmp_path), X, y, names())
 
 
 def write_vcf(path, G):
@@ -252,9 +276,17 @@ def test_vcf_through_plink2(tmp_path):
 
 
 def test_every_recipe_is_tested():
-    tested = {
-        "numpy", "npy", "npz", "pandas", "arrow", "ingest-csv",
-        "duckdb-transform", "sqlite", "postgres", "plink-bed", "vcf-plink2",
-    }  # fmt: skip
+    """Each recipe in the docs is run by some test here, and nothing else is."""
+    tree = ast.parse(Path(__file__).read_text())
+    run = {
+        call.args[0].value
+        for function in tree.body
+        if isinstance(function, ast.FunctionDef) and function.name.startswith("test_")
+        for call in ast.walk(function)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, "id", None) in ("run_recipe", "recipe")
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+    }
     documented = set(re.findall(r"<!-- recipe: ([\w-]+) -->", DOCS.read_text()))
-    assert documented == tested, json.dumps(sorted(documented ^ tested))
+    assert documented == run, json.dumps(sorted(documented ^ run))

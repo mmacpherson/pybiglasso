@@ -62,7 +62,10 @@ test-recipes-postgres:
 		tries=0; \
 		until $(CONTAINER) exec $$name pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; do \
 			tries=$$((tries + 1)); \
-			if [ $$tries -ge 60 ]; then echo "PostgreSQL not ready after 60 s" >&2; exit 1; fi; \
+			if [ $$tries -ge 60 ]; then \
+				echo "PostgreSQL not ready after 60 s; its log:" >&2; \
+				$(CONTAINER) logs $$name >&2; exit 1; \
+			fi; \
 			sleep 1; \
 		done; \
 		port=$$($(CONTAINER) port $$name 5432/tcp | head -1 | sed 's/.*://'); \

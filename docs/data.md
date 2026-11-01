@@ -3,7 +3,9 @@
 pybiglasso fits a NumPy array, a memory-mapped `.npy`, or a pyarrow Table. Each
 recipe below starts from somewhere data really lives and ends with a fit, using
 the tools you'd use anyway. Every snippet on this page is run verbatim by the
-test suite (`make test-recipes`).
+test suite: `make test-recipes` runs most of them, `make test-recipes-postgres`
+the PostgreSQL one (CI runs both), and `make test-recipes-tools` the PLINK 2
+one, on a machine that has `plink2`.
 
 A few things hold for every route:
 
@@ -106,9 +108,12 @@ fit = bl.biglasso(table.drop_columns(["id", "y"]), table["y"])
 
 ## CSV, Parquet, compressed Feather or Excel
 
-Convert once with `ingest`. It streams the file in blocks, picks the narrowest
+Convert once with `ingest`. It reads the file in blocks, picks the narrowest
 exact type for each column, and writes an uncompressed Arrow file you can reuse
-(see [ingest](ingest.md)):
+(see [ingest](ingest.md)). Two formats can hold more than a block in memory: a
+compressed Feather file is decompressed a whole record batch at a time (one
+batch can be the whole file), and an Excel workbook's shared-strings table is
+read whole.
 
 <!-- recipe: ingest-csv -->
 ```python
@@ -122,7 +127,9 @@ fit = bl.biglasso(data.design, data.response)
 ## Data that needs transforming first
 
 Filter, join, derive and encode with a query engine, write the result, then
-ingest it. With DuckDB, reading Parquet and writing Parquet both stream:
+ingest it. With DuckDB, reading and writing Parquet stream, but some steps
+don't: `ORDER BY` sorts the whole result (spilling to disk if it must), as do
+joins and grouping on their inputs.
 
 <!-- recipe: duckdb-transform -->
 ```python
