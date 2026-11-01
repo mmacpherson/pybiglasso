@@ -20,6 +20,8 @@ Xs; pybiglasso and the R solvers standardize raw X themselves. The 100-lambda
 grid is computed analytically; maximum KKT residuals and relative objective
 differences versus glmnet accompany every completed path. An analytic
 alpha/lambda map compensates for glmnet's internal response scaling.
+Sklearn and skglm use their native path APIs; glum uses alpha_search, and
+statsmodels OLS uses its supported start_params warm starts.
 
     uv run -p 3.14 --group bench python benchmarks/path.py --family gaussian
 
@@ -203,19 +205,16 @@ def fit_glum(X, Xs, y, lambdas, alpha, threads, family="binomial"):
     return m.coef_path_, m.intercept_path_
 
 
-def _warm_loop(model, Xs, y, lambdas, set_lambda, *, timed=False):
+def _warm_loop(model, Xs, y, lambdas, set_lambda):
     import numpy as np
 
-    coefs, intercepts, seconds = [], [], 0.0
+    coefs, intercepts = [], []
     for lam in lambdas:
         set_lambda(model, lam)
-        started = time.perf_counter()
         model.fit(Xs, y)
-        seconds += time.perf_counter() - started
         coefs.append(np.ravel(model.coef_).copy())
         intercepts.append(float(np.ravel(model.intercept_)[0]))
-    out = np.array(coefs), np.array(intercepts)
-    return (*out, seconds) if timed else out
+    return np.array(coefs), np.array(intercepts)
 
 
 def fit_skglm(X, Xs, y, lambdas, alpha, threads, family="binomial"):
@@ -229,25 +228,43 @@ def fit_skglm(X, Xs, y, lambdas, alpha, threads, family="binomial"):
     if family == "gaussian" and alpha == 1:
         cls, options = Lasso, {}
     m = cls(alpha=lambdas[0], fit_intercept=True, warm_start=True, **options)
+    if family == "gaussian":
+        # The public path API validates and initializes the datafit once,
+        # then warm-starts every lambda. With fit_intercept=True its last
+        # coefficient row is the unpenalized intercept.
+        started = time.perf_counter()
+        _, coef, *_ = m.path(Xs, y, alphas=lambdas)
+        seconds = time.perf_counter() - started
+        return coef[:-1].T, coef[-1], seconds
     return _warm_loop(
         m,
         Xs,
         y,
         lambdas,
         lambda m, lam: m.set_params(alpha=lam),
-        timed=family == "gaussian",
     )
 
 
 def fit_sklearn_cd(X, Xs, y, lambdas, alpha, threads, family="gaussian"):
-    from sklearn.linear_model import ElasticNet
+    import numpy as np
+    from sklearn.linear_model import enet_path
 
     # RSS/(2n) + a*(l1_ratio*|b|_1 + (1-l1_ratio)*|b|_2^2/2):
     # a=lambda and l1_ratio=alpha, including the lasso at alpha=1.
-    m = ElasticNet(l1_ratio=alpha, warm_start=True)
-    return _warm_loop(
-        m, Xs, y, lambdas, lambda m, lam: m.set_params(alpha=lam), timed=True
+    # enet_path does not fit an intercept. Center once inside the timer;
+    # retain its default validation, tolerance and precompute='auto' so tall
+    # data can use the native Gram path instead of 100 estimator fits.
+    started = time.perf_counter()
+    center, response_mean = Xs.mean(axis=0), y.mean()
+    _, coef, _ = enet_path(
+        np.asfortranarray(Xs - center),
+        y - response_mean,
+        alphas=lambdas,
+        l1_ratio=alpha,
     )
+    intercept = response_mean - center @ coef
+    seconds = time.perf_counter() - started
+    return coef.T, intercept, seconds
 
 
 def _fit_sklearn(solver, Xs, y, lambdas, alpha):
@@ -280,6 +297,8 @@ def fit_statsmodels(X, Xs, y, lambdas, alpha, threads, family="binomial"):
     design = np.column_stack([np.ones(n), Xs])
     model = sm.OLS(y, design) if family == "gaussian" else sm.Logit(y, design)
     coefs, intercepts, start, seconds = [], [], None, 0.0
+    # OLS has no public regularization-path API; start_params is its native
+    # warm-start mechanism. Keep the previous full coefficient vector.
     for lam in lambdas:
         # statsmodels penalizes the summed log-likelihood, per coefficient;
         # n * lambda matches the mean-scaled objective. Intercept unpenalized.

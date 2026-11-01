@@ -332,3 +332,42 @@ def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
             "NUMBA_NUM_THREADS",
         )
     )
+
+
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_sklearn_native_path_centers_and_recovers_intercept(
+    benchmark, orthogonal, monkeypatch, alpha
+):
+    import sklearn.linear_model as linear
+
+    base, y = orthogonal
+    Xs = np.asfortranarray(base + [4, -7])
+    original = Xs.copy()
+    lambdas = np.array([1.0, 0.5])
+    calls = []
+    native = linear.enet_path
+
+    def path(X, response, **kwargs):
+        calls.append(kwargs)
+        np.testing.assert_array_equal(X.mean(axis=0), 0)
+        assert response.mean() == 0
+        assert X.flags.f_contiguous
+        return native(X, response, **kwargs)
+
+    monkeypatch.setattr(linear, "enet_path", path)
+    coef, intercept, _ = benchmark.fit_sklearn_cd(
+        base, Xs, y, lambdas, alpha, 1, family="gaussian"
+    )
+    expected = np.maximum(2 - lambdas * alpha, 0) / (1 + lambdas * (1 - alpha))
+    np.testing.assert_allclose(
+        coef[:, 0], expected, rtol=0, atol=32 * np.finfo(float).eps
+    )
+    np.testing.assert_allclose(
+        intercept, 3 - 4 * expected, rtol=0, atol=32 * np.finfo(float).eps
+    )
+    np.testing.assert_array_equal(Xs, original)
+    assert len(calls) == 1
+    # Preserve native defaults for tolerance, validation, copying and Gram use.
+    assert set(calls[0]) == {"alphas", "l1_ratio"}
+    np.testing.assert_array_equal(calls[0]["alphas"], lambdas)
+    assert calls[0]["l1_ratio"] == alpha
