@@ -116,6 +116,18 @@ pub(crate) trait Col: Sync {
     fn block(&self, i0: usize) -> [f64; LANES] {
         std::array::from_fn(|k| self.at(i0 + k))
     }
+    /// block(i0), read in one ascending pass over a column. `hint` is the
+    /// pass's own position (one per kernel call, never shared), so a chunked
+    /// column can step to the next chunk instead of searching for it.
+    #[inline(always)]
+    fn block_seq(&self, i0: usize, _hint: &mut usize) -> [f64; LANES] {
+        self.block(i0)
+    }
+    /// at(i), read in one ascending pass, as for block_seq.
+    #[inline(always)]
+    fn at_seq(&self, i: usize, _hint: &mut usize) -> f64 {
+        self.at(i)
+    }
 }
 
 /// A column contiguous in memory (X in Fortran order).
@@ -211,6 +223,14 @@ impl<C: Col> Col for Span<'_, C> {
     fn block(&self, i0: usize) -> [f64; LANES] {
         self.col.block(self.i0 + i0)
     }
+    #[inline(always)]
+    fn block_seq(&self, i0: usize, hint: &mut usize) -> [f64; LANES] {
+        self.col.block_seq(self.i0 + i0, hint)
+    }
+    #[inline(always)]
+    fn at_seq(&self, i: usize, hint: &mut usize) -> f64 {
+        self.col.at_seq(self.i0 + i, hint)
+    }
 }
 
 pub(crate) trait Design: Sync {
@@ -287,7 +307,16 @@ impl Col for MappedCol<'_> {
             Self::U32(v) => Contig::<_, true>(v).block(i0),
             Self::I32(v) => Contig::<_, true>(v).block(i0),
             Self::U16(v) => Contig::<_, true>(v).block(i0),
-            Self::Bits { .. } => std::array::from_fn(|k| self.at(i0 + k)),
+            Self::Bits { bytes, offset, len } => {
+                assert!(*len >= LANES && i0 <= *len - LANES);
+                // The block's LANES bits span at most two bytes: read them
+                // once rather than locating each bit.
+                let bit = offset + i0;
+                let lo = u16::from(bytes[bit / 8]);
+                let hi = if bit.is_multiple_of(8) { 0 } else { u16::from(bytes[bit / 8 + 1]) };
+                let bits = (lo | hi << 8) >> (bit % 8);
+                std::array::from_fn(|k| ((bits >> k) & 1).f())
+            }
         }
     }
 }
@@ -320,29 +349,73 @@ pub(crate) struct ChunkedCol<'a> {
     ends: &'a [usize],
 }
 impl ChunkedCol<'_> {
+    #[inline(always)]
     fn locate(&self, i: usize) -> (usize, usize) {
         assert!(i < self.n());
         let k = if self.chunks.len() == 1 { 0 } else { self.ends.partition_point(|&end| end <= i) };
         (k, i - if k == 0 { 0 } else { self.ends[k - 1] })
     }
 }
+// A one-chunk column (the common case) skips locating rows entirely; the
+// chunk's own indexing checks bounds, since its length is the column's.
 impl Col for ChunkedCol<'_> {
+    #[inline(always)]
     fn n(&self) -> usize {
         *self.ends.last().expect("nonempty chunks")
     }
     #[inline(always)]
     fn at(&self, i: usize) -> f64 {
+        if let [only] = self.chunks {
+            return only.at(i);
+        }
         let (k, local) = self.locate(i);
         self.chunks[k].at(local)
     }
     #[inline(always)]
     fn block(&self, i0: usize) -> [f64; LANES] {
+        if let [only] = self.chunks {
+            return only.block(i0);
+        }
         let (k, local) = self.locate(i0);
         if self.chunks[k].n() - local >= LANES {
             self.chunks[k].block(local)
         } else {
             std::array::from_fn(|lane| self.at(i0 + lane))
         }
+    }
+    #[inline(always)]
+    fn block_seq(&self, i0: usize, hint: &mut usize) -> [f64; LANES] {
+        if let [only] = self.chunks {
+            return only.block(i0);
+        }
+        // Step past chunks ending at or before i0 (empty chunks included);
+        // anything but an ascending pass falls back to searching.
+        let mut k = *hint;
+        while k < self.ends.len() && self.ends[k] <= i0 {
+            k += 1;
+        }
+        let start = if k == 0 { 0 } else { self.ends[k - 1] };
+        if k < self.ends.len() && start <= i0 && self.ends[k] - i0 >= LANES {
+            *hint = k;
+            return self.chunks[k].block(i0 - start);
+        }
+        self.block(i0)
+    }
+    #[inline(always)]
+    fn at_seq(&self, i: usize, hint: &mut usize) -> f64 {
+        if let [only] = self.chunks {
+            return only.at(i);
+        }
+        let mut k = *hint;
+        while k < self.ends.len() && self.ends[k] <= i {
+            k += 1;
+        }
+        let start = if k == 0 { 0 } else { self.ends[k - 1] };
+        if k < self.ends.len() && start <= i {
+            *hint = k;
+            return self.chunks[k].at(i - start);
+        }
+        self.at(i)
     }
 }
 
@@ -559,8 +632,8 @@ fn fold<S: Simd>(acc: [V<S>; LANES]) -> f64 {
 
 /// Column c's rows i0 .. i0 + LANES.
 #[inline(always)]
-fn load<C: Col>(c: &C, i0: usize) -> Block {
-    Block(c.block(i0))
+fn load<C: Col>(c: &C, i0: usize, hint: &mut usize) -> Block {
+    Block(c.block_seq(i0, hint))
 }
 
 /// A block's rows as registers.
@@ -582,8 +655,9 @@ fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
             let body = c.n() / LANES * LANES;
             let (sv, _) = S::as_simd_f64s(&s[..body]);
             let mut acc = [v(simd.splat_f64s(0.0)); LANES];
+            let mut hint = 0;
             for (b, s) in sv.chunks_exact(regs::<S>()).enumerate() {
-                let x = load(c, b * LANES);
+                let x = load(c, b * LANES, &mut hint);
                 let x = regs_of::<S>(&x);
                 for m in 0..regs::<S>() {
                     acc[m] += v(x[m]) * v(s[m]);
@@ -745,9 +819,10 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> Pass<'_, C, SHIFT, MOMENTS>
         let mut acc = [Sums::zero(v(simd.splat_f64s(0.0))); LANES];
         let blocks =
             rv.chunks_exact_mut(regs::<S>()).zip(ev.chunks_exact_mut(regs::<S>())).zip(wv.chunks_exact(regs::<S>()));
+        let (mut hint_prev, mut hint_next) = (0, 0);
         for (b, ((r, eta), w)) in blocks.enumerate() {
-            let xp = if SHIFT { load(prev, b * LANES) } else { zero };
-            let xn = if MOMENTS { load(next, b * LANES) } else { zero };
+            let xp = if SHIFT { load(prev, b * LANES, &mut hint_prev) } else { zero };
+            let xn = if MOMENTS { load(next, b * LANES, &mut hint_next) } else { zero };
             let (xp, xn) = (regs_of::<S>(&xp), regs_of::<S>(&xn));
             for m in 0..regs::<S>() {
                 let (mut rm, mut em) = (v(r[m]), v(eta[m]));
@@ -907,27 +982,30 @@ impl<D: Design> Fit<'_, D> {
                 let n = c.n();
                 let nf = self.n_fit as f64;
                 let (mut acc, mut invalid) = (0.0, false);
+                let mut hint = 0;
                 match self.rows {
                     Some(rows) => rows.iter().for_each(|&i| {
-                        let v = c.at(i);
+                        let v = c.at_seq(i, &mut hint);
                         invalid |= !v.is_finite();
                         acc += v;
                     }),
                     None => (0..n).for_each(|i| {
-                        let v = c.at(i);
+                        let v = c.at_seq(i, &mut hint);
                         invalid |= !v.is_finite();
                         acc += v;
                     }),
                 }
                 let mean = acc / nf;
                 let mut acc = 0.0;
+                let mut hint = 0;
                 match self.rows {
-                    Some(rows) => rows.iter().for_each(|&i| acc += (c.at(i) - mean).powi(2)),
-                    None => (0..n).for_each(|i| acc += (c.at(i) - mean).powi(2)),
+                    Some(rows) => rows.iter().for_each(|&i| acc += (c.at_seq(i, &mut hint) - mean).powi(2)),
+                    None => (0..n).for_each(|i| acc += (c.at_seq(i, &mut hint) - mean).powi(2)),
                 }
                 let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
+                let mut hint = 0;
                 for i in (0..n).filter(|&i| !self.fits(i)) {
-                    let v = c.at(i);
+                    let v = c.at_seq(i, &mut hint);
                     out_finite &= v.is_finite();
                     (out_lo, out_hi) = (out_lo.min(v), out_hi.max(v));
                 }
