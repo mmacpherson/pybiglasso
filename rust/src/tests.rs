@@ -384,6 +384,42 @@ fn packed_bits_preserve_pass_order_at_every_offset_and_tail() {
 }
 
 #[test]
+fn packed_lookup_matches_every_byte_including_positive_zero() {
+    for byte in 0..=u8::MAX {
+        let bytes = [byte];
+        let col = MappedCol::Bits { bytes: &bytes, offset: 0, len: LANES };
+        let want: [u64; LANES] = std::array::from_fn(|i| f64::from((byte >> i) & 1).to_bits());
+        assert_eq!(col.block(0).map(f64::to_bits), want);
+        let mut row = 0;
+        for_each_value(&col, |value| {
+            assert_eq!(value.to_bits(), want[row]);
+            row += 1;
+        });
+        assert_eq!(row, LANES);
+        let mut hint = 0;
+        for (i, expected) in want.into_iter().enumerate() {
+            assert_eq!(col.at(i).to_bits(), expected);
+            assert_eq!(col.at_seq(i, &mut hint).to_bits(), expected);
+        }
+    }
+}
+
+#[test]
+fn packed_lookup_retains_signed_zero_in_coordinate_updates() {
+    let x = [0.0; LANES];
+    let (r, eta, w) = ([-0.0; LANES], [-0.0; LANES], [1.0; LANES]);
+    let col = MappedCol::Bits { bytes: &[0], offset: 0, len: LANES };
+    check(
+        "packed zero multiply must not be skipped",
+        &Pass::shift(&col, -1.0, 0.0),
+        reference(Some((&x, -1.0, 0.0)), None, &r, &eta, &w),
+        &r,
+        &eta,
+        &w,
+    );
+}
+
+#[test]
 fn independently_chunked_columns_preserve_kernel_blocks() {
     for n in SIZES {
         let x: Vec<f64> = (0..n).map(|i| ((i * 17 + 3) % 7 < 3) as u8 as f64).collect();

@@ -620,6 +620,37 @@ def test_native_packed_bit_offsets_and_owner_lifetime(tmp_path, offset, checked)
         assert actual[field].tobytes() == expected[field].tobytes(), field
 
 
+@pytest.mark.parametrize("offset", [1, 3, 7])
+@pytest.mark.parametrize("family", ["gaussian", "binomial"])
+def test_packed_sliced_odd_batches_match_uint8_npy(tmp_path, offset, family):
+    nrow = 16391
+    values = np.random.default_rng(83).integers(
+        0, 2, (nrow + offset, 3), dtype=np.uint8
+    )
+    table = pa.table({f"x{j}": pa.array(values[:, j].astype(bool)) for j in range(3)})
+    path = tmp_path / "bits.arrow"
+    with pa.OSFile(str(path), "wb") as sink:
+        with pa.ipc.new_file(sink, table.schema) as writer:
+            for batch in table.to_batches(max_chunksize=257):
+                writer.write_batch(batch)
+    mapped = _open_mapped(path).slice(offset, nrow)
+    assert mapped.column(0).chunk(0).offset % 8 == offset
+    assert any(len(chunk) % 2 for chunk in mapped.column(0).chunks)
+    np.save(tmp_path / "uint8.npy", np.asfortranarray(values[offset:]))
+    reference = np.load(tmp_path / "uint8.npy", mmap_mode="r")
+    response = (np.arange(nrow) % 2).astype(float)
+    if family == "gaussian":
+        response += reference[:, 0] / 4 + 0.5
+    for threads, alpha in ((1, 1.0), (2, 0.5)):
+        options = dict(
+            family=family, n_threads=threads, alpha=alpha, nlambda=7, lambda_min=0.2
+        )
+        same_path(
+            biglasso(mapped, response, **options),
+            biglasso(reference, response, **options),
+        )
+
+
 @pytest.mark.parametrize(
     "bad",
     [
