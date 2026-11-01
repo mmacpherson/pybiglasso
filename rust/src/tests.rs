@@ -441,6 +441,149 @@ fn chunked_reads_in_any_order_match_the_values() {
 }
 
 #[test]
+fn chunk_runs_preserve_the_requested_block_grid_through_spans() {
+    let n = 3 * CHUNK + 13;
+    let x = values(n, 12);
+    for size in [1, 7, 8, 9, CHUNK - 1, CHUNK + 3] {
+        let mut chunks = vec![MappedCol::F64(&[])];
+        for part in x.chunks(size) {
+            chunks.extend([MappedCol::F64(part), MappedCol::F64(&[])]);
+        }
+        let design = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
+        let col = design.col(0);
+        for offset in [0, 1, 7, CHUNK - 3] {
+            let span = Span { col: &col, i0: offset, n: n - offset };
+            let mut start = 0;
+            while start < span.n() {
+                let (run, end) = span.run(start, span.n());
+                assert!(start < end && end <= span.n());
+                assert_eq!(run.n(), end - start);
+                if end != span.n() {
+                    assert_eq!((end - start) % LANES, 0);
+                }
+                for i in 0..run.n() {
+                    assert_eq!(run.at(i).to_bits(), x[offset + start + i].to_bits());
+                }
+                for i in (0..run.n() / LANES * LANES).step_by(LANES) {
+                    assert_eq!(
+                        run.block(i).map(f64::to_bits),
+                        std::array::from_fn(|k| x[offset + start + i + k].to_bits()),
+                    );
+                }
+                start = end;
+            }
+            let mut sum = 0.0;
+            for_each_value(&span, |v| sum += v);
+            let want = x[offset..].iter().fold(0.0, |sum, &v| sum + v);
+            assert_eq!(sum.to_bits(), want.to_bits());
+        }
+    }
+}
+
+#[test]
+fn packed_run_slices_keep_only_their_logical_bits() {
+    let n = 53usize;
+    let x: Vec<f64> = (0..n).map(|i| ((i * 17 + 3) % 7 < 3) as u8 as f64).collect();
+    for offset in 0..8 {
+        let mut bytes = vec![0u8; (offset + n).div_ceil(8)];
+        for (i, &v) in x.iter().enumerate() {
+            bytes[(offset + i) / 8] |= (v as u8) << ((offset + i) % 8);
+        }
+        let col = MappedCol::Bits { bytes: &bytes, offset, len: n };
+        for start in 0..=n {
+            for len in 0..=n - start {
+                let run = col.slice(start, len);
+                assert_eq!(run.n(), len);
+                for i in 0..len {
+                    assert_eq!(run.at(i), x[start + i]);
+                }
+                for i in (0..len / LANES * LANES).step_by(LANES) {
+                    assert_eq!(run.block(i), std::array::from_fn(|k| x[start + i + k]));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_independent_runs_preserve_fused_passes_and_dot() {
+    for n in SIZES {
+        let x = values(n, 13);
+        let y: Vec<f64> = (0..n).map(|i| ((i * 17 + 3) % 7 < 3) as u8 as f64).collect();
+        for (xs, ys) in [(7, 11), (CHUNK - 3, CHUNK + 1), (CHUNK + 3, CHUNK - 1)] {
+            let floats = x.chunks(xs).map(MappedCol::F64).collect();
+            let bytes: Vec<Vec<u8>> = y
+                .chunks(ys)
+                .enumerate()
+                .map(|(k, part)| {
+                    let offset = k % 8;
+                    let mut bytes = vec![0; (offset + part.len()).div_ceil(8)];
+                    for (i, &v) in part.iter().enumerate() {
+                        bytes[(offset + i) / 8] |= (v as u8) << ((offset + i) % 8);
+                    }
+                    bytes
+                })
+                .collect();
+            let bits = bytes
+                .iter()
+                .zip(y.chunks(ys))
+                .enumerate()
+                .map(|(k, (bytes, part))| MappedCol::Bits { bytes, offset: k % 8, len: part.len() })
+                .collect();
+            let design =
+                MappedX { columns: vec![ChunkedColumn::new(floats, n).unwrap(), ChunkedColumn::new(bits, n).unwrap()] };
+            check_passes("independent float/bool runs", &design.col(0), &design.col(1), &x, &y);
+            let s = values(n, 14);
+            for (j, values) in [&x, &y].into_iter().enumerate() {
+                let body = n / LANES * LANES;
+                let mut lanes = [0.0; LANES];
+                for i in 0..body {
+                    lanes[i % LANES] += values[i] * s[i];
+                }
+                let mut tail = 0.0;
+                for i in body..n {
+                    tail += values[i] * s[i];
+                }
+                assert_eq!(dot_col(&design.col(j), &s).to_bits(), (combine(&lanes) + tail).to_bits());
+            }
+        }
+    }
+}
+
+#[test]
+fn mapped_runs_preserve_every_primitive_conversion() {
+    for n in [13, PAR_ROWS + 11] {
+        macro_rules! primitive {
+            ($kind:ident, $type:ty) => {{
+                let x: Vec<$type> = (0..n).map(|i| ((i * 17 % 11) as i64 - 5) as $type).collect();
+                let y: Vec<$type> = (0..n).map(|i| ((i * 13 % 7) as i64 - 3) as $type).collect();
+                // Includes wrapped unsigned values above 2^53, converted as
+                // on the ndarray path; expected arithmetic is the row formula.
+                let xf: Vec<f64> = x.iter().map(|&v| v as f64).collect();
+                let yf: Vec<f64> = y.iter().map(|&v| v as f64).collect();
+                let design = MappedX {
+                    columns: vec![
+                        ChunkedColumn::new(x.chunks(CHUNK - 3).map(MappedCol::$kind).collect(), n).unwrap(),
+                        ChunkedColumn::new(y.chunks(CHUNK + 1).map(MappedCol::$kind).collect(), n).unwrap(),
+                    ],
+                };
+                check_passes(stringify!($kind), &design.col(0), &design.col(1), &xf, &yf);
+            }};
+        }
+        primitive!(F64, f64);
+        primitive!(F32, f32);
+        primitive!(I8, i8);
+        primitive!(U8, u8);
+        primitive!(I16, i16);
+        primitive!(U16, u16);
+        primitive!(I32, i32);
+        primitive!(U32, u32);
+        primitive!(I64, i64);
+        primitive!(U64, u64);
+    }
+}
+
+#[test]
 #[should_panic]
 fn packed_block_rejects_an_index_that_would_wrap() {
     MappedCol::Bits { bytes: &[0xff, 0xff], offset: 7, len: 8 }.block(usize::MAX - 6);

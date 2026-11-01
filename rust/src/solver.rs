@@ -128,6 +128,16 @@ pub(crate) trait Col: Sync {
     fn at_seq(&self, i: usize, _hint: &mut usize) -> f64 {
         self.at(i)
     }
+    /// A run starting at i0, addressed from zero, and its end in this column.
+    /// Except for a final partial block, the run contains whole LANES blocks.
+    /// Kernels keep their accumulators across runs: storage never partitions sums.
+    #[inline(always)]
+    fn run(&self, i0: usize, end: usize) -> (impl Col, usize)
+    where
+        Self: Sized,
+    {
+        (Span { col: self, i0, n: end - i0 }, end)
+    }
 }
 
 /// A column contiguous in memory (X in Fortran order).
@@ -231,6 +241,11 @@ impl<C: Col> Col for Span<'_, C> {
     fn at_seq(&self, i: usize, hint: &mut usize) -> f64 {
         self.col.at_seq(self.i0 + i, hint)
     }
+    #[inline(always)]
+    fn run(&self, i0: usize, end: usize) -> (impl Col, usize) {
+        let (run, stop) = self.col.run(self.i0 + i0, self.i0 + end);
+        (run, stop - self.i0)
+    }
 }
 
 pub(crate) trait Design: Sync {
@@ -256,6 +271,37 @@ pub(crate) enum MappedCol<'a> {
     I32(&'a [i32]),
     U16(&'a [u16]),
     Bits { bytes: &'a [u8], offset: usize, len: usize },
+}
+
+impl MappedCol<'_> {
+    /// Borrow exactly this run. Checking its extent once also exposes the
+    /// inner loop's load bounds to the optimizer, rather than carrying an
+    /// offset into a larger chunk through every block load.
+    #[inline(always)]
+    fn slice(&self, start: usize, len: usize) -> Self {
+        match self {
+            Self::F64(v) => Self::F64(&v[start..start + len]),
+            Self::F32(v) => Self::F32(&v[start..start + len]),
+            Self::I8(v) => Self::I8(&v[start..start + len]),
+            Self::U8(v) => Self::U8(&v[start..start + len]),
+            Self::I16(v) => Self::I16(&v[start..start + len]),
+            Self::U64(v) => Self::U64(&v[start..start + len]),
+            Self::I64(v) => Self::I64(&v[start..start + len]),
+            Self::U32(v) => Self::U32(&v[start..start + len]),
+            Self::I32(v) => Self::I32(&v[start..start + len]),
+            Self::U16(v) => Self::U16(&v[start..start + len]),
+            Self::Bits { bytes, offset, len: total } => {
+                assert!(start <= *total && len <= *total - start);
+                if len == 0 {
+                    return Self::Bits { bytes: &[], offset: 0, len: 0 };
+                }
+                let bit = offset.checked_add(start).expect("bit offset");
+                let offset = bit % 8;
+                let count = offset.checked_add(len).expect("bit length").div_ceil(8);
+                Self::Bits { bytes: &bytes[bit / 8..bit / 8 + count], offset, len }
+            }
+        }
+    }
 }
 
 impl Col for MappedCol<'_> {
@@ -348,6 +394,43 @@ pub(crate) struct ChunkedCol<'a> {
     chunks: &'a [MappedCol<'a>],
     ends: &'a [usize],
 }
+
+/// An immutable column for an inner loop. Its chunk and type cannot change
+/// during that loop, allowing the compiler to hoist the storage dispatch.
+enum ChunkRun<'a> {
+    Whole(MappedCol<'a>),
+    Crossing(Span<'a, ChunkedCol<'a>>),
+}
+impl Col for ChunkRun<'_> {
+    #[inline(always)]
+    fn n(&self) -> usize {
+        match self {
+            Self::Whole(c) => c.n(),
+            Self::Crossing(c) => c.n(),
+        }
+    }
+    #[inline(always)]
+    fn at(&self, i: usize) -> f64 {
+        match self {
+            Self::Whole(c) => c.at(i),
+            Self::Crossing(c) => c.at(i),
+        }
+    }
+    #[inline(always)]
+    fn block(&self, i0: usize) -> [f64; LANES] {
+        match self {
+            Self::Whole(c) => c.block(i0),
+            Self::Crossing(c) => c.block(i0),
+        }
+    }
+    #[inline(always)]
+    fn at_seq(&self, i: usize, hint: &mut usize) -> f64 {
+        match self {
+            Self::Whole(c) => c.at_seq(i, hint),
+            Self::Crossing(c) => c.at_seq(i, hint),
+        }
+    }
+}
 impl ChunkedCol<'_> {
     #[inline(always)]
     fn locate(&self, i: usize) -> (usize, usize) {
@@ -359,6 +442,20 @@ impl ChunkedCol<'_> {
 // A one-chunk column (the common case) skips locating rows entirely; the
 // chunk's own indexing checks bounds, since its length is the column's.
 impl Col for ChunkedCol<'_> {
+    #[inline(always)]
+    fn run(&self, i0: usize, end: usize) -> (impl Col, usize) {
+        assert!(i0 < end && end <= self.n());
+        let (k, local) = self.locate(i0);
+        let whole = (self.ends[k].min(end) - i0) / LANES * LANES;
+        if whole != 0 {
+            (ChunkRun::Whole(self.chunks[k].slice(local, whole)), i0 + whole)
+        } else {
+            // Never realign a logical block to a storage boundary. Read the
+            // crossing block (or final scalar tail) through the existing path.
+            let n = LANES.min(end - i0);
+            (ChunkRun::Crossing(Span { col: self, i0, n }), i0 + n)
+        }
+    }
     #[inline(always)]
     fn n(&self) -> usize {
         *self.ends.last().expect("nonempty chunks")
@@ -642,6 +739,21 @@ fn regs_of<S: Simd>(b: &Block) -> &[S::f64s] {
     bytemuck::cast_slice(&b.0)
 }
 
+/// A serial scan, with storage dispatch fixed over each run. In particular,
+/// centering still adds individual rows left to right, never chunk subtotals.
+#[inline(always)]
+fn for_each_value<C: Col>(c: &C, mut visit: impl FnMut(f64)) {
+    let mut start = 0;
+    let mut hint = 0;
+    while start < c.n() {
+        let (run, end) = c.run(start, c.n());
+        for i in 0..end - start {
+            visit(run.at_seq(i, &mut hint));
+        }
+        start = end;
+    }
+}
+
 /// sum(x * s), in LANES accumulators.
 #[inline(always)]
 fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
@@ -655,13 +767,19 @@ fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
             let body = c.n() / LANES * LANES;
             let (sv, _) = S::as_simd_f64s(&s[..body]);
             let mut acc = [v(simd.splat_f64s(0.0)); LANES];
-            let mut hint = 0;
-            for (b, s) in sv.chunks_exact(regs::<S>()).enumerate() {
-                let x = load(c, b * LANES, &mut hint);
-                let x = regs_of::<S>(&x);
-                for m in 0..regs::<S>() {
-                    acc[m] += v(x[m]) * v(s[m]);
+            let mut start = 0;
+            while start < body {
+                let (run, end) = c.run(start, body);
+                let mut hint = 0;
+                let range = start / LANES * regs::<S>()..end / LANES * regs::<S>();
+                for (b, s) in sv[range].chunks_exact(regs::<S>()).enumerate() {
+                    let x = load(&run, b * LANES, &mut hint);
+                    let x = regs_of::<S>(&x);
+                    for m in 0..regs::<S>() {
+                        acc[m] += v(x[m]) * v(s[m]);
+                    }
                 }
+                start = end;
             }
             let mut tail = 0.0;
             for i in body..c.n() {
@@ -767,6 +885,7 @@ struct Pass<'a, C, const SHIFT: bool, const MOMENTS: bool> {
     c: f64,
     next: &'a C,
 }
+
 impl<'a, C> Pass<'a, C, true, false> {
     fn shift(prev: &'a C, delta: f64, c: f64) -> Self {
         Pass { prev, delta, c, next: prev }
@@ -817,20 +936,30 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> Pass<'_, C, SHIFT, MOMENTS>
         let k = (v(simd.splat_f64s(self.delta)), v(simd.splat_f64s(self.c)));
         let zero = Block([0.0; LANES]);
         let mut acc = [Sums::zero(v(simd.splat_f64s(0.0))); LANES];
-        let blocks =
-            rv.chunks_exact_mut(regs::<S>()).zip(ev.chunks_exact_mut(regs::<S>())).zip(wv.chunks_exact(regs::<S>()));
-        let (mut hint_prev, mut hint_next) = (0, 0);
-        for (b, ((r, eta), w)) in blocks.enumerate() {
-            let xp = if SHIFT { load(prev, b * LANES, &mut hint_prev) } else { zero };
-            let xn = if MOMENTS { load(next, b * LANES, &mut hint_next) } else { zero };
-            let (xp, xn) = (regs_of::<S>(&xp), regs_of::<S>(&xn));
-            for m in 0..regs::<S>() {
-                let (mut rm, mut em) = (v(r[m]), v(eta[m]));
-                Self::row(k, (v(xp[m]), v(xn[m])), &mut rm, &mut em, v(w[m]), &mut acc[m]);
-                if SHIFT {
-                    (r[m], eta[m]) = (rm.1, em.1);
+        let mut start = 0;
+        while start < body {
+            let (prev, prev_end) = prev.run(start, body);
+            let (next, next_end) = next.run(start, body);
+            let end = prev_end.min(next_end);
+            let range = start / LANES * regs::<S>()..end / LANES * regs::<S>();
+            let blocks = rv[range.clone()]
+                .chunks_exact_mut(regs::<S>())
+                .zip(ev[range.clone()].chunks_exact_mut(regs::<S>()))
+                .zip(wv[range].chunks_exact(regs::<S>()));
+            let (mut hint_prev, mut hint_next) = (0, 0);
+            for (b, ((r, eta), w)) in blocks.enumerate() {
+                let xp = if SHIFT { load(&prev, b * LANES, &mut hint_prev) } else { zero };
+                let xn = if MOMENTS { load(&next, b * LANES, &mut hint_next) } else { zero };
+                let (xp, xn) = (regs_of::<S>(&xp), regs_of::<S>(&xn));
+                for m in 0..regs::<S>() {
+                    let (mut rm, mut em) = (v(r[m]), v(eta[m]));
+                    Self::row(k, (v(xp[m]), v(xn[m])), &mut rm, &mut em, v(w[m]), &mut acc[m]);
+                    if SHIFT {
+                        (r[m], eta[m]) = (rm.1, em.1);
+                    }
                 }
             }
+            start = end;
         }
         let mut tail = Sums::zero(0.0);
         for (i, (r, eta)) in rt.iter_mut().zip(et.iter_mut()).enumerate() {
@@ -989,8 +1118,7 @@ impl<D: Design> Fit<'_, D> {
                         invalid |= !v.is_finite();
                         acc += v;
                     }),
-                    None => (0..n).for_each(|i| {
-                        let v = c.at_seq(i, &mut hint);
+                    None => for_each_value(&c, |v| {
                         invalid |= !v.is_finite();
                         acc += v;
                     }),
@@ -1000,7 +1128,7 @@ impl<D: Design> Fit<'_, D> {
                 let mut hint = 0;
                 match self.rows {
                     Some(rows) => rows.iter().for_each(|&i| acc += (c.at_seq(i, &mut hint) - mean).powi(2)),
-                    None => (0..n).for_each(|i| acc += (c.at_seq(i, &mut hint) - mean).powi(2)),
+                    None => for_each_value(&c, |v| acc += (v - mean).powi(2)),
                 }
                 let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
                 let mut hint = 0;
