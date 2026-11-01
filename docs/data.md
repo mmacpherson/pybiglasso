@@ -233,6 +233,13 @@ then follow the `.bed` recipe above:
 plink2 --vcf genotypes.vcf --make-bed --out genotypes
 ```
 
-The same works for BCF (`--bcf`) and for PLINK 2's own `.pgen` files
-(`--pfile`). PLINK 2 sets missing calls to missing, which the `.bed` recipe
-then reports.
+This is for biallelic hard calls (GT). The same works for BCF (`--bcf`) and
+for PLINK 2's own `.pgen` files (`--pfile`). PLINK 2 keeps missing calls
+missing, which the `.bed` recipe then reports. A few choices are yours to make
+first, explicitly:
+
+- **Multiallelic sites** make `--make-bed` fail. Split them into biallelic
+  records first (`bcftools norm -m -any`), or drop them (`--max-alleles 2`).
+- **Imputed dosages** (DS or GP fields) aren't hard calls. Choose a hard-call
+  threshold in PLINK 2, or keep the dosages as float32 in a `.npy`; for BGEN
+  files, `bgen-reader` reads them.

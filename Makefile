@@ -59,7 +59,12 @@ test-recipes-postgres:
 		$(CONTAINER) run -d --rm --name $$name -e POSTGRES_PASSWORD=recipes \
 			-p 127.0.0.1::5432 $(PG_IMAGE) >/dev/null || exit 1; \
 		trap "$(CONTAINER) stop $$name >/dev/null" EXIT; \
-		until $(CONTAINER) exec $$name pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; do sleep 1; done; \
+		tries=0; \
+		until $(CONTAINER) exec $$name pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; do \
+			tries=$$((tries + 1)); \
+			if [ $$tries -ge 60 ]; then echo "PostgreSQL not ready after 60 s" >&2; exit 1; fi; \
+			sleep 1; \
+		done; \
 		port=$$($(CONTAINER) port $$name 5432/tcp | head -1 | sed 's/.*://'); \
 		DATABASE_URL=postgresql://postgres:recipes@127.0.0.1:$$port/postgres \
 			uv run --group recipes pytest -m postgres; \
