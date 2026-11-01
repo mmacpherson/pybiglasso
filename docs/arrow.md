@@ -1,6 +1,6 @@
-# Arrow inputs
+# Feather files and Arrow Tables
 
-Open an uncompressed Arrow (Feather) file, choose the feature columns, and
+Open an uncompressed Feather file, choose the feature columns, and
 keep the response separate:
 
 ```python
@@ -25,7 +25,7 @@ For an uncompressed file, the columns stay on disk and are read as the fit
 needs them. **PyArrow's `write_feather` compresses by default. Compressed files
 are decompressed into RAM when opened, even with `memory_map=True`.** If you
 did not write the file uncompressed yourself,
-[rewrite it uncompressed](#rewrite-an-arrow-file-uncompressed) once.
+[rewrite it uncompressed](#rewrite-a-feather-file-uncompressed) once.
 
 Choose features with `select` or `drop_columns` on the Table after opening.
 **Avoid `read_table(..., columns=...)`: in PyArrow 26.0.0 this copies all the
@@ -42,7 +42,7 @@ X = np.load("features.npy", mmap_mode="r")
 y = np.load("response.npy", mmap_mode="r")
 ```
 
-## Rewrite an Arrow file uncompressed
+## Rewrite a Feather file uncompressed
 
 Write a new file one batch at a time with standard PyArrow APIs:
 
@@ -74,7 +74,7 @@ X can be a `pyarrow.Table` or `pyarrow.RecordBatch` with non-null bool,
 int8/uint8/int16/uint16/int32/uint32/int64/uint64, float32 or float64 columns.
 String, dictionary/categorical, nested, extension, decimal and temporal columns
 are rejected. Buffers must be aligned. For mapped storage, use an uncompressed,
-native-endian **Arrow file** (Feather v2), with one or multiple record batches.
+native-endian **Feather file** (Feather v2, the Arrow IPC file format), with one or multiple record batches.
 PyArrow is optional (`pip install 'pybiglasso[arrow]'`). NumPy arrays and
 Fortran `.npy` memmaps remain direct inputs; no conversion to Arrow is required.
 
@@ -146,7 +146,7 @@ to gathering. sklearn prediction retains its existing finite-value check.
 
 ## Keep the data unchanged during a fit
 
-`pf.read_table(path, memory_map=True)` reads an Arrow file (Feather v2) as an
+`pf.read_table(path, memory_map=True)` reads a Feather file as an
 ordinary Table, including files with multiple record batches. Select/drop
 columns on that Table; the `columns=` reader behavior is described above.
 No JSON sidecar is needed, including for feature files written by ingest.

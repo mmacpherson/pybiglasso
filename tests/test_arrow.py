@@ -45,7 +45,7 @@ def _arrow_recipe(marker, document="docs/arrow.md"):
     return recipe
 
 
-def test_readme_arrow_example_verbatim(tmp_path, monkeypatch):
+def test_feather_recipe_with_batches_and_extra_columns(tmp_path, monkeypatch):
     import pyarrow.feather as pf
 
     rows = np.arange(123)
@@ -55,20 +55,20 @@ def test_readme_arrow_example_verbatim(tmp_path, monkeypatch):
     response = x1 / 2 + rng.normal(size=len(rows))
     pf.write_feather(
         pa.table({"x1": x1, "x2": x2, "y": response, "id": ["unused"] * len(rows)}),
-        tmp_path / "data.arrow",
+        tmp_path / "data.feather",
         compression="uncompressed",
         chunksize=41,
     )
-    recipe = _arrow_recipe("bl.biglasso(table.drop_columns", document="README.md")
+    recipe = _arrow_recipe("bl.biglasso(table.drop_columns", document="docs/data.md")
     monkeypatch.chdir(tmp_path)
     namespace = {}
-    exec(compile(recipe, "README.md", "exec"), namespace)
+    exec(compile(recipe, "docs/data.md", "exec"), namespace)
     np.save(tmp_path / "features.npy", np.asfortranarray(np.column_stack([x1, x2])))
     same_path(
-        namespace["path"],
+        namespace["fit"],
         biglasso(np.load(tmp_path / "features.npy", mmap_mode="r"), response),
     )
-    assert list(namespace["path"].feature_names) == ["x1", "x2"]
+    assert list(namespace["fit"].feature_names) == ["x1", "x2"]
 
 
 def _mapped_read_allocations(recipe, directory):
