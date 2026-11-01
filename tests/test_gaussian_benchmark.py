@@ -204,3 +204,450 @@ def test_native_glmnet_mapping_matches_generic_optimality(
         distance = np.sqrt(Z.shape[1]) * sum(residuals) / curvature
         rounding = 64 * len(y) * np.finfo(float).eps * (1 + np.linalg.norm(y))
         assert np.linalg.norm(a - b) <= distance + rounding / curvature
+
+
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+@pytest.mark.parametrize("response_scale", [0.25, 3.0])
+@pytest.mark.parametrize(
+    "solver",
+    [
+        "sklearn-cd",
+        pytest.param("skglm", marks=pytest.mark.bench),
+        pytest.param("glum", marks=pytest.mark.bench),
+        pytest.param("statsmodels", marks=pytest.mark.bench),
+    ],
+)
+def test_gaussian_adapters_match_orthogonal_solution(
+    benchmark, orthogonal, alpha, response_scale, solver
+):
+    Xs, y = orthogonal
+    y = 3 + response_scale * (y - 3)
+    # Raw features are deliberately different: Python competitors must use Xs.
+    X = np.asfortranarray(7 + Xs * [2, 4])
+    lambdas = np.array([1.0, 0.5]) * response_scale
+    coef, intercept, seconds = benchmark.FITTERS[solver](
+        X, Xs, y, lambdas, alpha, 1, family="gaussian"
+    )
+    # For orthogonal unit-variance columns, soft threshold the raw score,
+    # then divide by the elastic-net curvature. Intercept is unpenalized.
+    expected = np.maximum(2 * response_scale - lambdas * alpha, 0) / (
+        1 + lambdas * (1 - alpha)
+    )
+    np.testing.assert_allclose(
+        coef[:, 0], expected, atol=32 * np.finfo(float).eps, rtol=0
+    )
+    np.testing.assert_array_equal(coef[:, 1], 0)
+    np.testing.assert_allclose(intercept, 3, atol=32 * np.finfo(float).eps, rtol=0)
+    assert benchmark.gaussian_kkt(Xs, y, lambdas, alpha, coef, intercept) < (
+        64 * np.finfo(float).eps * (1 + response_scale)
+    )
+    assert seconds > 0
+
+
+def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
+    benchmark, monkeypatch, tmp_path, orthogonal
+):
+    import sys
+
+    X, y = orthogonal
+    monkeypatch.setattr(benchmark, "make_data", lambda *a, **kw: (X, X, y))
+    monkeypatch.setattr(benchmark, "environment", lambda: {})
+    # OLS coordinate descent does not use Logit's SLSQP workspace.
+    monkeypatch.setattr(
+        benchmark,
+        "statsmodels_memory_gb",
+        lambda _: pytest.fail("Gaussian OLS must not use the SLSQP memory guard"),
+    )
+    calls = []
+
+    def run(cmd, env, cap):
+        solver = cmd[cmd.index("--solver") + 1]
+        lambdas = np.load(cmd[cmd.index("--lambdas") + 1])
+        # Independent orthogonal solution; no solver-generated expectations.
+        beta = np.maximum(2 - lambdas / 2, 0) / (1 + lambdas / 2)
+        np.savez(
+            cmd[-1],
+            coef=np.column_stack([beta, np.zeros_like(beta)]),
+            intercept=np.full(len(lambdas), 3.0),
+            seconds=2.1 if solver == "statsmodels" else 0.6,
+            versions="{}",
+            input_digest=benchmark.input_digest(X, y),
+        )
+        calls.append((solver, env, cap))
+        return True
+
+    monkeypatch.setattr(benchmark, "run_capped", run)
+    load = np.load
+    archives = []
+
+    def track_archive(path, *args, **kwargs):
+        result = load(path, *args, **kwargs)
+        if str(path).endswith(".npz"):
+            # Retain the archive so GC cannot hide a missing close on POSIX.
+            archives.append((result, result.zip.fp))
+        return result
+
+    monkeypatch.setattr(np, "load", track_archive)
+    output = tmp_path / "results.jsonl"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "path.py",
+            "--family",
+            "gaussian",
+            "--dataset",
+            "smoke-500-100",
+            "--solver",
+            "pybiglasso",
+            "--solver",
+            "statsmodels",
+            "--solver",
+            "sklearn-cd",
+            "--solver",
+            "r-glmnet",
+            "--alpha",
+            "0.5",
+            "--threads",
+            "1",
+            "--threads",
+            "2",
+            "--out",
+            str(output),
+        ],
+    )
+    try:
+        benchmark.main()
+        assert archives and all(handle.closed for _, handle in archives)
+    finally:
+        for archive, _ in archives:
+            archive.close()
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    (stats,) = [r for r in records if r["solver"] == "statsmodels"]
+    assert stats["threads"] == 1
+    assert stats["times"] == [2.1]  # slow: one measurement, rather than three
+    assert stats["cap"] == stats["ratio_cap"] * 0.6 == 6
+    assert stats["ratio_cap"] == 10
+    assert {r["threads"] for r in records if r["solver"] == "sklearn-cd"} == {1, 2}
+    for record in records:
+        assert record["fitted_lambdas"] == record["nlambda"] == 100
+        assert record["max_kkt_residual"] < 64 * np.finfo(float).eps
+        assert record["max_rel_objective_difference_vs_glmnet"] == 0
+        assert record["timing_scope"] == "native fit intervals"
+        if record["solver"] == "r-glmnet":
+            assert record["cap"] == 900  # R's retained absolute fit budget
+    solver, env, cap = next(c for c in calls if c[0] == "statsmodels")
+    assert cap == 6
+    assert all(
+        env[k] == "1"
+        for k in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMBA_NUM_THREADS",
+        )
+    )
+    for _, env, _ in (c for c in calls if c[0] == "sklearn-cd"):
+        requested = env["OMP_NUM_THREADS"]
+        assert requested in {"1", "2"}
+        assert all(
+            env[k] == requested
+            for k in (
+                "OPENBLAS_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "NUMBA_NUM_THREADS",
+            )
+        )
+
+
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_sklearn_native_path_centers_and_recovers_intercept(
+    benchmark, orthogonal, monkeypatch, alpha
+):
+    import sklearn.linear_model as linear
+
+    base, y = orthogonal
+    Xs = np.asfortranarray(base + [4, -7])
+    original = Xs.copy()
+    lambdas = np.array([1.0, 0.5])
+    calls = []
+    native = linear.enet_path
+
+    def path(X, response, **kwargs):
+        calls.append(kwargs)
+        np.testing.assert_array_equal(X.mean(axis=0), 0)
+        assert response.mean() == 0
+        assert X.flags.f_contiguous
+        return native(X, response, **kwargs)
+
+    monkeypatch.setattr(linear, "enet_path", path)
+    coef, intercept, _ = benchmark.fit_sklearn_cd(
+        base, Xs, y, lambdas, alpha, 1, family="gaussian"
+    )
+    expected = np.maximum(2 - lambdas * alpha, 0) / (1 + lambdas * (1 - alpha))
+    np.testing.assert_allclose(
+        coef[:, 0], expected, rtol=0, atol=32 * np.finfo(float).eps
+    )
+    np.testing.assert_allclose(
+        intercept, 3 - 4 * expected, rtol=0, atol=32 * np.finfo(float).eps
+    )
+    np.testing.assert_array_equal(Xs, original)
+    assert len(calls) == 1
+    # Preserve native defaults for tolerance, validation, copying and Gram use.
+    assert set(calls[0]) == {"alphas", "l1_ratio"}
+    np.testing.assert_array_equal(calls[0]["alphas"], lambdas)
+    assert calls[0]["l1_ratio"] == alpha
+
+
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_fit_cap_excludes_adapter_setup_and_export(benchmark, tmp_path, family):
+    import sys
+    import textwrap
+    import time
+
+    grid = tmp_path / "lambdas.npy"
+    result = tmp_path / "fit.npz"
+    np.save(grid, [1.0, 0.5])
+    script = tmp_path / "slow_setup.py"
+    script.write_text(
+        textwrap.dedent(f"""
+        import importlib.util, sys, time, types
+        import numpy as np
+        spec = importlib.util.spec_from_file_location('bench', {benchmark.__file__!r})
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        class Model:
+            def __init__(self, **kwargs):
+                time.sleep(0.75)
+            def fit(self, X, y):
+                time.sleep(0.01)
+            @property
+            def coef_path_(self):
+                time.sleep(0.75)
+                return np.zeros((2, 1))
+            @property
+            def intercept_path_(self):
+                time.sleep(0.75)
+                return np.zeros(2)
+        sys.modules['glum'] = types.SimpleNamespace(GeneralizedLinearRegressor=Model)
+        bench.make_data = lambda *a, **kw: (np.ones((4, 1)), np.ones((4, 1)), np.zeros(4))
+        bench.run_one(types.SimpleNamespace(
+            dataset='unused', family={family!r}, lambdas={str(grid)!r},
+            solver='glum', alpha=0.5, threads=1, out={str(result)!r},
+        ))
+    """)
+    )
+    started = time.perf_counter()
+    assert benchmark.run_capped([sys.executable, str(script)], None, 0.5)
+    assert time.perf_counter() - started > 0.5
+    with np.load(result) as output:
+        assert 0 < float(output["seconds"]) < 0.5
+
+
+@pytest.mark.parametrize("durations, cap", [([0.5], 0.2), ([0.2, 0.2], 0.3)])
+def test_fit_cap_stops_slow_and_cumulative_fit_intervals(
+    benchmark, tmp_path, durations, cap
+):
+    import sys
+    import textwrap
+
+    script = tmp_path / "slow_fit.py"
+    script.write_text(
+        textwrap.dedent(f"""
+        import importlib.util, time
+        spec = importlib.util.spec_from_file_location('bench', {benchmark.__file__!r})
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        clock = bench.FitClock(signals=True)
+        for duration in {durations!r}:
+            with clock:
+                time.sleep(duration)
+            time.sleep(0.5)  # snapshot export between fit intervals
+    """)
+    )
+    assert not benchmark.run_capped([sys.executable, str(script)], None, cap)
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_skglm_uses_real_native_path(benchmark, orthogonal, monkeypatch, alpha):
+    import skglm
+
+    X, y = orthogonal
+    grid = np.array([1.0, 0.5])
+    cls = skglm.Lasso if alpha == 1 else skglm.ElasticNet
+    native = cls.path
+    calls = []
+
+    def path(model, *args, **kwargs):
+        calls.append(model)
+        assert model.fit_intercept
+        assert model.tol == cls().tol
+        assert set(kwargs) == {"alphas"}
+        np.testing.assert_array_equal(kwargs["alphas"], grid)
+        return native(model, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "path", path)
+    monkeypatch.setattr(cls, "fit", lambda *a, **kw: pytest.fail("use the native path"))
+    coef, intercept, _ = benchmark.fit_skglm(X, X, y, grid, alpha, 1, family="gaussian")
+    assert len(calls) == 1
+    assert coef.shape == (len(grid), X.shape[1])
+    np.testing.assert_allclose(intercept, 3, rtol=0, atol=64 * np.finfo(float).eps)
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_glum_uses_real_native_alpha_search(benchmark, orthogonal, monkeypatch, alpha):
+    import glum
+
+    X, y = orthogonal
+    grid = np.array([1.0, 0.5])
+    native = glum.GeneralizedLinearRegressor.fit
+    calls = []
+
+    def fit(model, *args, **kwargs):
+        calls.append(model)
+        assert model.family == "normal"
+        assert model.alpha_search
+        np.testing.assert_array_equal(model.alpha, grid)
+        assert model.gradient_tol is None  # retain the native default
+        return native(model, *args, **kwargs)
+
+    monkeypatch.setattr(glum.GeneralizedLinearRegressor, "fit", fit)
+    coef, intercept, _ = benchmark.fit_glum(X, X, y, grid, alpha, 1, family="gaussian")
+    assert len(calls) == 1
+    assert coef.shape == (len(grid), X.shape[1])
+    np.testing.assert_allclose(intercept, 3, rtol=0, atol=64 * np.finfo(float).eps)
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_statsmodels_uses_real_warm_starts(benchmark, orthogonal, monkeypatch, alpha):
+    import statsmodels.api as sm
+
+    X, y = orthogonal
+    grid = np.array([1.0, 0.5])
+    native = sm.OLS.fit_regularized
+    models, results = [], []
+
+    def fit(model, **kwargs):
+        k = len(results)
+        models.append(model)
+        if k:
+            np.testing.assert_array_equal(kwargs["start_params"], results[-1].params)
+        else:
+            assert kwargs["start_params"] is None
+        np.testing.assert_array_equal(kwargs["alpha"], [0, grid[k], grid[k]])
+        assert kwargs["method"] == "elastic_net"
+        assert kwargs["L1_wt"] == alpha
+        assert not {"maxiter", "cnvrg_tol", "zero_tol"}.intersection(kwargs)
+        result = native(model, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(sm.OLS, "fit_regularized", fit)
+    benchmark.fit_statsmodels(X, X, y, grid, alpha, 1, family="gaussian")
+    assert len(results) == len(grid)
+    assert len({id(model) for model in models}) == 1
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_real_glum_child_timing_boundaries(benchmark, tmp_path, monkeypatch, family):
+    import sys
+    import textwrap
+
+    # Instrument the real package without substituting its model, fit or time.
+    # Ordering proves the boundary independently of cold-import speed/load.
+    for key in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMBA_NUM_THREADS",
+    ):
+        monkeypatch.setenv(key, "1")
+    grid = tmp_path / "grid.npy"
+    result = tmp_path / "fit.npz"
+    trace = tmp_path / "trace.txt"
+    np.save(grid, np.geomspace(1.0, 0.5, 100))
+    script = tmp_path / "real_glum.py"
+    script.write_text(
+        textwrap.dedent(f"""
+        import builtins, functools, importlib.util, sys, types
+        import numpy as np
+        spec = importlib.util.spec_from_file_location('bench', {benchmark.__file__!r})
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        real_import = builtins.__import__
+        ready = False
+        def observe_import(name, *args, **kwargs):
+            global ready
+            module = real_import(name, *args, **kwargs)
+            if name == 'glum' and not ready and hasattr(module, 'GeneralizedLinearRegressor'):
+                ready = True
+                cls = module.GeneralizedLinearRegressor
+                init, fit = cls.__init__, cls.fit
+                @functools.wraps(init)
+                def observed_init(self, *args, **kwargs):
+                    init(self, *args, **kwargs)
+                    print('model-ready', flush=True)
+                @functools.wraps(fit)
+                def observed_fit(self, *args, **kwargs):
+                    print('fit-enter', flush=True)
+                    value = fit(self, *args, **kwargs)
+                    print('fit-exit', flush=True)
+                    return value
+                cls.__init__, cls.fit = observed_init, observed_fit
+                print('dependency-ready', flush=True)
+            return module
+        save = np.savez
+        def observe_export(*args, **kwargs):
+            print('export', flush=True)
+            return save(*args, **kwargs)
+        class Tee:
+            def __init__(self, stream, trace):
+                self.stream, self.trace = stream, trace
+            def write(self, text):
+                self.trace.write(text)
+                return self.stream.write(text)
+            def flush(self):
+                self.trace.flush()
+                self.stream.flush()
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+        builtins.__import__ = observe_import
+        np.savez = observe_export
+        stdout = sys.stdout
+        with open({str(trace)!r}, 'w') as log:
+            sys.stdout = Tee(stdout, log)
+            try:
+                bench.run_one(types.SimpleNamespace(
+                    dataset='smoke-500-100', family={family!r},
+                    lambdas={str(grid)!r}, solver='glum', alpha=0.5, threads=1,
+                    out={str(result)!r},
+                ))
+            finally:
+                sys.stdout = stdout
+    """)
+    )
+    assert benchmark.run_capped([sys.executable, str(script)], None, 5.0)
+    events = trace.read_text().splitlines()
+    (stop,) = [
+        i
+        for i, text in enumerate(events)
+        if text.startswith(benchmark.TIMING_STOP + " ")
+    ]
+    assert (
+        events.index("dependency-ready")
+        < events.index("model-ready")
+        < events.index(benchmark.TIMING_START)
+        < events.index("fit-enter")
+        < events.index("fit-exit")
+        < stop
+        < events.index("export")
+    )
+    with np.load(result) as output:
+        assert float(output["seconds"]) == float(events[stop].split()[1])
+        # Constant columns are removed by the data generator, before fitting.
+        inputs = benchmark.make_data("smoke-500-100", family=family)[0]
+        assert output["coef"].shape == (100, inputs.shape[1])
