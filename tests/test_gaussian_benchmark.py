@@ -208,15 +208,24 @@ def test_native_glmnet_mapping_matches_generic_optimality(
 
 @pytest.mark.parametrize("alpha", [1.0, 0.5])
 @pytest.mark.parametrize("response_scale", [0.25, 3.0])
-def test_sklearn_gaussian_adapter_matches_orthogonal_solution(
-    benchmark, orthogonal, alpha, response_scale
+@pytest.mark.parametrize(
+    "solver",
+    [
+        "sklearn-cd",
+        pytest.param("skglm", marks=pytest.mark.bench),
+        pytest.param("glum", marks=pytest.mark.bench),
+        pytest.param("statsmodels", marks=pytest.mark.bench),
+    ],
+)
+def test_gaussian_adapters_match_orthogonal_solution(
+    benchmark, orthogonal, alpha, response_scale, solver
 ):
     Xs, y = orthogonal
     y = 3 + response_scale * (y - 3)
     # Raw features are deliberately different: Python competitors must use Xs.
     X = np.asfortranarray(7 + Xs * [2, 4])
     lambdas = np.array([1.0, 0.5]) * response_scale
-    coef, intercept, seconds = benchmark.fit_sklearn_cd(
+    coef, intercept, seconds = benchmark.FITTERS[solver](
         X, Xs, y, lambdas, alpha, 1, family="gaussian"
     )
     # For orthogonal unit-variance columns, soft threshold the raw score,
@@ -294,6 +303,8 @@ def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
             "--solver",
             "statsmodels",
             "--solver",
+            "sklearn-cd",
+            "--solver",
             "r-glmnet",
             "--alpha",
             "0.5",
@@ -317,6 +328,7 @@ def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
     assert stats["times"] == [2.1]  # slow: one measurement, rather than three
     assert stats["cap"] == stats["ratio_cap"] * 0.6 == 6
     assert stats["ratio_cap"] == 10
+    assert {r["threads"] for r in records if r["solver"] == "sklearn-cd"} == {1, 2}
     for record in records:
         assert record["fitted_lambdas"] == record["nlambda"] == 100
         assert record["max_kkt_residual"] < 64 * np.finfo(float).eps
@@ -335,6 +347,17 @@ def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
             "NUMBA_NUM_THREADS",
         )
     )
+    for _, env, _ in (c for c in calls if c[0] == "sklearn-cd"):
+        requested = env["OMP_NUM_THREADS"]
+        assert requested in {"1", "2"}
+        assert all(
+            env[k] == requested
+            for k in (
+                "OPENBLAS_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "NUMBA_NUM_THREADS",
+            )
+        )
 
 
 @pytest.mark.parametrize("alpha", [1.0, 0.5])
@@ -443,3 +466,188 @@ def test_fit_cap_stops_slow_and_cumulative_fit_intervals(
     """)
     )
     assert not benchmark.run_capped([sys.executable, str(script)], None, cap)
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_skglm_uses_real_native_path(benchmark, orthogonal, monkeypatch, alpha):
+    import skglm
+
+    X, y = orthogonal
+    grid = np.array([1.0, 0.5])
+    cls = skglm.Lasso if alpha == 1 else skglm.ElasticNet
+    native = cls.path
+    calls = []
+
+    def path(model, *args, **kwargs):
+        calls.append(model)
+        assert model.fit_intercept
+        assert model.tol == cls().tol
+        assert set(kwargs) == {"alphas"}
+        np.testing.assert_array_equal(kwargs["alphas"], grid)
+        return native(model, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "path", path)
+    monkeypatch.setattr(cls, "fit", lambda *a, **kw: pytest.fail("use the native path"))
+    coef, intercept, _ = benchmark.fit_skglm(X, X, y, grid, alpha, 1, family="gaussian")
+    assert len(calls) == 1
+    assert coef.shape == (len(grid), X.shape[1])
+    np.testing.assert_allclose(intercept, 3, rtol=0, atol=64 * np.finfo(float).eps)
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_glum_uses_real_native_alpha_search(benchmark, orthogonal, monkeypatch, alpha):
+    import glum
+
+    X, y = orthogonal
+    grid = np.array([1.0, 0.5])
+    native = glum.GeneralizedLinearRegressor.fit
+    calls = []
+
+    def fit(model, *args, **kwargs):
+        calls.append(model)
+        assert model.family == "normal"
+        assert model.alpha_search
+        np.testing.assert_array_equal(model.alpha, grid)
+        assert model.gradient_tol is None  # retain the native default
+        return native(model, *args, **kwargs)
+
+    monkeypatch.setattr(glum.GeneralizedLinearRegressor, "fit", fit)
+    coef, intercept, _ = benchmark.fit_glum(X, X, y, grid, alpha, 1, family="gaussian")
+    assert len(calls) == 1
+    assert coef.shape == (len(grid), X.shape[1])
+    np.testing.assert_allclose(intercept, 3, rtol=0, atol=64 * np.finfo(float).eps)
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("alpha", [1.0, 0.5])
+def test_statsmodels_uses_real_warm_starts(benchmark, orthogonal, monkeypatch, alpha):
+    import statsmodels.api as sm
+
+    X, y = orthogonal
+    grid = np.array([1.0, 0.5])
+    native = sm.OLS.fit_regularized
+    models, results = [], []
+
+    def fit(model, **kwargs):
+        k = len(results)
+        models.append(model)
+        if k:
+            np.testing.assert_array_equal(kwargs["start_params"], results[-1].params)
+        else:
+            assert kwargs["start_params"] is None
+        np.testing.assert_array_equal(kwargs["alpha"], [0, grid[k], grid[k]])
+        assert kwargs["method"] == "elastic_net"
+        assert kwargs["L1_wt"] == alpha
+        assert not {"maxiter", "cnvrg_tol", "zero_tol"}.intersection(kwargs)
+        result = native(model, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(sm.OLS, "fit_regularized", fit)
+    benchmark.fit_statsmodels(X, X, y, grid, alpha, 1, family="gaussian")
+    assert len(results) == len(grid)
+    assert len({id(model) for model in models}) == 1
+
+
+@pytest.mark.bench
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_real_glum_child_timing_boundaries(benchmark, tmp_path, monkeypatch, family):
+    import sys
+    import textwrap
+
+    # Instrument the real package without substituting its model, fit or time.
+    # Ordering proves the boundary independently of cold-import speed/load.
+    for key in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMBA_NUM_THREADS",
+    ):
+        monkeypatch.setenv(key, "1")
+    grid = tmp_path / "grid.npy"
+    result = tmp_path / "fit.npz"
+    trace = tmp_path / "trace.txt"
+    np.save(grid, np.geomspace(1.0, 0.5, 100))
+    script = tmp_path / "real_glum.py"
+    script.write_text(
+        textwrap.dedent(f"""
+        import builtins, functools, importlib.util, sys, types
+        import numpy as np
+        spec = importlib.util.spec_from_file_location('bench', {benchmark.__file__!r})
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        real_import = builtins.__import__
+        ready = False
+        def observe_import(name, *args, **kwargs):
+            global ready
+            module = real_import(name, *args, **kwargs)
+            if name == 'glum' and not ready and hasattr(module, 'GeneralizedLinearRegressor'):
+                ready = True
+                cls = module.GeneralizedLinearRegressor
+                init, fit = cls.__init__, cls.fit
+                @functools.wraps(init)
+                def observed_init(self, *args, **kwargs):
+                    init(self, *args, **kwargs)
+                    print('model-ready', flush=True)
+                @functools.wraps(fit)
+                def observed_fit(self, *args, **kwargs):
+                    print('fit-enter', flush=True)
+                    value = fit(self, *args, **kwargs)
+                    print('fit-exit', flush=True)
+                    return value
+                cls.__init__, cls.fit = observed_init, observed_fit
+                print('dependency-ready', flush=True)
+            return module
+        save = np.savez
+        def observe_export(*args, **kwargs):
+            print('export', flush=True)
+            return save(*args, **kwargs)
+        class Tee:
+            def __init__(self, stream, trace):
+                self.stream, self.trace = stream, trace
+            def write(self, text):
+                self.trace.write(text)
+                return self.stream.write(text)
+            def flush(self):
+                self.trace.flush()
+                self.stream.flush()
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+        builtins.__import__ = observe_import
+        np.savez = observe_export
+        stdout = sys.stdout
+        with open({str(trace)!r}, 'w') as log:
+            sys.stdout = Tee(stdout, log)
+            try:
+                bench.run_one(types.SimpleNamespace(
+                    dataset='smoke-500-100', family={family!r},
+                    lambdas={str(grid)!r}, solver='glum', alpha=0.5, threads=1,
+                    out={str(result)!r},
+                ))
+            finally:
+                sys.stdout = stdout
+    """)
+    )
+    assert benchmark.run_capped([sys.executable, str(script)], None, 5.0)
+    events = trace.read_text().splitlines()
+    (stop,) = [
+        i
+        for i, text in enumerate(events)
+        if text.startswith(benchmark.TIMING_STOP + " ")
+    ]
+    assert (
+        events.index("dependency-ready")
+        < events.index("model-ready")
+        < events.index(benchmark.TIMING_START)
+        < events.index("fit-enter")
+        < events.index("fit-exit")
+        < stop
+        < events.index("export")
+    )
+    with np.load(result) as output:
+        assert float(output["seconds"]) == float(events[stop].split()[1])
+        # Constant columns are removed by the data generator, before fitting.
+        inputs = benchmark.make_data("smoke-500-100", family=family)[0]
+        assert output["coef"].shape == (100, inputs.shape[1])

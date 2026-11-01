@@ -6,6 +6,12 @@ default: test
 test:
 	uv run pytest -n auto
 
+# Optional competitor checks use the bench group, whose tabmat wheel needs 3.14.
+BENCH_PYTHON ?= 3.14
+.PHONY: test-bench
+test-bench:
+	uv run -p $(BENCH_PYTHON) --locked --group bench pytest tests/test_gaussian_benchmark.py -m bench
+
 # the newest versions pyproject.toml allows, ignoring uv.lock: what a new
 # install gets
 .PHONY: test-latest

@@ -108,11 +108,12 @@ R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
 # these don't use more than one thread; running them at more is redundant
 SINGLE_THREADED = {
     "skglm",
-    "sklearn-cd",
     "sklearn-liblinear",
     "sklearn-saga",
     "r-glmnet",
 }
+# sklearn's native path can form its auto-Gram matrix with threaded BLAS.
+# Run it at every requested count, using the same child BLAS/OMP limits.
 GAUSSIAN_SINGLE_THREADED = SINGLE_THREADED | {"statsmodels"}
 GAUSSIAN_SOLVERS = [
     "pybiglasso",
