@@ -721,13 +721,15 @@ def main():
                             if not run_capped(cmd, env, cap):
                                 times.append(float("inf"))
                                 break
-                            r = np.load(res)
-                            assert str(r["input_digest"]) == digest, (
-                                "child fit inputs differ"
-                            )
-                            times.append(float(r["seconds"]))
-                            result = (r["coef"], r["intercept"])
-                            versions = json.loads(str(r["versions"]))
+                            # Windows cannot remove the temporary directory
+                            # while a result archive is still open.
+                            with np.load(res) as r:
+                                assert str(r["input_digest"]) == digest, (
+                                    "child fit inputs differ"
+                                )
+                                times.append(float(r["seconds"]))
+                                result = (r["coef"], r["intercept"])
+                                versions = json.loads(str(r["versions"]))
                             if times[-1] > run_cap / 3:
                                 break  # slow; one measurement will do
                         runs[(solver, t)] = (times, result, versions)

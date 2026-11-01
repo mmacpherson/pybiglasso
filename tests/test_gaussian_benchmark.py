@@ -268,6 +268,17 @@ def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
         return True
 
     monkeypatch.setattr(benchmark, "run_capped", run)
+    load = np.load
+    archives = []
+
+    def track_archive(path, *args, **kwargs):
+        result = load(path, *args, **kwargs)
+        if str(path).endswith(".npz"):
+            # Retain the archive so GC cannot hide a missing close on POSIX.
+            archives.append((result, result.zip.fp))
+        return result
+
+    monkeypatch.setattr(np, "load", track_archive)
     output = tmp_path / "results.jsonl"
     monkeypatch.setattr(
         sys,
@@ -294,7 +305,12 @@ def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
             str(output),
         ],
     )
-    benchmark.main()
+    try:
+        benchmark.main()
+        assert archives and all(handle.closed for _, handle in archives)
+    finally:
+        for archive, _ in archives:
+            archive.close()
     records = [json.loads(line) for line in output.read_text().splitlines()]
     (stats,) = [r for r in records if r["solver"] == "statsmodels"]
     assert stats["threads"] == 1
