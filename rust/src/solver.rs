@@ -53,6 +53,22 @@ impl Family {
 }
 
 const LANES: usize = 8;
+// Each byte's lanes occupy one aligned cache line. Only exact +0.0/+1.0
+// values are substituted; all multiplication, addition and reduction stay
+// in the kernels, including their signed-zero behavior.
+static BOOL_BLOCKS: [Block; 256] = {
+    let mut table = [Block([0.0; LANES]); 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let mut lane = 0;
+        while lane < LANES {
+            table[byte].0[lane] = ((byte >> lane) & 1) as f64;
+            lane += 1;
+        }
+        byte += 1;
+    }
+    table
+};
 const SCALE_MIN: f64 = 1e-6;
 const ETA_MAX: f64 = 10.0;
 const W_MIN: f64 = 0.0001;
@@ -127,6 +143,11 @@ pub(crate) trait Col: Sync {
     #[inline(always)]
     fn at_seq(&self, i: usize, _hint: &mut usize) -> f64 {
         self.at(i)
+    }
+    /// Complete byte-aligned bool blocks, excluding any scalar tail.
+    #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        None
     }
     /// A run starting at i0, addressed from zero, and its end in this column.
     /// Except for a final partial block, the run contains whole LANES blocks.
@@ -222,6 +243,14 @@ struct Span<'a, C> {
 }
 impl<C: Col> Col for Span<'_, C> {
     #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        if !self.i0.is_multiple_of(LANES) {
+            return None;
+        }
+        let bytes = self.col.packed_bytes()?;
+        Some(&bytes[self.i0 / LANES..self.i0 / LANES + self.n / LANES])
+    }
+    #[inline(always)]
     fn n(&self) -> usize {
         self.n
     }
@@ -305,6 +334,15 @@ impl MappedCol<'_> {
 }
 
 impl Col for MappedCol<'_> {
+    #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bits { bytes, offset, len } if offset.is_multiple_of(8) => {
+                Some(&bytes[offset / 8..offset / 8 + len / LANES])
+            }
+            _ => None,
+        }
+    }
     fn n(&self) -> usize {
         match self {
             Self::F64(v) => v.len(),
@@ -336,7 +374,9 @@ impl Col for MappedCol<'_> {
             Self::Bits { bytes, offset, len } => {
                 assert!(i < *len);
                 let bit = offset + i;
-                ((bytes[bit / 8] >> (bit % 8)) & 1).f()
+                // at_seq delegates here too: centering and Gaussian residual
+                // scans must not retain the per-bit conversion bottleneck.
+                BOOL_BLOCKS[usize::from(bytes[bit / 8])].0[bit % 8]
             }
         }
     }
@@ -358,6 +398,9 @@ impl Col for MappedCol<'_> {
                 // The block's LANES bits span at most two bytes: read them
                 // once rather than locating each bit.
                 let bit = offset + i0;
+                if bit.is_multiple_of(8) {
+                    return BOOL_BLOCKS[usize::from(bytes[bit / 8])].0;
+                }
                 let lo = u16::from(bytes[bit / 8]);
                 let hi = if bit.is_multiple_of(8) { 0 } else { u16::from(bytes[bit / 8 + 1]) };
                 let bits = (lo | hi << 8) >> (bit % 8);
@@ -402,6 +445,13 @@ enum ChunkRun<'a> {
     Crossing(Span<'a, ChunkedCol<'a>>),
 }
 impl Col for ChunkRun<'_> {
+    #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Whole(c) => c.packed_bytes(),
+            Self::Crossing(_) => None,
+        }
+    }
     #[inline(always)]
     fn n(&self) -> usize {
         match self {
@@ -739,6 +789,22 @@ fn regs_of<S: Simd>(b: &Block) -> &[S::f64s] {
     bytemuck::cast_slice(&b.0)
 }
 
+/// Decode aligned runs by byte, with type/alignment dispatch outside the
+/// loop. Generic and crossing readers retain their checked block loads.
+#[inline(always)]
+fn for_each_block<C: Col>(c: &C, n: usize, mut visit: impl FnMut(usize, &Block)) {
+    if let Some(bytes) = c.packed_bytes() {
+        for (b, &byte) in bytes[..n / LANES].iter().enumerate() {
+            visit(b * LANES, &BOOL_BLOCKS[usize::from(byte)]);
+        }
+    } else {
+        let mut hint = 0;
+        for i in (0..n / LANES * LANES).step_by(LANES) {
+            visit(i, &load(c, i, &mut hint));
+        }
+    }
+}
+
 /// A serial scan, with storage dispatch fixed over each run. In particular,
 /// centering still adds individual rows left to right, never chunk subtotals.
 #[inline(always)]
@@ -747,7 +813,16 @@ fn for_each_value<C: Col>(c: &C, mut visit: impl FnMut(f64)) {
     let mut hint = 0;
     while start < c.n() {
         let (run, end) = c.run(start, c.n());
-        for i in 0..end - start {
+        let n = end - start;
+        let body = n / LANES * LANES;
+        for_each_block(&run, body, |_, block| {
+            // Conversion may use a whole byte/vector, but visiting its lanes
+            // in order preserves the scalar sum across blocks and runs.
+            for &value in &block.0 {
+                visit(value);
+            }
+        });
+        for i in body..n {
             visit(run.at_seq(i, &mut hint));
         }
         start = end;
@@ -772,11 +847,20 @@ fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
                 let (run, end) = c.run(start, body);
                 let mut hint = 0;
                 let range = start / LANES * regs::<S>()..end / LANES * regs::<S>();
-                for (b, s) in sv[range].chunks_exact(regs::<S>()).enumerate() {
-                    let x = load(&run, b * LANES, &mut hint);
-                    let x = regs_of::<S>(&x);
+                let blocks = sv[range].chunks_exact(regs::<S>());
+                let mut add = |x: &Block, s: &[S::f64s]| {
+                    let x = regs_of::<S>(x);
                     for m in 0..regs::<S>() {
                         acc[m] += v(x[m]) * v(s[m]);
+                    }
+                };
+                if let Some(bytes) = run.packed_bytes() {
+                    for (&byte, s) in bytes[..(end - start) / LANES].iter().zip(blocks) {
+                        add(&BOOL_BLOCKS[usize::from(byte)], s);
+                    }
+                } else {
+                    for (b, s) in blocks.enumerate() {
+                        add(&load(&run, b * LANES, &mut hint), s);
                     }
                 }
                 start = end;
