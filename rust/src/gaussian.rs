@@ -37,11 +37,17 @@ impl<D: Design> Fit<'_, D> {
                 // Keep seqsum's exact left-to-right order over the updated
                 // values, including masked zeros, without a second row pass.
                 let mut sum = 0.0;
-                for i in 0..st.residual.len() {
-                    if self.fits(i) {
-                        st.residual[i] -= shift * ((column.at(i) - center) / scale);
+                let mut start = 0;
+                let mut hint = 0;
+                while start < st.residual.len() {
+                    let (run, end) = column.run(start, st.residual.len());
+                    for (i, residual) in st.residual[start..end].iter_mut().enumerate() {
+                        if self.fits(start + i) {
+                            *residual -= shift * ((run.at_seq(i, &mut hint) - center) / scale);
+                        }
+                        sum += *residual;
                     }
-                    sum += st.residual[i];
+                    start = end;
                 }
                 st.residual_sum = sum;
                 st.beta[j] = value;
