@@ -421,6 +421,32 @@ fn independently_chunked_columns_preserve_kernel_blocks() {
 }
 
 #[test]
+fn chunked_reads_in_any_order_match_the_values() {
+    // block_seq and at_seq step a hint through one ascending pass; reads in
+    // any other order fall back to searching and must give the same values.
+    let n = 61;
+    let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let mut chunks = vec![MappedCol::F64(&[])];
+    chunks.extend(x.chunks(9).map(MappedCol::F64));
+    let design = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
+    let col = design.col(0);
+    let mut hint = 0;
+    for i in (0..n).rev().chain([0, 40, 3, 59]) {
+        assert_eq!(col.at_seq(i, &mut hint), x[i]);
+    }
+    let mut hint = 0;
+    for i0 in (0..=n - LANES).rev().chain([0, 30, 2]) {
+        assert_eq!(col.block_seq(i0, &mut hint), std::array::from_fn(|k| x[i0 + k]));
+    }
+}
+
+#[test]
+#[should_panic]
+fn packed_block_rejects_an_index_that_would_wrap() {
+    MappedCol::Bits { bytes: &[0xff, 0xff], offset: 7, len: 8 }.block(usize::MAX - 6);
+}
+
+#[test]
 fn passes_strided() {
     fn run<const CHECKED: bool>(how: &str) {
         for n in SIZES {
