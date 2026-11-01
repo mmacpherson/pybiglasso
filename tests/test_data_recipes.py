@@ -10,7 +10,9 @@ Values are multiples of 1/8, so every CSV writer and parser round-trips them.
 
 import csv
 import json
+import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -27,10 +29,10 @@ DOCS = Path(__file__).parents[1] / "docs" / "data.md"
 NROW, NCOL = 150, 10
 
 
-def recipe(name):
+def recipe(name, language="python"):
     text = DOCS.read_text()
     match = re.search(
-        rf"<!-- recipe: {re.escape(name)} -->\n```python\n(.*?)```", text, re.S
+        rf"<!-- recipe: {re.escape(name)} -->\n```{language}\n(.*?)```", text, re.S
     )
     assert match, f"no recipe {name!r} in {DOCS.name}"
     return match.group(1)
@@ -197,10 +199,62 @@ def test_plink_bed_rejects_missing_calls(tmp_path):
     assert "missing genotype calls" in error.value.stderr
 
 
+@pytest.mark.postgres
+def test_postgres(tmp_path):
+    if "DATABASE_URL" not in os.environ:
+        pytest.skip("needs DATABASE_URL; make test-recipes-postgres starts a database")
+    import psycopg
+
+    X, y = design()
+    columns = table_columns(X, y)
+    with psycopg.connect(os.environ["DATABASE_URL"]) as db:
+        db.execute("DROP TABLE IF EXISTS observations")
+        db.execute(
+            "CREATE TABLE observations (id integer, "
+            + ", ".join(f"{name} double precision" for name in list(columns)[1:])
+            + ")"
+        )
+        rows = list(
+            zip(*(np.asarray(v).tolist() for v in columns.values()), strict=True)
+        )
+        with db.cursor() as cursor:
+            # inserted out of order: the recipe's ORDER BY restores it
+            cursor.executemany(
+                f"INSERT INTO observations VALUES ({', '.join(['%s'] * len(columns))})",
+                rows[::-1],
+            )
+    assert_same_fit(run_recipe("postgres", tmp_path), X, y)
+
+
+def write_vcf(path, G):
+    """Genotypes (rows = samples) as a minimal VCF; dosage d is d ALT alleles."""
+    calls = {0: "0/0", 1: "0/1", 2: "1/1"}
+    with open(path, "w") as out:
+        out.write("##fileformat=VCFv4.2\n##contig=<ID=1>\n")
+        samples = "\t".join(f"s{i}" for i in range(G.shape[0]))
+        out.write(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{samples}\n")
+        for j in range(G.shape[1]):
+            genotypes = "\t".join(calls[d] for d in G[:, j])
+            out.write(f"1\t{100 + j}\tsnp{j}\tA\tG\t.\tPASS\t.\tGT\t{genotypes}\n")
+
+
+@pytest.mark.genotype_tools
+@pytest.mark.skipif(shutil.which("plink2") is None, reason="needs plink2 on PATH")
+def test_vcf_through_plink2(tmp_path):
+    G = np.random.default_rng(4).integers(0, 3, size=(NROW, 25)).astype(np.int8)
+    _, y = design()
+    write_vcf(tmp_path / "genotypes.vcf", G)
+    np.save(tmp_path / "phenotype.npy", y)
+    subprocess.run(
+        ["sh", "-c", recipe("vcf-plink2", language="sh")], cwd=tmp_path, check=True
+    )
+    assert_same_fit(run_recipe("plink-bed", tmp_path), G, y)
+
+
 def test_every_recipe_is_tested():
     tested = {
         "numpy", "npy", "npz", "pandas", "arrow", "ingest-csv",
-        "duckdb-transform", "sqlite", "plink-bed",
+        "duckdb-transform", "sqlite", "postgres", "plink-bed", "vcf-plink2",
     }  # fmt: skip
     documented = set(re.findall(r"<!-- recipe: ([\w-]+) -->", DOCS.read_text()))
     assert documented == tested, json.dumps(sorted(documented ^ tested))

@@ -168,6 +168,31 @@ data = ingest("data.csv", "design.arrow", response="y", exclude=["id"])
 fit = bl.biglasso(data.design, data.response)
 ```
 
+## A PostgreSQL database
+
+Have the server write the query result as CSV, streamed to a local file with
+[psycopg](https://www.psycopg.org/), then ingest it:
+
+<!-- recipe: postgres -->
+```python
+import os
+
+import psycopg
+import pybiglasso as bl
+from pybiglasso.ingest import ingest
+
+query = "SELECT * FROM observations ORDER BY id"
+with psycopg.connect(os.environ["DATABASE_URL"]) as db, open("data.csv", "wb") as out:
+    with db.cursor().copy(f"COPY ({query}) TO STDOUT WITH (FORMAT csv, HEADER)") as copy:
+        for block in copy:
+            out.write(block)
+data = ingest("data.csv", "design.arrow", response="y", exclude=["id"])
+fit = bl.biglasso(data.design, data.response)
+```
+
+asyncpg works the same way, with `copy_from_query`. DuckDB can also read
+PostgreSQL directly through its `postgres` extension.
+
 ## Genotypes in PLINK `.bed`
 
 Read blocks of variants with [bed-reader](https://pypi.org/project/bed-reader/)
@@ -197,3 +222,17 @@ fit = bl.biglasso(X, y)
 ```
 
 Dosages (0, 1, 2) are integers, not bools: keep them in int8.
+
+## Genotypes in VCF or BCF
+
+Convert to `.bed` with [PLINK 2](https://www.cog-genomics.org/plink/2.0/),
+then follow the `.bed` recipe above:
+
+<!-- recipe: vcf-plink2 -->
+```sh
+plink2 --vcf genotypes.vcf --make-bed --out genotypes
+```
+
+The same works for BCF (`--bcf`) and for PLINK 2's own `.pgen` files
+(`--pfile`). PLINK 2 sets missing calls to missing, which the `.bed` recipe
+then reports.

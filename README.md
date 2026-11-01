@@ -125,6 +125,10 @@ once, or convert it with [ingest](docs/ingest.md), which also reads CSV,
 Parquet and Excel. [Arrow inputs](docs/arrow.md) has the details, including why
 to choose columns after opening rather than with `read_table(columns=...)`.
 
+[Getting your data in](docs/data.md) has tested recipes for the other places
+data lives: `.npz`, CSV, Parquet, a DuckDB query, SQLite, PostgreSQL, and
+genotypes in PLINK or VCF files.
+
 Unpenalized covariates (say age, sex, and principal components) take a penalty
 factor of 0:
 
