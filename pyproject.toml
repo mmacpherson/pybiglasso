@@ -15,6 +15,8 @@ dev = [
   "hypothesis>=6.170.9",
   "pytest-xdist>=3.8.0"
 ]
+# what docs/data.md's recipes use beyond the dev group
+recipes = ["duckdb", "bed-reader", "psycopg[binary]"]
 
 [project]
 authors = [{ name = "Mike Macpherson", email = "mmacpherson@users.noreply.github.com" }]
@@ -78,10 +80,13 @@ python-source = "src"
 strip = true
 
 [tool.pytest.ini_options]
-addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak'"
+addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak and not recipes'"
 markers = [
   "r: runs R biglasso live (needs Rscript, or CONTAINER + R_IMAGE)",
-  "soak: large problems against live R; slow, meant for local runs"
+  "soak: large problems against live R; slow, meant for local runs",
+  "recipes: runs the snippets in docs/data.md (needs the recipes dependency group)",
+  "postgres: a recipe run against PostgreSQL (needs DATABASE_URL)",
+  "genotype_tools: a recipe run through external genotype tools (plink2)"
 ]
 testpaths = ["tests"]
 

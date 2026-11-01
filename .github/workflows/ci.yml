@@ -186,6 +186,29 @@ jobs:
         python-version: '3.11'
     - run: make test-minimum
 
+  recipes:
+    name: Data recipes (docs/data.md), PostgreSQL included
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: recipes
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgresql://postgres:recipes@localhost:5432/postgres
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+      with:
+        python-version: '3.14'
+    - run: make test-recipes
+    - run: make test-recipes-postgres
+
   sdist:
     name: Build the sdist and a wheel from it; fit from that wheel with no extras
     runs-on: ubuntu-latest

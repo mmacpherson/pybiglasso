@@ -42,6 +42,42 @@ update-hooks:
 run-hooks-all-files:
 	uv run pre-commit run --all-files
 
+# every snippet in docs/data.md, run verbatim, except those needing a
+# database or external tools (below)
+.PHONY: test-recipes test-recipes-postgres test-recipes-tools
+test-recipes:
+	uv run --group recipes pytest -m 'recipes and not postgres and not genotype_tools'
+
+# the PostgreSQL recipe: against DATABASE_URL if set (as in CI), otherwise a
+# throwaway container
+PG_IMAGE = postgres:17
+test-recipes-postgres:
+	@if [ -n "$$DATABASE_URL" ]; then \
+		uv run --group recipes pytest -m postgres; \
+	else \
+		name=pybiglasso-recipes-pg; \
+		$(CONTAINER) run -d --rm --name $$name -e POSTGRES_PASSWORD=recipes \
+			-p 127.0.0.1::5432 $(PG_IMAGE) >/dev/null || exit 1; \
+		trap "$(CONTAINER) stop $$name >/dev/null" EXIT; \
+		tries=0; \
+		until $(CONTAINER) exec $$name pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; do \
+			tries=$$((tries + 1)); \
+			if [ $$tries -ge 60 ]; then \
+				echo "PostgreSQL not ready after 60 s; its log:" >&2; \
+				$(CONTAINER) logs $$name >&2; exit 1; \
+			fi; \
+			sleep 1; \
+		done; \
+		port=$$($(CONTAINER) port $$name 5432/tcp | head -1 | sed 's/.*://'); \
+		DATABASE_URL=postgresql://postgres:recipes@127.0.0.1:$$port/postgres \
+			uv run --group recipes pytest -m postgres; \
+	fi
+
+# recipes that run external tools (plink2); each skips, with its reason,
+# unless the tool is on PATH
+test-recipes-tools:
+	uv run --group recipes pytest -m genotype_tools
+
 # R comparisons; set CONTAINER=podman to use podman instead
 CONTAINER ?= docker
 R_VERSION ?= latest
