@@ -1,0 +1,17 @@
+{
+  "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+  "governors": [
+    "performance"
+  ],
+  "python": "3.14.0",
+  "numpy": "2.5.4",
+  "pyarrow": "26.0.0",
+  "source_commit": "e2aeea086971c2bc26482d4a13a00bf9a866cb09",
+  "extension_sha256": "77bcab7e3096e8b5805a92eee9a4a5a5799618be1fc1b909ded311a566bf69af",
+  "script_sha256": "cce8046aa508956580b6978b8a0b9a0b28538ac559ee088da9b2f01c08b1d7c0",
+  "design": {
+    "nrow": 50000,
+    "ncol": 240000,
+    "seed": 0
+  }
+}
