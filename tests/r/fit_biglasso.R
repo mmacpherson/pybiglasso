@@ -73,6 +73,13 @@ fit_case <- function(case_dir) {
 
   warns <- character()
   if (isTRUE(prm$cgroup_stats)) before <- cgroup_memory()
+  timing <- isTRUE(prm$timing_signals)
+  if (timing) {
+    # Keep system.time's usual pre-fit GC outside the benchmark cap too.
+    gc()
+    cat("--timing-start--\n")
+    flush(stdout())
+  }
   elapsed <- system.time(
     fit <- withCallingHandlers(
       do.call(biglasso, args),
@@ -80,8 +87,12 @@ fit_case <- function(case_dir) {
         warns <<- c(warns, conditionMessage(w))
         invokeRestart("muffleWarning")
       }
-    )
+    ), gcFirst = !timing
   )[["elapsed"]]
+  if (timing) {
+    cat("--timing-stop-- ", sprintf("%.17g", elapsed), "\n", sep = "")
+    flush(stdout())
+  }
 
   if (isTRUE(prm$cgroup_stats)) after <- cgroup_memory()
   beta <- as.matrix(fit$beta)

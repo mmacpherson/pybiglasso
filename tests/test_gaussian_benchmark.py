@@ -321,6 +321,9 @@ def test_gaussian_competitors_use_caps_threads_and_accuracy_reporting(
         assert record["fitted_lambdas"] == record["nlambda"] == 100
         assert record["max_kkt_residual"] < 64 * np.finfo(float).eps
         assert record["max_rel_objective_difference_vs_glmnet"] == 0
+        assert record["timing_scope"] == "native fit intervals"
+        if record["solver"] == "r-glmnet":
+            assert record["cap"] == 900  # R's retained absolute fit budget
     solver, env, cap = next(c for c in calls if c[0] == "statsmodels")
     assert cap == 6
     assert all(
@@ -371,3 +374,72 @@ def test_sklearn_native_path_centers_and_recovers_intercept(
     assert set(calls[0]) == {"alphas", "l1_ratio"}
     np.testing.assert_array_equal(calls[0]["alphas"], lambdas)
     assert calls[0]["l1_ratio"] == alpha
+
+
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_fit_cap_excludes_adapter_setup_and_export(benchmark, tmp_path, family):
+    import sys
+    import textwrap
+    import time
+
+    grid = tmp_path / "lambdas.npy"
+    result = tmp_path / "fit.npz"
+    np.save(grid, [1.0, 0.5])
+    script = tmp_path / "slow_setup.py"
+    script.write_text(
+        textwrap.dedent(f"""
+        import importlib.util, sys, time, types
+        import numpy as np
+        spec = importlib.util.spec_from_file_location('bench', {benchmark.__file__!r})
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        class Model:
+            def __init__(self, **kwargs):
+                time.sleep(0.75)
+            def fit(self, X, y):
+                time.sleep(0.01)
+            @property
+            def coef_path_(self):
+                time.sleep(0.75)
+                return np.zeros((2, 1))
+            @property
+            def intercept_path_(self):
+                time.sleep(0.75)
+                return np.zeros(2)
+        sys.modules['glum'] = types.SimpleNamespace(GeneralizedLinearRegressor=Model)
+        bench.make_data = lambda *a, **kw: (np.ones((4, 1)), np.ones((4, 1)), np.zeros(4))
+        bench.run_one(types.SimpleNamespace(
+            dataset='unused', family={family!r}, lambdas={str(grid)!r},
+            solver='glum', alpha=0.5, threads=1, out={str(result)!r},
+        ))
+    """)
+    )
+    started = time.perf_counter()
+    assert benchmark.run_capped([sys.executable, str(script)], None, 0.5)
+    assert time.perf_counter() - started > 0.5
+    with np.load(result) as output:
+        assert 0 < float(output["seconds"]) < 0.5
+
+
+@pytest.mark.parametrize("durations, cap", [([0.5], 0.2), ([0.2, 0.2], 0.3)])
+def test_fit_cap_stops_slow_and_cumulative_fit_intervals(
+    benchmark, tmp_path, durations, cap
+):
+    import sys
+    import textwrap
+
+    script = tmp_path / "slow_fit.py"
+    script.write_text(
+        textwrap.dedent(f"""
+        import importlib.util, time
+        spec = importlib.util.spec_from_file_location('bench', {benchmark.__file__!r})
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        clock = bench.FitClock(signals=True)
+        for duration in {durations!r}:
+            with clock:
+                time.sleep(duration)
+            time.sleep(0.5)  # snapshot export between fit intervals
+    """)
+    )
+    assert not benchmark.run_capped([sys.executable, str(script)], None, cap)

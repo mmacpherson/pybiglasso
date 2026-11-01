@@ -9,7 +9,9 @@ and accuracy is reported alongside time: the worst relative suboptimality of
 its objective, over the path, against the best solution any solver found.
 
 Each (dataset, solver, threads) run happens in a fresh subprocess, with thread
-counts set before numpy loads and a hard time cap.
+counts set before numpy loads. Both families report native fit/path-call time;
+the cap spends that same cumulative budget. Adapter setup and exports between
+or after calls consume neither reported fit time nor the cap.
 
     uv run -p 3.14 --group bench python benchmarks/path.py --threads 1 --threads 12
 
@@ -38,9 +40,12 @@ import json
 import os
 import pathlib
 import platform
+import queue
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = pathlib.Path(__file__).parent
@@ -67,6 +72,33 @@ SOLVERS = [
     "statsmodels",
 ]
 TIMING_START = "--timing-start--"
+TIMING_STOP = "--timing-stop--"
+
+
+class FitClock:
+    """One cumulative fit clock for both the reported time and the cap.
+
+    Repeated fits may export snapshots between intervals. Neither those
+    exports nor adapter setup consume fit time. Direct adapter calls are
+    silent; subprocess runs emit boundaries for the parent's watchdog.
+    """
+
+    def __init__(self, signals=False):
+        self.signals = signals
+        self.seconds = 0.0
+
+    def __enter__(self):
+        if self.signals:
+            print(TIMING_START, flush=True)
+        self.started = time.perf_counter()
+        return self
+
+    def __exit__(self, *_):
+        self.seconds += time.perf_counter() - self.started
+        if self.signals:
+            print(f"{TIMING_STOP} {self.seconds:.17g}", flush=True)
+
+
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
 LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
 # R's elastic-net update; identical to pybiglasso's for the lasso
@@ -150,25 +182,35 @@ def lambda_grid(X, y, alpha, family="binomial"):
 
 
 def fit_pybiglasso(
-    X, Xs, y, lambdas, alpha, threads, eps=1e-7, r_compatible=False, family="binomial"
+    X,
+    Xs,
+    y,
+    lambdas,
+    alpha,
+    threads,
+    eps=1e-7,
+    r_compatible=False,
+    family="binomial",
+    *,
+    clock=None,
 ):
     import numpy as np
 
     import pybiglasso as bl
 
-    started = time.perf_counter()
-    path = bl.biglasso(
-        X,
-        y,
-        alpha=alpha,
-        lambdas=lambdas,
-        n_threads=threads,
-        eps=eps,
-        r_compatible=r_compatible,
-        family=family,
-        backend="rust" if family == "gaussian" else None,
-    )
-    seconds = time.perf_counter() - started
+    clock = clock or FitClock()
+    with clock:
+        path = bl.biglasso(
+            X,
+            y,
+            alpha=alpha,
+            lambdas=lambdas,
+            n_threads=threads,
+            eps=eps,
+            r_compatible=r_compatible,
+            family=family,
+            backend="rust" if family == "gaussian" else None,
+        )
     coef = path.coef.toarray().T * path.scale
     intercept = path.intercept + path.coef.toarray().T @ path.center
     L = len(lambdas)  # the path can stop early on saturation
@@ -178,11 +220,11 @@ def fit_pybiglasso(
         np.concatenate([intercept, np.full(L - len(path), np.nan)]),
     )
     if family == "gaussian":
-        return *out, seconds, {"max_iterations": int(path.iterations.max())}
+        return *out, clock.seconds, {"max_iterations": int(path.iterations.max())}
     return out
 
 
-def fit_glum(X, Xs, y, lambdas, alpha, threads, family="binomial"):
+def fit_glum(X, Xs, y, lambdas, alpha, threads, family="binomial", *, clock=None):
     from glum import GeneralizedLinearRegressor
 
     # glum minimizes deviance/(2n) + lambda * the elastic-net penalty.
@@ -197,27 +239,29 @@ def fit_glum(X, Xs, y, lambdas, alpha, threads, family="binomial"):
         l1_ratio=alpha,
         scale_predictors=False,
     )
-    started = time.perf_counter()
-    m.fit(Xs, y)
-    seconds = time.perf_counter() - started
+    clock = clock or FitClock()
+    with clock:
+        m.fit(Xs, y)
     if family == "gaussian":
-        return m.coef_path_, m.intercept_path_, seconds
+        return m.coef_path_, m.intercept_path_, clock.seconds
     return m.coef_path_, m.intercept_path_
 
 
-def _warm_loop(model, Xs, y, lambdas, set_lambda):
+def _warm_loop(model, Xs, y, lambdas, set_lambda, clock=None):
     import numpy as np
 
     coefs, intercepts = [], []
+    clock = clock or FitClock()
     for lam in lambdas:
         set_lambda(model, lam)
-        model.fit(Xs, y)
+        with clock:
+            model.fit(Xs, y)
         coefs.append(np.ravel(model.coef_).copy())
         intercepts.append(float(np.ravel(model.intercept_)[0]))
     return np.array(coefs), np.array(intercepts)
 
 
-def fit_skglm(X, Xs, y, lambdas, alpha, threads, family="binomial"):
+def fit_skglm(X, Xs, y, lambdas, alpha, threads, family="binomial", *, clock=None):
     from skglm import ElasticNet, Lasso, SparseLogisticRegression
 
     # its penalty, alpha * (l1_ratio * |b|_1 + (1 - l1_ratio) / 2 * |b|_2^2),
@@ -228,46 +272,44 @@ def fit_skglm(X, Xs, y, lambdas, alpha, threads, family="binomial"):
     if family == "gaussian" and alpha == 1:
         cls, options = Lasso, {}
     m = cls(alpha=lambdas[0], fit_intercept=True, warm_start=True, **options)
+    clock = clock or FitClock()
     if family == "gaussian":
         # The public path API validates and initializes the datafit once,
         # then warm-starts every lambda. With fit_intercept=True its last
         # coefficient row is the unpenalized intercept.
-        started = time.perf_counter()
-        _, coef, *_ = m.path(Xs, y, alphas=lambdas)
-        seconds = time.perf_counter() - started
-        return coef[:-1].T, coef[-1], seconds
+        with clock:
+            _, coef, *_ = m.path(Xs, y, alphas=lambdas)
+        return coef[:-1].T, coef[-1], clock.seconds
     return _warm_loop(
         m,
         Xs,
         y,
         lambdas,
         lambda m, lam: m.set_params(alpha=lam),
+        clock=clock,
     )
 
 
-def fit_sklearn_cd(X, Xs, y, lambdas, alpha, threads, family="gaussian"):
+def fit_sklearn_cd(X, Xs, y, lambdas, alpha, threads, family="gaussian", *, clock=None):
     import numpy as np
     from sklearn.linear_model import enet_path
 
     # RSS/(2n) + a*(l1_ratio*|b|_1 + (1-l1_ratio)*|b|_2^2/2):
     # a=lambda and l1_ratio=alpha, including the lasso at alpha=1.
-    # enet_path does not fit an intercept. Center once inside the timer;
+    # enet_path does not fit an intercept. Prepare centered inputs once;
     # retain its default validation, tolerance and precompute='auto' so tall
     # data can use the native Gram path instead of 100 estimator fits.
-    started = time.perf_counter()
     center, response_mean = Xs.mean(axis=0), y.mean()
-    _, coef, _ = enet_path(
-        np.asfortranarray(Xs - center),
-        y - response_mean,
-        alphas=lambdas,
-        l1_ratio=alpha,
-    )
+    centered = np.asfortranarray(Xs - center)
+    response = y - response_mean
+    clock = clock or FitClock()
+    with clock:
+        _, coef, _ = enet_path(centered, response, alphas=lambdas, l1_ratio=alpha)
     intercept = response_mean - center @ coef
-    seconds = time.perf_counter() - started
-    return coef.T, intercept, seconds
+    return coef.T, intercept, clock.seconds
 
 
-def _fit_sklearn(solver, Xs, y, lambdas, alpha):
+def _fit_sklearn(solver, Xs, y, lambdas, alpha, clock=None):
     from sklearn.linear_model import LogisticRegression
 
     n = len(y)
@@ -278,25 +320,30 @@ def _fit_sklearn(solver, Xs, y, lambdas, alpha):
     else:
         kw.update(l1_ratio=alpha)
     m = LogisticRegression(C=1.0, **kw)
-    return _warm_loop(m, Xs, y, lambdas, lambda m, lam: m.set_params(C=1.0 / (n * lam)))
+    return _warm_loop(
+        m, Xs, y, lambdas, lambda m, lam: m.set_params(C=1.0 / (n * lam)), clock
+    )
 
 
-def fit_sklearn_liblinear(X, Xs, y, lambdas, alpha, threads):
-    return _fit_sklearn("liblinear", Xs, y, lambdas, alpha)
+def fit_sklearn_liblinear(X, Xs, y, lambdas, alpha, threads, *, clock=None):
+    return _fit_sklearn("liblinear", Xs, y, lambdas, alpha, clock)
 
 
-def fit_sklearn_saga(X, Xs, y, lambdas, alpha, threads):
-    return _fit_sklearn("saga", Xs, y, lambdas, alpha)
+def fit_sklearn_saga(X, Xs, y, lambdas, alpha, threads, *, clock=None):
+    return _fit_sklearn("saga", Xs, y, lambdas, alpha, clock)
 
 
-def fit_statsmodels(X, Xs, y, lambdas, alpha, threads, family="binomial"):
+def fit_statsmodels(
+    X, Xs, y, lambdas, alpha, threads, family="binomial", *, clock=None
+):
     import numpy as np
     import statsmodels.api as sm
 
     n, p = Xs.shape
     design = np.column_stack([np.ones(n), Xs])
     model = sm.OLS(y, design) if family == "gaussian" else sm.Logit(y, design)
-    coefs, intercepts, start, seconds = [], [], None, 0.0
+    coefs, intercepts, start = [], [], None
+    clock = clock or FitClock()
     # OLS has no public regularization-path API; start_params is its native
     # warm-start mechanism. Keep the previous full coefficient vector.
     for lam in lambdas:
@@ -312,14 +359,13 @@ def fit_statsmodels(X, Xs, y, lambdas, alpha, threads, family="binomial"):
             if family == "gaussian"
             else dict(method="l1", disp=False)
         )
-        started = time.perf_counter()
-        res = model.fit_regularized(alpha=weights, start_params=start, **options)
-        seconds += time.perf_counter() - started
+        with clock:
+            res = model.fit_regularized(alpha=weights, start_params=start, **options)
         start = res.params
         coefs.append(res.params[1:].copy())
         intercepts.append(float(res.params[0]))
     out = np.array(coefs), np.array(intercepts)
-    return (*out, seconds) if family == "gaussian" else out
+    return (*out, clock.seconds) if family == "gaussian" else out
 
 
 def statsmodels_memory_gb(ncol):
@@ -328,16 +374,18 @@ def statsmodels_memory_gb(ncol):
     return (2 * ncol + 1) ** 2 * 8 / 1e9
 
 
-def fit_pybiglasso_tight(X, Xs, y, lambdas, alpha, threads):
+def fit_pybiglasso_tight(X, Xs, y, lambdas, alpha, threads, *, clock=None):
     # R's default eps=1e-7 stops earlier than glum's default; this matches it
-    return fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, eps=1e-10)
+    return fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, eps=1e-10, clock=clock)
 
 
-def fit_pybiglasso_rcompat(X, Xs, y, lambdas, alpha, threads):
-    return fit_pybiglasso(X, Xs, y, lambdas, alpha, threads, r_compatible=True)
+def fit_pybiglasso_rcompat(X, Xs, y, lambdas, alpha, threads, *, clock=None):
+    return fit_pybiglasso(
+        X, Xs, y, lambdas, alpha, threads, r_compatible=True, clock=clock
+    )
 
 
-def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial"):
+def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial", *, clock=None):
     """Fit in R biglasso; returns (coef, intercept, R's own fit seconds)."""
     import numpy as np
 
@@ -364,6 +412,7 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial"):
             ncores=threads,
             filebacked=False,
             family=family,
+            timing_signals=bool(clock and clock.signals),
         )
         if family == "gaussian":
             params["lambdas"] = list(lambdas)
@@ -392,12 +441,12 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial"):
     return coef, intercept, float(r["seconds"])
 
 
-def fit_r_ssr(X, Xs, y, lambdas, alpha, threads, family="binomial"):
-    return _fit_r(X, Xs, y, lambdas, alpha, threads, "SSR", family=family)
+def fit_r_ssr(X, Xs, y, lambdas, alpha, threads, family="binomial", *, clock=None):
+    return _fit_r(X, Xs, y, lambdas, alpha, threads, "SSR", family=family, clock=clock)
 
 
-def fit_r_adaptive(X, Xs, y, lambdas, alpha, threads):
-    return _fit_r(X, Xs, y, lambdas, alpha, threads, "Adaptive")
+def fit_r_adaptive(X, Xs, y, lambdas, alpha, threads, *, clock=None):
+    return _fit_r(X, Xs, y, lambdas, alpha, threads, "Adaptive", clock=clock)
 
 
 def r_thread_limits(threads):
@@ -413,7 +462,17 @@ def r_thread_limits(threads):
 
 
 def fit_r_glmnet(
-    X, Xs, y, lambdas, alpha, threads, family="binomial", *, generic=False, thresh=None
+    X,
+    Xs,
+    y,
+    lambdas,
+    alpha,
+    threads,
+    family="binomial",
+    *,
+    generic=False,
+    thresh=None,
+    clock=None,
 ):
     """Fit in R's glmnet; returns (coef, intercept, R's own fit seconds,
     glmnet's version). glmnet gets raw X and standardizes it itself, as its
@@ -439,6 +498,7 @@ def fit_r_glmnet(
             family=family,
             generic=generic,
             thresh=thresh,
+            timing_signals=bool(clock and clock.signals),
         )
         (d / "params.json").write_text(json.dumps(params))
         (r,) = rcompare.run_r(
@@ -509,16 +569,14 @@ def run_one(args):
     if args.solver == "skglm":
         # This competitor still uses numba; pybiglasso has no JIT warm-up.
         fitter(X[:50, :20], Xs[:50, :20], y[:50], lambdas[:2], args.alpha, 1)
-    print(TIMING_START, flush=True)  # the parent's time cap starts here
-    t0 = time.perf_counter()
+    clock = FitClock(signals=True)
     with warnings.catch_warnings(record=True) as observed:
         if args.family == "gaussian":
             warnings.simplefilter("always")
-        out = fitter(X, Xs, y, lambdas, args.alpha, args.threads)
-    seconds = time.perf_counter() - t0
-    # Gaussian Python and all R adapters report their fit-only clock. Legacy
-    # binomial Python rows include the wrapper's coefficient export too; keep
-    # that historical scope rather than silently changing published timings.
+        out = fitter(X, Xs, y, lambdas, args.alpha, args.threads, clock=clock)
+    # Both families use only their native fit intervals. In particular,
+    # binomial Python timings no longer include setup and coefficient export.
+    seconds = clock.seconds
     versions = {}
     if len(out) == 4:  # R's glmnet, which also reports its version
         coef, intercept, seconds, versions = out
@@ -545,20 +603,74 @@ def run_one(args):
 
 
 def run_capped(cmd, env, cap):
-    """Run a child; the cap counts from when it starts timing its fit, so data
-    generation and imports are excluded. Returns False on timeout."""
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, text=True)
-    for line in proc.stdout:
-        if line.strip() == TIMING_START:
-            break
-    try:
-        proc.wait(timeout=cap)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    """Cap the same cumulative native-fit intervals the child reports.
+
+    A stdout reader works on Windows pipes too. Setup, snapshot export and
+    final serialization have no fit deadline. STOP carries the child's
+    cumulative time, so repeated-fit paths spend one shared budget.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    )
+    events = queue.Queue()
+
+    def read_stdout():
+        for line in proc.stdout:
+            events.put(line.strip())
+        events.put(None)
+
+    threading.Thread(target=read_stdout, daemon=True).start()
+    seconds, deadline, active, intervals = 0.0, None, False, 0
+
+    def timed_out():
+        try:
+            if os.name == "posix":
+                # Include local R/container clients in the termination signal.
+                os.killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            pass
         proc.wait()
         return False
+
+    try:
+        while True:
+            try:
+                line = events.get(
+                    timeout=max(0, deadline - time.perf_counter()) if active else None
+                )
+            except queue.Empty:
+                return timed_out()
+            if line is None:
+                break
+            if line == TIMING_START:
+                if active:
+                    raise RuntimeError("nested fit timing intervals")
+                active, deadline = True, time.perf_counter() + cap - seconds
+                intervals += 1
+            elif line.startswith(TIMING_STOP + " "):
+                if not active:
+                    raise RuntimeError("fit timing stop without start")
+                elapsed = float(line.split()[1])
+                if not seconds <= elapsed < float("inf"):
+                    raise RuntimeError("invalid cumulative fit time")
+                seconds, active, deadline = elapsed, False, None
+                if seconds > cap:
+                    return timed_out()
+        proc.wait()
+    finally:
+        if proc.poll() is None:
+            timed_out()
+        proc.stdout.close()
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
+    if active or not intervals:
+        raise RuntimeError("child did not finish its fit timing intervals")
     return True
 
 
@@ -823,7 +935,10 @@ def main():
                         seconds=float(np.median(times)) if times else None,
                         times=times,
                         timed_out=bool(times) and not np.isfinite(times[-1]),
-                        cap=run_cap if solver != "pybiglasso" else args.cap,
+                        cap=args.cap
+                        if solver == "pybiglasso" or solver in R_SOLVERS
+                        else run_cap,
+                        timing_scope="native fit intervals",
                         ratio_cap=args.ratio_cap,
                         max_rel_suboptimality=subopt,
                         max_kkt_residual=kkt,
