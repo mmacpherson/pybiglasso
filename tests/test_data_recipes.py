@@ -140,17 +140,23 @@ def test_pandas(tmp_path):
     assert_same_fit(run_recipe("pandas", tmp_path), X, y, names())
 
 
-def test_arrow_file(tmp_path):
+def test_polars(tmp_path):
+    X, y = design()
+    write_csv(tmp_path / "data.csv", table_columns(X, y))
+    assert_same_fit(run_recipe("polars", tmp_path), X, y, names())
+
+
+def test_feather_file(tmp_path):
     import pyarrow as pa
     import pyarrow.feather as pf
 
     X, y = design()
     pf.write_feather(
         pa.table(table_columns(X, y)),
-        tmp_path / "data.arrow",
+        tmp_path / "data.feather",
         compression="uncompressed",
     )
-    assert_same_fit(run_recipe("arrow", tmp_path), X, y, names())
+    assert_same_fit(run_recipe("feather", tmp_path), X, y, names())
 
 
 def test_ingest_csv(tmp_path):

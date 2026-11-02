@@ -33,14 +33,14 @@ _INTEGER = re.compile(r"[+-]?\d+\Z")
 
 @dataclass(frozen=True)
 class IngestResult:
-    """Persistent output and its read-only design/optional response mapping.
+    """Persistent output: read-only features X and an optional response y.
 
     Files are not deleted when this object is collected. This lets a retained
-    design or response outlive the result, including on Windows.
+    X or y outlive the result, including on Windows.
     """
 
-    design: pa.Table
-    response: np.ndarray | None
+    X: pa.Table
+    y: np.ndarray | None
     feature_names: tuple[str, ...]
     path: Path
 
@@ -443,13 +443,13 @@ def _open_result(path, metadata):
             dtype=np.float64,
             shape=(metadata["rows"],),
         )
-    design = _open_mapped(path)
-    if design.shape != (
+    X = _open_mapped(path)
+    if X.shape != (
         metadata["rows"],
         len(metadata["features"]),
-    ) or tuple(design.column_names) != tuple(metadata["features"]):
-        raise ValueError("Ingest cache metadata does not match its design.")
-    return IngestResult(design, response, tuple(design.column_names), path)
+    ) or tuple(X.column_names) != tuple(metadata["features"]):
+        raise ValueError("Ingest cache metadata does not match its features.")
+    return IngestResult(X, response, tuple(X.column_names), path)
 
 
 def _write_ipc(path, raw, selected, types, count, pa):
@@ -568,10 +568,10 @@ def ingest(
         root = Path(cache_dir).absolute()
         root.mkdir(parents=True, exist_ok=True)
         directory = (
-            root / key if cache else Path(tempfile.mkdtemp(prefix="design-", dir=root))
+            root / key if cache else Path(tempfile.mkdtemp(prefix="ingest-", dir=root))
         )
         directory.mkdir(exist_ok=True)
-        path = directory / "design.arrow"
+        path = directory / "data.feather"
     else:
         path = Path(out).absolute()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -600,7 +600,7 @@ def ingest(
         staging = Path(temporary)
         raw = _stage(blocks(), columns, types, staging, count)
         _check_source(source, fingerprint)
-        output = staging / "design.arrow"
+        output = staging / "data.feather"
         _write_ipc(output, raw, selected, types, count, pa)
         metadata = dict(key=key, rows=count, features=selected, response=response)
         staged_metadata = staging / "metadata.json"

@@ -61,9 +61,9 @@ def test_source_round_trip_and_exact_types(tmp_path, source_table, format):
         # Bool is nine bits, not nine unpacked bytes.
         assert actual.column("bit").buffers()[1].size == 2
     assert result.feature_names == tuple(expected.column_names[:-1])
-    np.testing.assert_array_equal(result.response, expected["outcome"].to_numpy())
-    assert not result.response.flags.writeable
-    assert result.design.shape == (9, 6)
+    np.testing.assert_array_equal(result.y, expected["outcome"].to_numpy())
+    assert not result.y.flags.writeable
+    assert result.X.shape == (9, 6)
 
 
 def test_selection_order_glob_regex_and_unselected_bad_values(tmp_path):
@@ -82,7 +82,7 @@ def test_selection_order_glob_regex_and_unselected_bad_values(tmp_path):
     assert result.feature_names == ("x2",)
     result = ingest(source, tmp_path / "regex.arrow", match=re.compile(r"^x[12]$"))
     assert result.feature_names == ("x1", "x2")
-    assert result.response is None
+    assert result.y is None
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_cache_reuse_key_and_persistent_artifacts(tmp_path, monkeypatch):
     second = ingest(source, response="y", cache=True, cache_dir=tmp_path / "cache")
     assert second.path == first.path
     assert second.feature_names == ("x",)
-    np.testing.assert_array_equal(second.response, [0.0, 1.0])
+    np.testing.assert_array_equal(second.y, [0.0, 1.0])
     monkeypatch.setattr(module, "_blocks", original)
     changed = ingest(source, cache=True, cache_dir=tmp_path / "cache")
     assert changed.path != first.path
@@ -170,11 +170,11 @@ def test_source_change_between_passes_rejected(tmp_path, monkeypatch):
         ingest(source, tmp_path / "X.arrow")
 
 
-def test_cache_metadata_matches_design(tmp_path):
+def test_cache_metadata_matches_features(tmp_path):
     source = tmp_path / "source.csv"
     source.write_text("x\n1\n2\n")
     result = ingest(source, cache=True, cache_dir=tmp_path / "cache")
-    metadata_path = result.path.with_suffix(".arrow.json")
+    metadata_path = result.path.with_suffix(result.path.suffix + ".json")
     metadata = json.loads(metadata_path.read_text())
     metadata["rows"] = 3
     metadata_path.write_text(json.dumps(metadata))
@@ -233,7 +233,7 @@ def test_csv_preserves_large_integer_and_signed_zero_spelling(tmp_path):
     source = tmp_path / "source.csv"
     source.write_text("x\n-0.0\n0.25\n")
     result = ingest(source, tmp_path / "zero.arrow")
-    assert np.signbit(result.design.column(0).chunk(0)[0].as_py())
+    assert np.signbit(result.X.column(0).chunk(0)[0].as_py())
     source.write_text("x\n9007199254740993.0\n")
     with pytest.raises(ValueError, match="no supported exact dtype"):
         ingest(source, tmp_path / "integer.arrow")
@@ -243,7 +243,7 @@ def test_decimal_source_requires_exact_binary_representation(tmp_path):
     source = tmp_path / "source.parquet"
     pq.write_table(pa.table({"x": [Decimal("0.25"), Decimal("0.50")]}), source)
     result = ingest(source, tmp_path / "exact.arrow")
-    np.testing.assert_array_equal(result.design.column(0).to_numpy(), [0.25, 0.5])
+    np.testing.assert_array_equal(result.X.column(0).to_numpy(), [0.25, 0.5])
     pq.write_table(pa.table({"x": [Decimal("0.1")]}), source)
     with pytest.raises(ValueError, match="Column 'x', row 1: no supported exact dtype"):
         ingest(source, tmp_path / "inexact.arrow")
@@ -272,7 +272,7 @@ def test_excel_round_trip_against_independent_reader(tmp_path):
         actual = pa.ipc.open_file(mapping).get_batch(0)
         assert actual.column("x").to_pylist() == [row[0] for row in rows]
         assert actual.column("bit").to_pylist() == [row[1] for row in rows]
-    np.testing.assert_array_equal(result.response, [row[2] for row in rows])
+    np.testing.assert_array_equal(result.y, [row[2] for row in rows])
 
 
 def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_path):
@@ -285,21 +285,21 @@ def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_pa
         "x,z,y\n" + "\n".join(f"{i % 7},{i % 3},{i % 2}" for i in range(41)) + "\n"
     )
     result = ingest(source, tmp_path / "features.arrow", response="y")
-    assert isinstance(result.design, pa.Table)
-    assert result.feature_names == tuple(result.design.column_names)
-    assert result.design.column_names == ["x", "z"]
+    assert isinstance(result.X, pa.Table)
+    assert result.feature_names == tuple(result.X.column_names)
+    assert result.X.column_names == ["x", "z"]
     with pytest.raises((TypeError, ValueError)):
-        biglasso(result, result.response, nlambda=3)
+        biglasso(result, result.y, nlambda=3)
     with pytest.raises((TypeError, ValueError)):
-        BiglassoRegressor().fit(result, result.response)
+        BiglassoRegressor().fit(result, result.y)
     result.path.with_suffix(result.path.suffix + ".json").unlink()
     reopened = pf.read_table(result.path, memory_map=True)
     with pa.memory_map(str(result.path), "r") as stream:
         ordinary = pa.ipc.open_file(stream).read_all()
     assert reopened.equals(ordinary)
-    assert reopened.equals(result.design)
-    actual = biglasso(reopened, result.response, nlambda=3)
-    reference = biglasso(result.design, result.response, nlambda=3)
+    assert reopened.equals(result.X)
+    actual = biglasso(reopened, result.y, nlambda=3)
+    reference = biglasso(result.X, result.y, nlambda=3)
     for field in ("lambdas", "intercept", "iterations", "deviance"):
         assert getattr(actual, field).tobytes() == getattr(reference, field).tobytes()
 
