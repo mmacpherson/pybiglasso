@@ -45,7 +45,7 @@ def _arrow_recipe(marker, document="docs/arrow.md"):
     return recipe
 
 
-def test_readme_arrow_example_verbatim(tmp_path, monkeypatch):
+def test_feather_recipe_with_batches_and_extra_columns(tmp_path, monkeypatch):
     import pyarrow.feather as pf
 
     rows = np.arange(123)
@@ -55,20 +55,20 @@ def test_readme_arrow_example_verbatim(tmp_path, monkeypatch):
     response = x1 / 2 + rng.normal(size=len(rows))
     pf.write_feather(
         pa.table({"x1": x1, "x2": x2, "y": response, "id": ["unused"] * len(rows)}),
-        tmp_path / "data.arrow",
+        tmp_path / "data.feather",
         compression="uncompressed",
         chunksize=41,
     )
-    recipe = _arrow_recipe("bl.biglasso(table.drop_columns", document="README.md")
+    recipe = _arrow_recipe("bl.biglasso(table.drop_columns", document="docs/data.md")
     monkeypatch.chdir(tmp_path)
     namespace = {}
-    exec(compile(recipe, "README.md", "exec"), namespace)
+    exec(compile(recipe, "docs/data.md", "exec"), namespace)
     np.save(tmp_path / "features.npy", np.asfortranarray(np.column_stack([x1, x2])))
     same_path(
-        namespace["path"],
+        namespace["fit"],
         biglasso(np.load(tmp_path / "features.npy", mmap_mode="r"), response),
     )
-    assert list(namespace["path"].feature_names) == ["x1", "x2"]
+    assert list(namespace["fit"].feature_names) == ["x1", "x2"]
 
 
 def _mapped_read_allocations(recipe, directory):
@@ -618,6 +618,37 @@ def test_native_packed_bit_offsets_and_owner_lifetime(tmp_path, offset, checked)
     actual = _rust.fit_path(**args, on_lambda=callback)
     for field in ("center", "scale", "iters", "deviance", "intercept", "lambda_"):
         assert actual[field].tobytes() == expected[field].tobytes(), field
+
+
+@pytest.mark.parametrize("offset", [1, 3, 7])
+@pytest.mark.parametrize("family", ["gaussian", "binomial"])
+def test_packed_sliced_odd_batches_match_uint8_npy(tmp_path, offset, family):
+    nrow = 16391
+    values = np.random.default_rng(83).integers(
+        0, 2, (nrow + offset, 3), dtype=np.uint8
+    )
+    table = pa.table({f"x{j}": pa.array(values[:, j].astype(bool)) for j in range(3)})
+    path = tmp_path / "bits.arrow"
+    with pa.OSFile(str(path), "wb") as sink:
+        with pa.ipc.new_file(sink, table.schema) as writer:
+            for batch in table.to_batches(max_chunksize=257):
+                writer.write_batch(batch)
+    mapped = _open_mapped(path).slice(offset, nrow)
+    assert mapped.column(0).chunk(0).offset % 8 == offset
+    assert any(len(chunk) % 2 for chunk in mapped.column(0).chunks)
+    np.save(tmp_path / "uint8.npy", np.asfortranarray(values[offset:]))
+    reference = np.load(tmp_path / "uint8.npy", mmap_mode="r")
+    response = (np.arange(nrow) % 2).astype(float)
+    if family == "gaussian":
+        response += reference[:, 0] / 4 + 0.5
+    for threads, alpha in ((1, 1.0), (2, 0.5)):
+        options = dict(
+            family=family, n_threads=threads, alpha=alpha, nlambda=7, lambda_min=0.2
+        )
+        same_path(
+            biglasso(mapped, response, **options),
+            biglasso(reference, response, **options),
+        )
 
 
 @pytest.mark.parametrize(

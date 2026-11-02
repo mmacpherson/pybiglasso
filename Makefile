@@ -6,6 +6,12 @@ default: test
 test:
 	uv run pytest -n auto
 
+# Optional competitor checks use the bench group, whose tabmat wheel needs 3.14.
+BENCH_PYTHON ?= 3.14
+.PHONY: test-bench
+test-bench:
+	uv run -p $(BENCH_PYTHON) --locked --group bench pytest tests/test_gaussian_benchmark.py -m bench
+
 # the newest versions pyproject.toml allows, ignoring uv.lock: what a new
 # install gets
 .PHONY: test-latest
@@ -114,13 +120,16 @@ fixtures:
 	$(MAKE) r-image R_VERSION=$(FIXTURES_R)
 	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:r$(FIXTURES_R) uv run python scripts/make_r_fixtures.py
 
-# the README's benchmark plot, from the committed results; later files win,
-# and glmnet and skglm-enet come first so they only fill in glmnet and skglm's
-# elastic net; path-v020 is pybiglasso 0.2.0 (Rust)
-RESULTS = $(addprefix benchmarks/results/path,-glmnet.jsonl -skglm-enet.jsonl .jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -statsmodels.jsonl -final.jsonl -v020.jsonl)
+# the README's benchmark figures and tables, from the committed results
+GAUSSIAN_RESULTS = benchmarks/results/path-gaussian-zen3.jsonl
+LOGISTIC_RESULTS = benchmarks/results/path-zen3.jsonl
 
-docs/benchmarks.png: benchmarks/plot.py $(RESULTS)
-	uv run --group bench benchmarks/plot.py $(RESULTS) -o $@
+.PHONY: benchmark-figures
+benchmark-figures:
+	uv run benchmarks/plot.py --family gaussian $(GAUSSIAN_RESULTS) -o docs/benchmarks-least-squares
+	uv run benchmarks/plot.py --family binomial $(LOGISTIC_RESULTS) -o docs/benchmarks-logistic
+	uv run benchmarks/table.py $(GAUSSIAN_RESULTS)
+	uv run benchmarks/table.py $(LOGISTIC_RESULTS)
 
 .PHONY: build
 build:

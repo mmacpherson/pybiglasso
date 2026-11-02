@@ -53,6 +53,22 @@ impl Family {
 }
 
 const LANES: usize = 8;
+// Each byte's lanes occupy one aligned cache line. Only exact +0.0/+1.0
+// values are substituted; all multiplication, addition and reduction stay
+// in the kernels, including their signed-zero behavior.
+static BOOL_BLOCKS: [Block; 256] = {
+    let mut table = [Block([0.0; LANES]); 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let mut lane = 0;
+        while lane < LANES {
+            table[byte].0[lane] = ((byte >> lane) & 1) as f64;
+            lane += 1;
+        }
+        byte += 1;
+    }
+    table
+};
 const SCALE_MIN: f64 = 1e-6;
 const ETA_MAX: f64 = 10.0;
 const W_MIN: f64 = 0.0001;
@@ -127,6 +143,21 @@ pub(crate) trait Col: Sync {
     #[inline(always)]
     fn at_seq(&self, i: usize, _hint: &mut usize) -> f64 {
         self.at(i)
+    }
+    /// Complete byte-aligned bool blocks, excluding any scalar tail.
+    #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        None
+    }
+    /// A run starting at i0, addressed from zero, and its end in this column.
+    /// Except for a final partial block, the run contains whole LANES blocks.
+    /// Kernels keep their accumulators across runs: storage never partitions sums.
+    #[inline(always)]
+    fn run(&self, i0: usize, end: usize) -> (impl Col, usize)
+    where
+        Self: Sized,
+    {
+        (Span { col: self, i0, n: end - i0 }, end)
     }
 }
 
@@ -212,6 +243,14 @@ struct Span<'a, C> {
 }
 impl<C: Col> Col for Span<'_, C> {
     #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        if !self.i0.is_multiple_of(LANES) {
+            return None;
+        }
+        let bytes = self.col.packed_bytes()?;
+        Some(&bytes[self.i0 / LANES..self.i0 / LANES + self.n / LANES])
+    }
+    #[inline(always)]
     fn n(&self) -> usize {
         self.n
     }
@@ -230,6 +269,11 @@ impl<C: Col> Col for Span<'_, C> {
     #[inline(always)]
     fn at_seq(&self, i: usize, hint: &mut usize) -> f64 {
         self.col.at_seq(self.i0 + i, hint)
+    }
+    #[inline(always)]
+    fn run(&self, i0: usize, end: usize) -> (impl Col, usize) {
+        let (run, stop) = self.col.run(self.i0 + i0, self.i0 + end);
+        (run, stop - self.i0)
     }
 }
 
@@ -258,7 +302,47 @@ pub(crate) enum MappedCol<'a> {
     Bits { bytes: &'a [u8], offset: usize, len: usize },
 }
 
+impl MappedCol<'_> {
+    /// Borrow exactly this run. Checking its extent once also exposes the
+    /// inner loop's load bounds to the optimizer, rather than carrying an
+    /// offset into a larger chunk through every block load.
+    #[inline(always)]
+    fn slice(&self, start: usize, len: usize) -> Self {
+        match self {
+            Self::F64(v) => Self::F64(&v[start..start + len]),
+            Self::F32(v) => Self::F32(&v[start..start + len]),
+            Self::I8(v) => Self::I8(&v[start..start + len]),
+            Self::U8(v) => Self::U8(&v[start..start + len]),
+            Self::I16(v) => Self::I16(&v[start..start + len]),
+            Self::U64(v) => Self::U64(&v[start..start + len]),
+            Self::I64(v) => Self::I64(&v[start..start + len]),
+            Self::U32(v) => Self::U32(&v[start..start + len]),
+            Self::I32(v) => Self::I32(&v[start..start + len]),
+            Self::U16(v) => Self::U16(&v[start..start + len]),
+            Self::Bits { bytes, offset, len: total } => {
+                assert!(start <= *total && len <= *total - start);
+                if len == 0 {
+                    return Self::Bits { bytes: &[], offset: 0, len: 0 };
+                }
+                let bit = offset.checked_add(start).expect("bit offset");
+                let offset = bit % 8;
+                let count = offset.checked_add(len).expect("bit length").div_ceil(8);
+                Self::Bits { bytes: &bytes[bit / 8..bit / 8 + count], offset, len }
+            }
+        }
+    }
+}
+
 impl Col for MappedCol<'_> {
+    #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bits { bytes, offset, len } if offset.is_multiple_of(8) => {
+                Some(&bytes[offset / 8..offset / 8 + len / LANES])
+            }
+            _ => None,
+        }
+    }
     fn n(&self) -> usize {
         match self {
             Self::F64(v) => v.len(),
@@ -290,7 +374,9 @@ impl Col for MappedCol<'_> {
             Self::Bits { bytes, offset, len } => {
                 assert!(i < *len);
                 let bit = offset + i;
-                ((bytes[bit / 8] >> (bit % 8)) & 1).f()
+                // at_seq delegates here too: centering and Gaussian residual
+                // scans must not retain the per-bit conversion bottleneck.
+                BOOL_BLOCKS[usize::from(bytes[bit / 8])].0[bit % 8]
             }
         }
     }
@@ -312,6 +398,9 @@ impl Col for MappedCol<'_> {
                 // The block's LANES bits span at most two bytes: read them
                 // once rather than locating each bit.
                 let bit = offset + i0;
+                if bit.is_multiple_of(8) {
+                    return BOOL_BLOCKS[usize::from(bytes[bit / 8])].0;
+                }
                 let lo = u16::from(bytes[bit / 8]);
                 let hi = if bit.is_multiple_of(8) { 0 } else { u16::from(bytes[bit / 8 + 1]) };
                 let bits = (lo | hi << 8) >> (bit % 8);
@@ -348,6 +437,50 @@ pub(crate) struct ChunkedCol<'a> {
     chunks: &'a [MappedCol<'a>],
     ends: &'a [usize],
 }
+
+/// An immutable column for an inner loop. Its chunk and type cannot change
+/// during that loop, allowing the compiler to hoist the storage dispatch.
+enum ChunkRun<'a> {
+    Whole(MappedCol<'a>),
+    Crossing(Span<'a, ChunkedCol<'a>>),
+}
+impl Col for ChunkRun<'_> {
+    #[inline(always)]
+    fn packed_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Whole(c) => c.packed_bytes(),
+            Self::Crossing(_) => None,
+        }
+    }
+    #[inline(always)]
+    fn n(&self) -> usize {
+        match self {
+            Self::Whole(c) => c.n(),
+            Self::Crossing(c) => c.n(),
+        }
+    }
+    #[inline(always)]
+    fn at(&self, i: usize) -> f64 {
+        match self {
+            Self::Whole(c) => c.at(i),
+            Self::Crossing(c) => c.at(i),
+        }
+    }
+    #[inline(always)]
+    fn block(&self, i0: usize) -> [f64; LANES] {
+        match self {
+            Self::Whole(c) => c.block(i0),
+            Self::Crossing(c) => c.block(i0),
+        }
+    }
+    #[inline(always)]
+    fn at_seq(&self, i: usize, hint: &mut usize) -> f64 {
+        match self {
+            Self::Whole(c) => c.at_seq(i, hint),
+            Self::Crossing(c) => c.at_seq(i, hint),
+        }
+    }
+}
 impl ChunkedCol<'_> {
     #[inline(always)]
     fn locate(&self, i: usize) -> (usize, usize) {
@@ -359,6 +492,20 @@ impl ChunkedCol<'_> {
 // A one-chunk column (the common case) skips locating rows entirely; the
 // chunk's own indexing checks bounds, since its length is the column's.
 impl Col for ChunkedCol<'_> {
+    #[inline(always)]
+    fn run(&self, i0: usize, end: usize) -> (impl Col, usize) {
+        assert!(i0 < end && end <= self.n());
+        let (k, local) = self.locate(i0);
+        let whole = (self.ends[k].min(end) - i0) / LANES * LANES;
+        if whole != 0 {
+            (ChunkRun::Whole(self.chunks[k].slice(local, whole)), i0 + whole)
+        } else {
+            // Never realign a logical block to a storage boundary. Read the
+            // crossing block (or final scalar tail) through the existing path.
+            let n = LANES.min(end - i0);
+            (ChunkRun::Crossing(Span { col: self, i0, n }), i0 + n)
+        }
+    }
     #[inline(always)]
     fn n(&self) -> usize {
         *self.ends.last().expect("nonempty chunks")
@@ -642,6 +789,46 @@ fn regs_of<S: Simd>(b: &Block) -> &[S::f64s] {
     bytemuck::cast_slice(&b.0)
 }
 
+/// Decode aligned runs by byte, with type/alignment dispatch outside the
+/// loop. Generic and crossing readers retain their checked block loads.
+#[inline(always)]
+fn for_each_block<C: Col>(c: &C, n: usize, mut visit: impl FnMut(usize, &Block)) {
+    if let Some(bytes) = c.packed_bytes() {
+        for (b, &byte) in bytes[..n / LANES].iter().enumerate() {
+            visit(b * LANES, &BOOL_BLOCKS[usize::from(byte)]);
+        }
+    } else {
+        let mut hint = 0;
+        for i in (0..n / LANES * LANES).step_by(LANES) {
+            visit(i, &load(c, i, &mut hint));
+        }
+    }
+}
+
+/// A serial scan, with storage dispatch fixed over each run. In particular,
+/// centering still adds individual rows left to right, never chunk subtotals.
+#[inline(always)]
+fn for_each_value<C: Col>(c: &C, mut visit: impl FnMut(f64)) {
+    let mut start = 0;
+    let mut hint = 0;
+    while start < c.n() {
+        let (run, end) = c.run(start, c.n());
+        let n = end - start;
+        let body = n / LANES * LANES;
+        for_each_block(&run, body, |_, block| {
+            // Conversion may use a whole byte/vector, but visiting its lanes
+            // in order preserves the scalar sum across blocks and runs.
+            for &value in &block.0 {
+                visit(value);
+            }
+        });
+        for i in body..n {
+            visit(run.at_seq(i, &mut hint));
+        }
+        start = end;
+    }
+}
+
 /// sum(x * s), in LANES accumulators.
 #[inline(always)]
 fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
@@ -655,13 +842,28 @@ fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
             let body = c.n() / LANES * LANES;
             let (sv, _) = S::as_simd_f64s(&s[..body]);
             let mut acc = [v(simd.splat_f64s(0.0)); LANES];
-            let mut hint = 0;
-            for (b, s) in sv.chunks_exact(regs::<S>()).enumerate() {
-                let x = load(c, b * LANES, &mut hint);
-                let x = regs_of::<S>(&x);
-                for m in 0..regs::<S>() {
-                    acc[m] += v(x[m]) * v(s[m]);
+            let mut start = 0;
+            while start < body {
+                let (run, end) = c.run(start, body);
+                let mut hint = 0;
+                let range = start / LANES * regs::<S>()..end / LANES * regs::<S>();
+                let blocks = sv[range].chunks_exact(regs::<S>());
+                let mut add = |x: &Block, s: &[S::f64s]| {
+                    let x = regs_of::<S>(x);
+                    for m in 0..regs::<S>() {
+                        acc[m] += v(x[m]) * v(s[m]);
+                    }
+                };
+                if let Some(bytes) = run.packed_bytes() {
+                    for (&byte, s) in bytes[..(end - start) / LANES].iter().zip(blocks) {
+                        add(&BOOL_BLOCKS[usize::from(byte)], s);
+                    }
+                } else {
+                    for (b, s) in blocks.enumerate() {
+                        add(&load(&run, b * LANES, &mut hint), s);
+                    }
                 }
+                start = end;
             }
             let mut tail = 0.0;
             for i in body..c.n() {
@@ -767,6 +969,7 @@ struct Pass<'a, C, const SHIFT: bool, const MOMENTS: bool> {
     c: f64,
     next: &'a C,
 }
+
 impl<'a, C> Pass<'a, C, true, false> {
     fn shift(prev: &'a C, delta: f64, c: f64) -> Self {
         Pass { prev, delta, c, next: prev }
@@ -817,20 +1020,30 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> Pass<'_, C, SHIFT, MOMENTS>
         let k = (v(simd.splat_f64s(self.delta)), v(simd.splat_f64s(self.c)));
         let zero = Block([0.0; LANES]);
         let mut acc = [Sums::zero(v(simd.splat_f64s(0.0))); LANES];
-        let blocks =
-            rv.chunks_exact_mut(regs::<S>()).zip(ev.chunks_exact_mut(regs::<S>())).zip(wv.chunks_exact(regs::<S>()));
-        let (mut hint_prev, mut hint_next) = (0, 0);
-        for (b, ((r, eta), w)) in blocks.enumerate() {
-            let xp = if SHIFT { load(prev, b * LANES, &mut hint_prev) } else { zero };
-            let xn = if MOMENTS { load(next, b * LANES, &mut hint_next) } else { zero };
-            let (xp, xn) = (regs_of::<S>(&xp), regs_of::<S>(&xn));
-            for m in 0..regs::<S>() {
-                let (mut rm, mut em) = (v(r[m]), v(eta[m]));
-                Self::row(k, (v(xp[m]), v(xn[m])), &mut rm, &mut em, v(w[m]), &mut acc[m]);
-                if SHIFT {
-                    (r[m], eta[m]) = (rm.1, em.1);
+        let mut start = 0;
+        while start < body {
+            let (prev, prev_end) = prev.run(start, body);
+            let (next, next_end) = next.run(start, body);
+            let end = prev_end.min(next_end);
+            let range = start / LANES * regs::<S>()..end / LANES * regs::<S>();
+            let blocks = rv[range.clone()]
+                .chunks_exact_mut(regs::<S>())
+                .zip(ev[range.clone()].chunks_exact_mut(regs::<S>()))
+                .zip(wv[range].chunks_exact(regs::<S>()));
+            let (mut hint_prev, mut hint_next) = (0, 0);
+            for (b, ((r, eta), w)) in blocks.enumerate() {
+                let xp = if SHIFT { load(&prev, b * LANES, &mut hint_prev) } else { zero };
+                let xn = if MOMENTS { load(&next, b * LANES, &mut hint_next) } else { zero };
+                let (xp, xn) = (regs_of::<S>(&xp), regs_of::<S>(&xn));
+                for m in 0..regs::<S>() {
+                    let (mut rm, mut em) = (v(r[m]), v(eta[m]));
+                    Self::row(k, (v(xp[m]), v(xn[m])), &mut rm, &mut em, v(w[m]), &mut acc[m]);
+                    if SHIFT {
+                        (r[m], eta[m]) = (rm.1, em.1);
+                    }
                 }
             }
+            start = end;
         }
         let mut tail = Sums::zero(0.0);
         for (i, (r, eta)) in rt.iter_mut().zip(et.iter_mut()).enumerate() {
@@ -877,10 +1090,16 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> WithSimd for Chunks<'_, Pas
     #[inline(always)]
     fn with_simd<S: Simd>(self, simd: S) -> Sums<f64> {
         let Chunks { pass, i0, r, eta, w } = self;
-        let chunks = r.chunks_mut(CHUNK).zip(eta.chunks_mut(CHUNK)).zip(w.chunks(CHUNK));
-        let mut parts = chunks.enumerate().map(|(k, ((r, eta), w))| pass.chunk(simd, i0 + k * CHUNK, r, eta, w));
-        let first = parts.next().expect("a column has rows");
-        parts.fold(first, Sums::add)
+        // A loop, not map and fold: LLVM didn't inline that closure for Arrow
+        // columns, which compiled it without the SIMD target features and
+        // made every vector operation a call.
+        let mut chunks = r.chunks_mut(CHUNK).zip(eta.chunks_mut(CHUNK)).zip(w.chunks(CHUNK)).enumerate();
+        let (_, ((r0, eta0), w0)) = chunks.next().expect("a column has rows");
+        let mut sums = pass.chunk(simd, i0, r0, eta0, w0);
+        for (k, ((r, eta), w)) in chunks {
+            sums = Sums::add(sums, pass.chunk(simd, i0 + k * CHUNK, r, eta, w));
+        }
+        sums
     }
 }
 
@@ -989,8 +1208,7 @@ impl<D: Design> Fit<'_, D> {
                         invalid |= !v.is_finite();
                         acc += v;
                     }),
-                    None => (0..n).for_each(|i| {
-                        let v = c.at_seq(i, &mut hint);
+                    None => for_each_value(&c, |v| {
                         invalid |= !v.is_finite();
                         acc += v;
                     }),
@@ -1000,7 +1218,7 @@ impl<D: Design> Fit<'_, D> {
                 let mut hint = 0;
                 match self.rows {
                     Some(rows) => rows.iter().for_each(|&i| acc += (c.at_seq(i, &mut hint) - mean).powi(2)),
-                    None => (0..n).for_each(|i| acc += (c.at_seq(i, &mut hint) - mean).powi(2)),
+                    None => for_each_value(&c, |v| acc += (v - mean).powi(2)),
                 }
                 let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
                 let mut hint = 0;

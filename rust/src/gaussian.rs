@@ -37,11 +37,33 @@ impl<D: Design> Fit<'_, D> {
                 // Keep seqsum's exact left-to-right order over the updated
                 // values, including masked zeros, without a second row pass.
                 let mut sum = 0.0;
-                for i in 0..st.residual.len() {
-                    if self.fits(i) {
-                        st.residual[i] -= shift * ((column.at(i) - center) / scale);
+                let mut start = 0;
+                let mut hint = 0;
+                while start < st.residual.len() {
+                    let (run, end) = column.run(start, st.residual.len());
+                    // A byte lookup supplies eight values together; every
+                    // update and sum still happens in the original row order.
+                    // Masked fits retain their guarded scalar reads.
+                    let body = if self.mask.is_none() { (end - start) / LANES * LANES } else { 0 };
+                    for_each_block(&run, body, |i, block| {
+                        // Keep the serial accumulator local to this block.
+                        // Capturing it in the visitor otherwise makes LLVM
+                        // store/reload it after every lane.
+                        let mut block_sum = sum;
+                        for (residual, &value) in st.residual[start + i..start + i + LANES].iter_mut().zip(&block.0) {
+                            *residual -= shift * ((value - center) / scale);
+                            block_sum += *residual;
+                        }
+                        sum = block_sum;
+                    });
+                    for (i, residual) in st.residual[start + body..end].iter_mut().enumerate() {
+                        let i = body + i;
+                        if self.fits(start + i) {
+                            *residual -= shift * ((run.at_seq(i, &mut hint) - center) / scale);
+                        }
+                        sum += *residual;
                     }
-                    sum += st.residual[i];
+                    start = end;
                 }
                 st.residual_sum = sum;
                 st.beta[j] = value;
