@@ -174,10 +174,15 @@ def test_cache_metadata_matches_features(tmp_path):
     source = tmp_path / "source.csv"
     source.write_text("x\n1\n2\n")
     result = ingest(source, cache=True, cache_dir=tmp_path / "cache")
-    metadata_path = result.path.with_suffix(result.path.suffix + ".json")
-    metadata = json.loads(metadata_path.read_text())
+    path = result.path
+    del result  # release the feature mapping before rewriting, including Windows
+    table = feather.read_table(path, memory_map=False)
+    metadata = json.loads(table.schema.metadata[b"pybiglasso.ingest"])
     metadata["rows"] = 3
-    metadata_path.write_text(json.dumps(metadata))
+    table = table.replace_schema_metadata(
+        {b"pybiglasso.ingest": json.dumps(metadata).encode()}
+    )
+    feather.write_feather(table, path, compression="uncompressed")
     with pytest.raises(ValueError, match="does not match"):
         ingest(source, cache=True, cache_dir=tmp_path / "cache")
 
@@ -292,7 +297,7 @@ def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_pa
         biglasso(result, result.y, nlambda=3)
     with pytest.raises((TypeError, ValueError)):
         BiglassoRegressor().fit(result, result.y)
-    result.path.with_suffix(result.path.suffix + ".json").unlink()
+    assert not result.path.with_suffix(result.path.suffix + ".json").exists()
     reopened = pf.read_table(result.path, memory_map=True)
     with pa.memory_map(str(result.path), "r") as stream:
         ordinary = pa.ipc.open_file(stream).read_all()

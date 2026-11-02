@@ -165,6 +165,23 @@ def test_ingest_csv(tmp_path):
     assert_same_fit(run_recipe("ingest-csv", tmp_path), X, y, names())
 
 
+def test_ingest_load_without_source(tmp_path):
+    from pybiglasso.ingest import ingest, load
+
+    X, y = design()
+    source = tmp_path / "data.csv"
+    write_csv(source, table_columns(X, y))
+    ingest(source, tmp_path / "data.feather", response="y", exclude=["id"])
+    source.unlink()
+    data = load(tmp_path / "data.feather")
+    np.testing.assert_array_equal(np.column_stack(data.X.columns), X)
+    np.testing.assert_array_equal(data.y, y)
+    # Execute the documented reopen/fit snippet verbatim in a fresh process.
+    # Its feature names come from the independently constructed input columns.
+    with run_recipe("ingest-load", tmp_path) as fit:
+        assert fit["feature_names"].tolist() == names()
+
+
 def test_duckdb_transform(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
