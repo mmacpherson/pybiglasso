@@ -129,11 +129,15 @@ both column staging and the final Feather file during conversion.
 Feather file. Its schema records the format version, rows, feature names and
 order, response name (or null) and cache key under `pybiglasso.ingest`.
 `load(data.path)` validates that metadata against the feature file and checks
-the response file's exact byte size before mapping y. It reports missing or
-damaged companion files rather than returning a partial result.
+the response file's exact byte size before mapping y. It detects a missing
+response file or one of the wrong size. Neither `load` nor cache reuse detects
+a same-sized response file copied from another output.
 
 Ordinary Arrow or Polars readers see the feature columns in their selected
-order. For a plain Feather file created elsewhere, use
+order. PyArrow preserves the schema metadata; Polars drops it on `to_arrow`
+or `write_ipc`. A file rewritten that way gets the plain-Feather error from
+`load`, so reopen the original ingest output instead.
+For a plain Feather file created elsewhere, use
 `pyarrow.feather.read_table(path, memory_map=True)`; `load` requires ingest
 metadata. The receipt itself is not accepted
 as a fitting input. Mappings are read-only. Files persist independently of the Python result, so
