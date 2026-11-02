@@ -223,23 +223,48 @@ def path_digest(npz):
     return digest.hexdigest()
 
 
+def output(cmd):
+    found = subprocess.run(cmd, capture_output=True, text=True)
+    if found.returncode != 0:
+        return None
+    return found.stdout.strip() or None
+
+
+def compression(path):
+    """A file's or directory's own compression setting: btrfs's per-inode
+    property (empty when it follows the mount) and its lsattr flags, where
+    m is no compression and c is compression."""
+    prop = output(["btrfs", "property", "get", str(path), "compression"])
+    flags = output(["lsattr", "-d", str(path)])
+    return dict(btrfs_property=prop, lsattr=flags and flags.split()[0])
+
+
 def file_sizes(paths):
-    """Logical bytes and bytes allocated on disk, which differ under
-    filesystem compression or sparse files."""
+    """Logical bytes, bytes allocated on disk (which differ under filesystem
+    compression or sparse files) and each file's compression setting."""
     return {
-        p.name: dict(bytes=p.stat().st_size, allocated=p.stat().st_blocks * 512)
+        p.name: dict(
+            bytes=p.stat().st_size,
+            allocated=p.stat().st_blocks * 512,
+            compression=compression(p),
+        )
         for p in paths
         if p.exists()
     }
 
 
 def filesystem(path):
-    """Type and mount options (compression among them) of path's filesystem."""
-    found = subprocess.run(
-        ["findmnt", "-no", "FSTYPE,OPTIONS", "-T", str(path)],
-        capture_output=True, text=True,
-    )  # fmt: skip
-    return found.stdout.strip() or None
+    """Type and mount options (compression among them) of path's filesystem,
+    without subvolume names, and the data directory's own setting, which
+    overrides the mount's for files created in it."""
+    found = output(["findmnt", "-no", "FSTYPE,OPTIONS", "-T", str(path)])
+    fstype, _, options = (found or "").partition(" ")
+    options = ",".join(
+        o for o in options.strip().split(",") if not o.startswith("subvol")
+    )
+    return dict(
+        type=fstype or None, options=options or None, directory=compression(path)
+    )
 
 
 def run(args):
