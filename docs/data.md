@@ -150,9 +150,7 @@ If X was saved in C order, convert it as in the [`.npy` recipe](#a-npy-file).
 Convert once with `ingest`. It reads the file in blocks, picks the narrowest
 exact type for each column, and writes the features to an uncompressed Feather
 file, wherever you name it. It returns X, memory-mapped from that file, and the
-response you name as y. Next time, open the file you kept as
-[above](#a-feather-file) instead of converting again. See [ingest](ingest.md)
-for choosing columns and types.
+response you name as y. See [ingest](ingest.md) for choosing columns and types.
 
 <!-- recipe: ingest-csv -->
 ```python
@@ -160,6 +158,20 @@ import pybiglasso as bl
 from pybiglasso.ingest import ingest
 
 data = ingest("data.csv", "data.feather", response="y", exclude=["id"])
+fit = bl.biglasso(data.X, data.y)
+```
+
+With `response="y"`, the output is two files that travel together:
+`data.feather` for X and `data.feather.response` for y. Next time, reopen them
+with `load` instead of converting again. Both are memory-mapped read-only;
+the original source is no longer needed.
+
+<!-- recipe: ingest-load -->
+```python
+import pybiglasso as bl
+from pybiglasso.ingest import load
+
+data = load("data.feather")
 fit = bl.biglasso(data.X, data.y)
 ```
 

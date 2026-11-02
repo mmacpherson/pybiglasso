@@ -27,6 +27,24 @@ The response is selected explicitly and stored separately as a read-only
 float64 mapping; no target or family is inferred from column names. The receipt
 is not X: pass `.X` (an ordinary Table) and `.y` explicitly.
 
+With a response selected, the output is **two files that travel together**:
+`data.feather` holds X, and `data.feather.response` holds y as little-endian
+float64: rows × 8 bytes, with no header. Keep both when
+copying or renaming the output. To reopen them next time, without the source:
+
+```python
+from pybiglasso import biglasso
+from pybiglasso.ingest import load
+
+data = load("data.feather")
+fit = biglasso(data.X, data.y, family="gaussian")
+```
+
+`load` memory-maps X and y read-only. Without a selected response there is
+only the Feather file, and `data.y` is `None`.
+The solver's existing conversion of y to native float64 handles byte order
+on big-endian platforms; the returned mapping keeps its little-endian dtype.
+
 ## Selection and exact representation
 
 Names must be nonempty, unique strings. `features` chooses an ordered list;
@@ -111,8 +129,22 @@ both column staging and the final Feather file during conversion.
 
 `IngestResult` exposes `.X` (a standard `pyarrow.Table`), `.y`,
 `.feature_names` and `.path`. The feature file is an ordinary uncompressed
-Feather file: `pyarrow.feather.read_table(data.path, memory_map=True)`
-reopens it without any JSON sidecar. The receipt itself is not accepted
+Feather file. Its schema records the format version, rows, feature names and
+order, response name (or null), response SHA256 (or null) and cache key under
+`pybiglasso.ingest`.
+`load(data.path)` validates that metadata against the feature file and checks
+the response file's exact byte size before mapping y. It detects a missing
+response file, one of the wrong size, or contents that do not match the recorded
+checksum. Both `load` and cache reuse read all response bytes to verify SHA256,
+using bounded memory; X remains memory-mapped.
+
+Ordinary Arrow or Polars readers see the feature columns in their selected
+order. PyArrow preserves the schema metadata; Polars drops it on `to_arrow`
+or `write_ipc`. A file rewritten that way gets the plain-Feather error from
+`load`, so reopen the original ingest output instead.
+For a plain Feather file created elsewhere, use
+`pyarrow.feather.read_table(path, memory_map=True)`; `load` requires ingest
+metadata. The receipt itself is not accepted
 as a fitting input. Mappings are read-only. Files persist independently of the Python result, so
 retained X and y mappings do not depend on a temporary-directory owner.
 
@@ -120,10 +152,12 @@ An explicit persistent `out` or `cache_dir` is required. With `out=None`,
 output lives in a fresh subdirectory of the supplied `cache_dir`. `cache=True`
 instead reuses an artifact keyed by resolved source path, byte size, nanosecond
 mtime and conversion options. It does not hash all source contents. Explicit
-output paths and their sidecars are never overwritten. The caller owns the Feather
-file, optional `.response` raw-float64 sidecar and `.json` metadata sidecar;
+output paths and their response files are never overwritten. The caller owns
+the Feather file and optional `.response` little-endian float64 file;
 remove them only after all mappings are no longer in use.
 There is no implicit temporary destination or automatic artifact deletion.
+Publication links the response first and the metadata-bearing Feather file
+last, so a visible completed Feather output has its companion ready.
 
 Tests compare values and types against independent Arrow/openpyxl source
 reads, check row errors, selection and caching, and on Linux put the first
