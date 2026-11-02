@@ -23,24 +23,29 @@ import numpy as np
 
 from .arrow import _open_mapped
 
+__all__ = ["IngestResult", "ingest", "load"]
+
 if TYPE_CHECKING:
     import pyarrow as pa
 
 # Inference candidates deliberately narrower than the fitting input contract.
 _TYPES = ("bool", "int8", "uint8", "int16", "float32", "float64")
 _INTEGER = re.compile(r"[+-]?\d+\Z")
+_METADATA_KEY = b"pybiglasso.ingest"
+_FORMAT_VERSION = 1
+_RESPONSE_DTYPE = "<f8"
 
 
 @dataclass(frozen=True)
 class IngestResult:
-    """Persistent output and its read-only design/optional response mapping.
+    """Persistent output: read-only features X and an optional response y.
 
     Files are not deleted when this object is collected. This lets a retained
-    design or response outlive the result, including on Windows.
+    X or y outlive the result, including on Windows.
     """
 
-    design: pa.Table
-    response: np.ndarray | None
+    X: pa.Table
+    y: np.ndarray | None
     feature_names: tuple[str, ...]
     path: Path
 
@@ -434,25 +439,123 @@ def _stage(blocks, columns, types, directory, count):
     return paths
 
 
+def _read_metadata(path):
+    pa = _arrow()
+    # Inspect only the schema, even for an ordinary compressed Feather file:
+    # deciding whether this is an ingest output must never decode its data.
+    try:
+        with pa.memory_map(str(path), "r") as mapping:
+            raw = (pa.ipc.open_file(mapping).schema.metadata or {}).get(_METADATA_KEY)
+    except pa.ArrowInvalid as error:
+        raise ValueError(
+            "Cannot read ingest metadata. For a plain Feather file use "
+            "pyarrow.feather.read_table(path, memory_map=True)."
+        ) from error
+    if raw is None:
+        raise ValueError(
+            "Feather file has no ingest metadata. For a plain Feather file use "
+            "pyarrow.feather.read_table(path, memory_map=True)."
+        )
+    try:
+        metadata = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("Invalid ingest metadata in the Feather schema.") from error
+    if (
+        not isinstance(metadata, dict)
+        or not {"version", "rows", "features", "response", "response_sha256", "key"}
+        <= metadata.keys()
+    ):
+        raise ValueError("Invalid ingest metadata: missing required fields.")
+    if type(metadata["version"]) is not int or metadata["version"] != _FORMAT_VERSION:
+        raise ValueError("Unsupported ingest metadata format version.")
+    rows, features, response, response_sha256, key = (
+        metadata[name]
+        for name in ("rows", "features", "response", "response_sha256", "key")
+    )
+    if (
+        type(rows) is not int
+        or rows <= 0
+        or not isinstance(features, list)
+        or not features
+        or any(not isinstance(name, str) or not name for name in features)
+        or len(set(features)) != len(features)
+        or (
+            response is not None
+            and (not isinstance(response, str) or not response or response in features)
+        )
+        or (response is None and response_sha256 is not None)
+        or (
+            response is not None
+            and (
+                not isinstance(response_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", response_sha256) is None
+            )
+        )
+        or not isinstance(key, str)
+        or re.fullmatch(r"[0-9a-f]{64}", key) is None
+    ):
+        raise ValueError("Invalid ingest metadata in the Feather schema.")
+    return metadata
+
+
 def _open_result(path, metadata):
+    X = _open_mapped(path)
+    if X.num_rows != metadata["rows"]:
+        raise ValueError("Ingest metadata does not match the feature file's rows.")
+    if tuple(X.column_names) != tuple(metadata["features"]):
+        raise ValueError("Ingest metadata does not match its features or their order.")
     response = None
     if metadata["response"] is not None:
-        response = np.memmap(
-            path.with_suffix(path.suffix + ".response"),
-            mode="r",
-            dtype=np.float64,
-            shape=(metadata["rows"],),
-        )
-    design = _open_mapped(path)
-    if design.shape != (
-        metadata["rows"],
-        len(metadata["features"]),
-    ) or tuple(design.column_names) != tuple(metadata["features"]):
-        raise ValueError("Ingest cache metadata does not match its design.")
-    return IngestResult(design, response, tuple(design.column_names), path)
+        response_path = path.with_suffix(path.suffix + ".response")
+        try:
+            with response_path.open("rb") as stream:
+                size = os.fstat(stream.fileno()).st_size
+                expected = metadata["rows"] * np.dtype(_RESPONSE_DTYPE).itemsize
+                if size != expected:
+                    raise ValueError(
+                        f"Ingest response sidecar size does not match metadata: "
+                        f"expected {expected} bytes, found {size}."
+                    )
+                if (
+                    hashlib.file_digest(stream, "sha256").hexdigest()
+                    != metadata["response_sha256"]
+                ):
+                    raise ValueError(
+                        f"Ingest response file {response_path} does not match "
+                        "the feature file it was written with (SHA256 mismatch)."
+                    )
+                stream.seek(0)
+                response = np.memmap(
+                    stream, mode="r", dtype=_RESPONSE_DTYPE, shape=(metadata["rows"],)
+                )
+        except FileNotFoundError as error:
+            raise FileNotFoundError(
+                f"Missing ingest response sidecar: {response_path}. "
+                "Keep the Feather file and its .response file together."
+            ) from error
+    return IngestResult(X, response, tuple(X.column_names), path)
 
 
-def _write_ipc(path, raw, selected, types, count, pa):
+def load(path: str | os.PathLike[str]) -> IngestResult:
+    """Reopen an ingest output without its original source.
+
+    X is an ordinary memory-mapped pyarrow.Table. If the schema records a
+    response, y is its read-only little-endian float64 memmap, otherwise None.
+    Keep the Feather file and its optional .response file together. Their metadata,
+    feature names/order, row count, response byte size and SHA256 are validated.
+    Verifying the checksum reads all response bytes with bounded memory.
+    Do not change either file while any mapping is in use.
+
+    Plain Feather files without ingest metadata should instead be opened
+    with pyarrow.feather.read_table(path, memory_map=True).
+    """
+    if not isinstance(path, (str, os.PathLike)):
+        raise TypeError("load accepts a filesystem path to an ingest output.")
+    path = Path(path).absolute()
+    return _open_result(path, _read_metadata(path))
+
+
+def _write_ipc(path, raw, selected, types, count, pa, metadata):
     # Keep mmap-backed arrays local to this call: release every staging view
     # before TemporaryDirectory removes its files, including on Windows.
     arrays = []
@@ -470,6 +573,9 @@ def _write_ipc(path, raw, selected, types, count, pa):
             pa.Array.from_buffers(arrow_types[types[name]], count, [None, buffer])
         )
     batch = pa.record_batch(arrays, names=list(selected))
+    batch = batch.replace_schema_metadata(
+        {_METADATA_KEY: json.dumps(metadata, sort_keys=True).encode()}
+    )
     with (
         pa.OSFile(str(path), "wb") as stream,
         pa.ipc.new_file(
@@ -513,7 +619,8 @@ def ingest(
     implicit temporary destination or automatic deletion. ``cache=True``
     reuses matching source path/size/mtime/options; otherwise a fresh artifact
     is written. Explicit existing outputs are never overwritten. Callers own
-    the returned output and its .response/.json sidecars.
+    the returned Feather output and its optional .response file. Use load()
+    to reopen them later, even when the source has been removed.
     """
     if out is None and cache_dir is None:
         raise ValueError("Specify a persistent out or cache_dir for ingest.")
@@ -554,7 +661,7 @@ def ingest(
     columns = (*selected, *((response,) if response is not None else ()))
     fingerprint = _fingerprint(source)
     options = dict(
-        version=4,
+        version=5,
         source=fingerprint,
         features=selected,
         response=response,
@@ -568,20 +675,19 @@ def ingest(
         root = Path(cache_dir).absolute()
         root.mkdir(parents=True, exist_ok=True)
         directory = (
-            root / key if cache else Path(tempfile.mkdtemp(prefix="design-", dir=root))
+            root / key if cache else Path(tempfile.mkdtemp(prefix="ingest-", dir=root))
         )
         directory.mkdir(exist_ok=True)
-        path = directory / "design.arrow"
+        path = directory / "data.feather"
     else:
         path = Path(out).absolute()
         path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_path = path.with_suffix(path.suffix + ".json")
     response_path = path.with_suffix(path.suffix + ".response")
-    if cache and path.exists() and metadata_path.exists():
-        metadata = json.loads(metadata_path.read_text())
-        if metadata.get("key") == key:
+    if cache and path.exists():
+        metadata = _read_metadata(path)
+        if metadata["key"] == key:
             return _open_result(path, metadata)
-    if any(p.exists() for p in (path, metadata_path, response_path)):
+    if any(p.exists() for p in (path, response_path)):
         raise FileExistsError(f"Ingest output already exists: {path}")
 
     def blocks():
@@ -593,18 +699,29 @@ def ingest(
     types, count = _infer(
         blocks(),
         columns,
-        {**overrides, **({response: "float64"} if response is not None else {})},
+        {**overrides, **({response: _RESPONSE_DTYPE} if response is not None else {})},
     )
     _check_source(source, fingerprint)
     with tempfile.TemporaryDirectory(prefix=".ingest-", dir=path.parent) as temporary:
         staging = Path(temporary)
         raw = _stage(blocks(), columns, types, staging, count)
         _check_source(source, fingerprint)
-        output = staging / "design.arrow"
-        _write_ipc(output, raw, selected, types, count, pa)
-        metadata = dict(key=key, rows=count, features=selected, response=response)
-        staged_metadata = staging / "metadata.json"
-        staged_metadata.write_text(json.dumps(metadata, sort_keys=True))
+        output = staging / "data.feather"
+        response_sha256 = None
+        if response is not None:
+            # Hash the staged bytes that will be hard-linked into place,
+            # including their exact floating representations and signed zeros.
+            with raw[response].open("rb") as stream:
+                response_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+        metadata = dict(
+            version=_FORMAT_VERSION,
+            key=key,
+            rows=count,
+            features=selected,
+            response=response,
+            response_sha256=response_sha256,
+        )
+        _write_ipc(output, raw, selected, types, count, pa, metadata)
         # Hard links publish without overwriting an existing destination; all
         # staging files are on this filesystem. Roll back only our own links.
         published = []
@@ -612,7 +729,6 @@ def ingest(
             for origin, destination in [
                 *(([(raw[response], response_path)]) if response is not None else []),
                 (output, path),
-                (staged_metadata, metadata_path),
             ]:
                 os.link(origin, destination)
                 published.append(destination)
