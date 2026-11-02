@@ -12,6 +12,7 @@ import scipy.sparse as sp
 
 @pytest.fixture
 def bench(monkeypatch):
+    pytest.importorskip("resource", reason="the harness is POSIX-only")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "benchmarks"))
     return importlib.import_module("bool_storage")
 
