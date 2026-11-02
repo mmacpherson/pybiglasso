@@ -34,7 +34,7 @@ it's also fast when the data does fit in memory. For logistic regression,
 across four benchmark problems with 1,000 to 50,000 features, a full 100-step
 path runs 2.2–4.9x faster than R's glmnet, 2.4–8.9x faster than R biglasso,
 and 4.9–8.5x faster than skglm, the fastest of the other Python solvers we
-tested. For least squares, it is 2.2x faster than glmnet on wide data and
+tested. For least squares, it is 2.2–2.3x faster than glmnet on wide data and
 level with it or faster on tall data, where scikit-learn is fastest (see
 [Performance](#performance)).
 
@@ -268,12 +268,13 @@ single run for a solver slow enough to take over a third of its time limit.
 
 Each time covers the solver's own fitting calls. pybiglasso, R biglasso and
 glmnet standardize raw X themselves, inside that time. The Python solvers,
-which don't standardize, were given X already standardized; their centering
-and intercept recovery, where they need them, are outside it. Competitors were
+which don't standardize, were given X already standardized; the benchmark's
+own preparation for them (centering the data for scikit-learn's least-squares
+path, and recovering its intercept) is outside it. Python competitors were
 stopped at 10x pybiglasso's single-threaded time, and at no less than 5
-seconds, which would otherwise have stretched the runs to many hours; since
-pybiglasso is shown at its fastest thread count, a stopped run sits beyond 10x
-in the figures. The scripts and raw results are in [`benchmarks/`](benchmarks/).
+seconds, which would otherwise have stretched the runs to many hours; R gets a
+fixed 900 seconds. Since pybiglasso is shown at its fastest thread count, a
+stopped run sits beyond 10x in the figures. The scripts and raw results are in [`benchmarks/`](benchmarks/).
 
 ### Least squares
 
@@ -282,7 +283,7 @@ in the figures. The scripts and raw results are in [`benchmarks/`](benchmarks/).
   <img alt="Least squares: time relative to pybiglasso, by dataset and solver" src="docs/benchmarks-least-squares-light.png">
 </picture>
 
-pybiglasso is the fastest on wide data, 2.2x faster than glmnet. On tall data
+pybiglasso is the fastest on wide data, 2.2–2.3x faster than glmnet. On tall data
 it is level with glmnet on the smaller problem and 1.6x faster on the larger,
 but scikit-learn is faster still, by 3–4x: with many more rows than features,
 its `enet_path` forms the Gram matrix XᵀX once and runs coordinate descent on
@@ -339,17 +340,20 @@ liblinear and statsmodels fit the lasso only. statsmodels ran only on the tall
 datasets: its L1 fit uses a general-purpose optimizer with dense matrices over
 twice the columns, which would need about 12 GB and 76 GB on the wide ones.
 
-**Accuracy.** glmnet fits every path about as accurately as pybiglasso: a worst
-relative suboptimality of 3e-6 against pybiglasso's 3e-6. R biglasso matches
+**Accuracy.** Accuracy here is each path's worst relative gap, over its
+lambdas, between its objective and the best any solver reached at that lambda
+(not a certified gap to the optimum). glmnet fits every path about as
+accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. R biglasso matches
 pybiglasso exactly for the lasso; for the elastic net each runs its own update
 (see [Differences](#differences-from-r-biglasso)), and pybiglasso with
 `r_compatible=True`, which matches R, takes about as long as its default. R's
 adaptive screening rule is no faster than SSR on these problems.
 
-**Without the time limit.** To show how large the gaps get, the smallest
-problem (5,000 × 1,000) also ran with no limit:
+**With a relaxed limit.** To show how large the gaps get, the smallest
+problem (5,000 × 1,000) also ran with the limit raised to 1,000x pybiglasso's
+time, up to 900 seconds:
 
-| Solver | Lasso | Elastic net (α=0.5) | Worst relative suboptimality |
+| Solver | Lasso | Elastic net (α=0.5) | Worst relative gap |
 |---|---|---|---|
 | pybiglasso | 0.63 s | 0.62 s | 1e-6 |
 | pybiglasso, `eps=1e-10` | 1.40 s (2.2x) | 1.42 s (2.3x) | 3e-10 |
@@ -364,7 +368,7 @@ To rerun both families and redraw the figures and tables:
 
 ```bash
 make r-image R_VERSION=4.6.1  # once
-export THREADS="1 6 12"
+export CONTAINER=docker R_IMAGE=pybiglasso-r:r4.6.1 THREADS="1 6 12"
 DATASETS="tall-5k-1k tall-50k-2k wide-2k-20k wide-5k-50k" \
   benchmarks/run-gaussian.sh benchmarks/results/path-gaussian-zen3.jsonl
 benchmarks/run-path.sh zen3
