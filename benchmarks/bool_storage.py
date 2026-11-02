@@ -23,9 +23,12 @@ results/int8-zen4-quiet. Results append to results/bool-storage-<tag>/.
     uv run --with pyarrow benchmarks/bool_storage.py run /scratch/bool \\
         --tag zen3 --mem 4G --repeats 3 --threads 1 --threads 6
 
---batch-rows 0 means one batch. `scan` times a single pass over every
-column, Parquet decode vs the mapped storages: what a solver working on
-Parquet directly would pay at every pass over the data.
+--batch-rows 0 means one batch; a batch size at or above --nrow is one batch
+too. Each fit keeps its own outputs, and its row in results.jsonl records a
+SHA256 of its complete path, compared byte for byte with the first fit's.
+Provenance records the filesystem's type and mount options (compression among
+them) and each data file's logical and allocated bytes. `scan` times one cold
+pass summing every column: Parquet decode vs the mapped storages.
 """
 
 import argparse
@@ -118,13 +121,7 @@ def fit(args):
     )  # fmt: skip
     seconds = time.perf_counter() - t0 - opened
     io1 = read_bytes()
-    np.savez(
-        args.out.with_suffix(".npz"),
-        lambdas=path.lambdas,
-        intercept=path.intercept,
-        coef=path.coef.toarray(),
-        iterations=path.iterations,
-    )
+    np.savez(args.out.with_suffix(".npz"), **path_arrays(path))
     record = dict(
         open_seconds=opened,
         fit_seconds=seconds,
@@ -191,12 +188,58 @@ def provenance(workdir):
         ).hexdigest(),
         script_sha256=hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
         design=json.loads((workdir / "params.json").read_text()),
+        filesystem=filesystem(workdir),
+        files=file_sizes(
+            [workdir / "X-u8.npy", workdir / "X.parquet"]
+            + sorted(workdir.glob("X-bool-*.arrow"))
+        ),
     )
 
 
-def same_path(a, b):
-    a, b = np.load(a), np.load(b)
-    return all(np.array_equal(a[k], b[k]) for k in a.files)
+PATH_FIELDS = (
+    "lambdas", "intercept", "iterations", "n_rejected", "center", "scale", "deviance",
+)  # fmt: skip
+
+
+def path_arrays(path):
+    """Everything a fitted path holds, the sparse coefficients as stored."""
+    arrays = {f: np.asarray(getattr(path, f)) for f in PATH_FIELDS}
+    arrays.update(
+        {f"coef_{f}": getattr(path.coef, f) for f in ("data", "indices", "indptr")}
+    )
+    arrays["coef_shape"] = np.asarray(path.coef.shape)
+    return arrays
+
+
+def path_digest(npz):
+    """SHA256 over every field's name, dtype, shape and bytes: -0.0 and 0.0,
+    or float32 and float64, differ here as they would to a reader."""
+    digest = hashlib.sha256()
+    with np.load(npz) as arrays:
+        for name in sorted(arrays.files):
+            a = np.ascontiguousarray(arrays[name])
+            digest.update(f"{name}|{a.dtype.str}|{a.shape}|".encode())
+            digest.update(a.tobytes())
+    return digest.hexdigest()
+
+
+def file_sizes(paths):
+    """Logical bytes and bytes allocated on disk, which differ under
+    filesystem compression or sparse files."""
+    return {
+        p.name: dict(bytes=p.stat().st_size, allocated=p.stat().st_blocks * 512)
+        for p in paths
+        if p.exists()
+    }
+
+
+def filesystem(path):
+    """Type and mount options (compression among them) of path's filesystem."""
+    found = subprocess.run(
+        ["findmnt", "-no", "FSTYPE,OPTIONS", "-T", str(path)],
+        capture_output=True, text=True,
+    )  # fmt: skip
+    return found.stdout.strip() or None
 
 
 def run(args):
@@ -212,14 +255,14 @@ def run(args):
             s.removeprefix("arrow-bool-").replace("one", "0"))))
         for s in storages
     }  # fmt: skip
-    reference = None
+    reference = None  # the first fit's digest
     regimes = [("capped-cold", mem) for mem in args.mem] + [("warm", None)]
     for regime, mem in regimes:
         for threads in args.threads:
             for storage in storages:
                 for repeat in range(args.repeats + (regime == "warm")):
                     waited = wait_until_quiet(args.gate_busy, args.gate_seconds)
-                    stem = workdir / f"fit-{regime}-{mem}-{storage}-{threads}"
+                    stem = workdir / f"fit-{regime}-{mem}-{storage}-{threads}-{repeat}"
                     cmd = [
                         sys.executable, __file__, "fit", str(workdir),
                         "--storage", storage, "--threads", str(threads),
@@ -233,7 +276,8 @@ def run(args):
                             "-p", f"MemoryMax={mem}", "-p", "MemorySwapMax=0",
                         ] + cmd  # fmt: skip
                     subprocess.run(cmd, check=True)
-                    reference = reference or stem.with_suffix(".npz")
+                    digest = path_digest(stem.with_suffix(".npz"))
+                    reference = reference or digest
                     record = dict(
                         time=datetime.datetime.now(datetime.UTC).isoformat(),
                         regime=regime,
@@ -244,9 +288,8 @@ def run(args):
                         # the first warm fit only fills the page cache
                         priming=regime == "warm" and repeat == 0,
                         gate_wait_seconds=waited,
-                        identical_to_first=same_path(
-                            reference, stem.with_suffix(".npz")
-                        ),
+                        path_sha256=digest,
+                        identical_to_first=digest == reference,
                         **json.loads(stem.with_suffix(".json").read_text()),
                     )
                     with (out / "results.jsonl").open("a") as stream:
@@ -257,7 +300,9 @@ def run(args):
 
 
 def scan(args):
-    """One pass over every column: decode Parquet vs read the mapped storages."""
+    """One cold pass summing every column, each file evicted from the page cache
+    first: Parquet decoded batch by batch, the uint8 .npy summed by NumPy, the
+    bool file by Arrow compute. A single run, for scale; not the solver's pass."""
     import pyarrow.compute as pc
     import pyarrow.feather as pf
     import pyarrow.parquet as pq
