@@ -3,9 +3,11 @@
 A binary design stored as Arrow bool columns, one bit per value, fits in
 roughly the same time as the same values in a uint8 `.npy` when both are in
 memory. Under a memory cap that holds the bits but not the bytes, it is 3.4x
-faster on one thread and 80x faster on six: the uint8 file doesn't fit, so the
-fit re-reads it from disk repeatedly, while the bit file is read about once,
-consistent with its staying cached.
+faster on one thread, and about 15x faster with each storage at its best thread
+count (uint8 on one, bool on six): the uint8 file doesn't fit, so the fit
+re-reads it from disk repeatedly, while the bit file is read about once,
+consistent with its staying cached. How large the gap is depends on the cap and
+the disk.
 
 The design is 50,000 rows × 240,000 binary columns (carrier status: 0/1),
 written once as a Fortran-order uint8 `.npy` (12.0 GB) and as an uncompressed
@@ -25,7 +27,9 @@ file, and its memory cgroup peaked at the cap (4.29 GB, which is 4 GiB); each
 bool fit read 1.52 GB, about the file once, and its cgroup peaked at 2.07 GB.
 The uint8 times vary between repetitions (168–218 s on one thread, 839–1450 s
 on six) with how much the fit re-reads; the bool times vary by under 3%. On six
-threads the uint8 fits read less than on one but took five times as long. A
+threads the uint8 fits read less than on one but took five times as long, so
+uint8 out of core is slower with more threads, and six-thread uint8 against
+six-thread bool (80x) measures that slowdown more than bool. A
 likely cause, not measured here, is contention between concurrent page faults
 and readahead through a cache too small for the file. Warm, the bool fits took
 3% longer than uint8 on one thread and 9% longer on six; the uint8 process held
