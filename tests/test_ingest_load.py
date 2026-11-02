@@ -65,13 +65,13 @@ def test_load_round_trip_after_source_deleted_and_files_moved(tmp_path, response
     if response:
         assert isinstance(data.y, np.memmap) and data.y.mode == "r"
         assert not data.y.flags.writeable
-        assert data.y.dtype == np.dtype("float64")
-        assert data.y.tobytes() == np.array([-0.0, 1.25], dtype=np.float64).tobytes()
+        assert data.y.dtype == np.dtype("<f8")
+        assert data.y.tobytes() == np.array([-0.0, 1.25], dtype="<f8").tobytes()
     else:
         assert data.y is None
     recorded = json.loads(pa.ipc.open_file(moved).schema.metadata[KEY])
     expected_sha256 = (
-        hashlib.sha256(np.array([-0.0, 1.25], dtype=np.float64).tobytes()).hexdigest()
+        hashlib.sha256(np.array([-0.0, 1.25], dtype="<f8").tobytes()).hexdigest()
         if response
         else None
     )
@@ -112,7 +112,7 @@ def test_schema_metadata_and_standard_reader_column_order(tmp_path):
         features=["z", "x"],
         key=expected_key,
         response_sha256=hashlib.sha256(
-            np.array([0.0, 1.0], dtype=np.float64).tobytes()
+            np.array([0.0, 1.0], dtype="<f8").tobytes()
         ).hexdigest(),
     )
     assert schema.names == ["z", "x"]
@@ -120,6 +120,17 @@ def test_schema_metadata_and_standard_reader_column_order(tmp_path):
     assert pl.read_ipc(out).columns == ["z", "x"]
     assert pl.read_ipc(out).to_dict(as_series=False) == {"z": [0.25, 0.5], "x": [2, 3]}
     assert data.feature_names == ("z", "x")
+
+
+def test_published_response_is_headerless_little_endian_float64(tmp_path):
+    source = tmp_path / "source.csv"
+    source.write_text("x,y\n1,-0.0\n2,1.25\n3,-256.5\n")
+    data = ingest(source, tmp_path / "data.feather", response="y")
+    expected = [-0.0, 1.25, -256.5]
+    published = data.path.with_suffix(".feather.response").read_bytes()
+    assert published == np.asarray(expected, dtype="<f8").tobytes()
+    assert len(published) == len(expected) * 8
+    assert data.y.dtype.str == "<f8"
 
 
 @pytest.mark.parametrize("size", [0, 8, 15, 17, 24])
@@ -156,7 +167,7 @@ def test_response_checksum_rejects_changed_contents(tmp_path, reopen, damage):
         )
 
     correct = open_result()
-    assert correct.y.tobytes() == np.array([-0.0, 1.25], dtype=np.float64).tobytes()
+    assert correct.y.tobytes() == np.array([-0.0, 1.25], dtype="<f8").tobytes()
     del correct
     response = out.with_suffix(".feather.response")
     if damage == "swap":
@@ -253,7 +264,7 @@ def test_publication_exposes_complete_metadata_and_rolls_back_own_links(
         if destination == out:
             assert (
                 out.with_suffix(".feather.response").read_bytes()
-                == np.array([0.25, 0.5], dtype=np.float64).tobytes()
+                == np.array([0.25, 0.5], dtype="<f8").tobytes()
             )
             assert (
                 json.loads(pa.ipc.open_file(origin).schema.metadata[KEY])["response"]

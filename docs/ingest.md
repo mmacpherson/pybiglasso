@@ -28,7 +28,8 @@ float64 mapping; no target or family is inferred from column names. The receipt
 is not X: pass `.X` (an ordinary Table) and `.y` explicitly.
 
 With a response selected, the output is **two files that travel together**:
-`data.feather` holds X, and `data.feather.response` holds y. Keep both when
+`data.feather` holds X, and `data.feather.response` holds y as little-endian
+float64: rows × 8 bytes, with no header. Keep both when
 copying or renaming the output. To reopen them next time, without the source:
 
 ```python
@@ -41,6 +42,8 @@ fit = biglasso(data.X, data.y, family="gaussian")
 
 `load` memory-maps X and y read-only. Without a selected response there is
 only the Feather file, and `data.y` is `None`.
+The solver's existing conversion of y to native float64 handles byte order
+on big-endian platforms; the returned mapping keeps its little-endian dtype.
 
 ## Selection and exact representation
 
@@ -150,7 +153,7 @@ output lives in a fresh subdirectory of the supplied `cache_dir`. `cache=True`
 instead reuses an artifact keyed by resolved source path, byte size, nanosecond
 mtime and conversion options. It does not hash all source contents. Explicit
 output paths and their response files are never overwritten. The caller owns
-the Feather file and optional `.response` raw-float64 file;
+the Feather file and optional `.response` little-endian float64 file;
 remove them only after all mappings are no longer in use.
 There is no implicit temporary destination or automatic artifact deletion.
 Publication links the response first and the metadata-bearing Feather file

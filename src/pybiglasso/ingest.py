@@ -33,6 +33,7 @@ _TYPES = ("bool", "int8", "uint8", "int16", "float32", "float64")
 _INTEGER = re.compile(r"[+-]?\d+\Z")
 _METADATA_KEY = b"pybiglasso.ingest"
 _FORMAT_VERSION = 1
+_RESPONSE_DTYPE = "<f8"
 
 
 @dataclass(frozen=True)
@@ -509,7 +510,7 @@ def _open_result(path, metadata):
         try:
             with response_path.open("rb") as stream:
                 size = os.fstat(stream.fileno()).st_size
-                expected = metadata["rows"] * np.dtype(np.float64).itemsize
+                expected = metadata["rows"] * np.dtype(_RESPONSE_DTYPE).itemsize
                 if size != expected:
                     raise ValueError(
                         f"Ingest response sidecar size does not match metadata: "
@@ -525,7 +526,7 @@ def _open_result(path, metadata):
                     )
                 stream.seek(0)
                 response = np.memmap(
-                    stream, mode="r", dtype=np.float64, shape=(metadata["rows"],)
+                    stream, mode="r", dtype=_RESPONSE_DTYPE, shape=(metadata["rows"],)
                 )
         except FileNotFoundError as error:
             raise FileNotFoundError(
@@ -539,8 +540,8 @@ def load(path: str | os.PathLike[str]) -> IngestResult:
     """Reopen an ingest output without its original source.
 
     X is an ordinary memory-mapped pyarrow.Table. If the schema records a
-    response, y is its read-only float64 memmap, otherwise None. Keep the
-    Feather file and its optional .response file together. Their metadata,
+    response, y is its read-only little-endian float64 memmap, otherwise None.
+    Keep the Feather file and its optional .response file together. Their metadata,
     feature names/order, row count, response byte size and SHA256 are validated.
     Verifying the checksum reads all response bytes with bounded memory.
     Do not change either file while any mapping is in use.
@@ -698,7 +699,7 @@ def ingest(
     types, count = _infer(
         blocks(),
         columns,
-        {**overrides, **({response: "float64"} if response is not None else {})},
+        {**overrides, **({response: _RESPONSE_DTYPE} if response is not None else {})},
     )
     _check_source(source, fingerprint)
     with tempfile.TemporaryDirectory(prefix=".ingest-", dir=path.parent) as temporary:
