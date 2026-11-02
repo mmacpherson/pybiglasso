@@ -169,7 +169,7 @@ time, so it can be larger than memory.
 | NumPy memmap of a `.npy` file | `np.load(path, mmap_mode="r")` | on disk; one type for the whole matrix |
 | PyArrow Table mapped from a Feather file | `pyarrow.feather.read_table(path, memory_map=True)` | on disk if the file is uncompressed; a type per column, bools at one bit |
 | NumPy array | — | in memory |
-| pandas or Polars DataFrame | — | copied into one NumPy array, in memory; feature names come from its columns |
+| pandas or Polars DataFrame | — | converted to a NumPy array in memory, which may copy it; feature names come from its columns |
 
 [Getting your data in](docs/data.md) has tested recipes for getting from CSV,
 Parquet, Excel, databases, or PLINK and VCF genotypes to one of these.

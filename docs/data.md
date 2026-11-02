@@ -9,7 +9,7 @@ time, so it can be larger than memory.
 | NumPy memmap of a `.npy` file | `np.load(path, mmap_mode="r")` | on disk; one type for the whole matrix |
 | PyArrow Table mapped from a Feather file | `pyarrow.feather.read_table(path, memory_map=True)` | on disk if the file is uncompressed; a type per column, bools at one bit |
 | NumPy array | — | in memory |
-| pandas or Polars DataFrame | — | copied into one NumPy array, in memory; feature names come from its columns |
+| pandas or Polars DataFrame | — | converted to a NumPy array in memory, which may copy it; feature names come from its columns |
 
 y is a separate one-dimensional array with one value per row, or a column of
 the same DataFrame or Table.
@@ -59,8 +59,8 @@ fit = bl.biglasso(X, y)
 
 ### pandas or Polars DataFrames
 
-The DataFrame is copied into a NumPy array, so it and the copy must both fit
-in memory:
+The DataFrame is converted to a NumPy array. That may copy it, so leave room
+in memory for a second copy of the data:
 
 <!-- recipe: pandas -->
 ```python
