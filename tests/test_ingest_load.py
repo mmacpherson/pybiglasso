@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +23,14 @@ def loader(path):
 
 def metadata(**changes):
     return (
-        dict(version=1, rows=2, features=["x", "z"], response="y", key="0" * 64)
+        dict(
+            version=1,
+            rows=2,
+            features=["x", "z"],
+            response="y",
+            response_sha256=None if changes.get("response", "y") is None else "0" * 64,
+            key="0" * 64,
+        )
         | changes
     )
 
@@ -61,6 +69,13 @@ def test_load_round_trip_after_source_deleted_and_files_moved(tmp_path, response
         assert data.y.tobytes() == np.array([-0.0, 1.25], dtype=np.float64).tobytes()
     else:
         assert data.y is None
+    recorded = json.loads(pa.ipc.open_file(moved).schema.metadata[KEY])
+    expected_sha256 = (
+        hashlib.sha256(np.array([-0.0, 1.25], dtype=np.float64).tobytes()).hexdigest()
+        if response
+        else None
+    )
+    assert recorded["response_sha256"] == expected_sha256
 
 
 def test_schema_metadata_and_standard_reader_column_order(tmp_path):
@@ -93,7 +108,13 @@ def test_schema_metadata_and_standard_reader_column_order(tmp_path):
     expected_key = hashlib.sha256(
         json.dumps(options, sort_keys=True).encode()
     ).hexdigest()
-    assert recorded == metadata(features=["z", "x"], key=expected_key)
+    assert recorded == metadata(
+        features=["z", "x"],
+        key=expected_key,
+        response_sha256=hashlib.sha256(
+            np.array([0.0, 1.0], dtype=np.float64).tobytes()
+        ).hexdigest(),
+    )
     assert schema.names == ["z", "x"]
     assert pf.read_table(out).to_pydict() == {"z": [0.25, 0.5], "x": [2, 3]}
     assert pl.read_ipc(out).columns == ["z", "x"]
@@ -115,6 +136,43 @@ def test_load_rejects_missing_response(tmp_path):
     write_artifact(out, meta=metadata())
     with pytest.raises(FileNotFoundError, match="response"):
         loader(out)
+
+
+@pytest.mark.parametrize("reopen", ["load", "cache"])
+@pytest.mark.parametrize("damage", ["swap", "flipped_byte"])
+def test_response_checksum_rejects_changed_contents(tmp_path, reopen, damage):
+    source = tmp_path / "source.csv"
+    source.write_text("x,y\n2,-0.0\n3,1.25\n")
+    out = tmp_path / "data.feather"
+    original = ingest(source, out, response="y", cache=True)
+    np.testing.assert_array_equal(original.y, [-0.0, 1.25])
+    del original
+
+    def open_result():
+        return (
+            loader(out)
+            if reopen == "load"
+            else ingest(source, out, response="y", cache=True)
+        )
+
+    correct = open_result()
+    assert correct.y.tobytes() == np.array([-0.0, 1.25], dtype=np.float64).tobytes()
+    del correct
+    response = out.with_suffix(".feather.response")
+    if damage == "swap":
+        other_source = tmp_path / "other.csv"
+        other_source.write_text("x,y\n2,0.5\n3,2.5\n")
+        other = ingest(other_source, tmp_path / "other.feather", response="y")
+        other_response = other.path.with_suffix(".feather.response")
+        del other
+        shutil.copyfile(other_response, response)
+    else:
+        changed = bytearray(response.read_bytes())
+        changed[0] ^= 1
+        response.write_bytes(changed)
+    with pytest.raises(ValueError, match="response.*does not match") as error:
+        open_result()
+    assert str(response) in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -159,6 +217,10 @@ def test_load_validates_rows_and_features(tmp_path, changes, match):
         metadata(response=7),
         metadata(response="x"),
         metadata(key=5),
+        metadata(response_sha256=None),
+        metadata(response_sha256=5),
+        metadata(response_sha256="not a checksum"),
+        metadata(response=None, response_sha256="0" * 64),
     ],
 )
 def test_load_rejects_invalid_metadata(tmp_path, meta):

@@ -127,11 +127,13 @@ both column staging and the final Feather file during conversion.
 `IngestResult` exposes `.X` (a standard `pyarrow.Table`), `.y`,
 `.feature_names` and `.path`. The feature file is an ordinary uncompressed
 Feather file. Its schema records the format version, rows, feature names and
-order, response name (or null) and cache key under `pybiglasso.ingest`.
+order, response name (or null), response SHA256 (or null) and cache key under
+`pybiglasso.ingest`.
 `load(data.path)` validates that metadata against the feature file and checks
 the response file's exact byte size before mapping y. It detects a missing
-response file or one of the wrong size. Neither `load` nor cache reuse detects
-a same-sized response file copied from another output.
+response file, one of the wrong size, or contents that do not match the recorded
+checksum. Both `load` and cache reuse read all response bytes to verify SHA256,
+using bounded memory; X remains memory-mapped.
 
 Ordinary Arrow or Polars readers see the feature columns in their selected
 order. PyArrow preserves the schema metadata; Polars drops it on `to_arrow`

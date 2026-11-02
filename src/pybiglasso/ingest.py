@@ -461,13 +461,15 @@ def _read_metadata(path):
         raise ValueError("Invalid ingest metadata in the Feather schema.") from error
     if (
         not isinstance(metadata, dict)
-        or not {"version", "rows", "features", "response", "key"} <= metadata.keys()
+        or not {"version", "rows", "features", "response", "response_sha256", "key"}
+        <= metadata.keys()
     ):
         raise ValueError("Invalid ingest metadata: missing required fields.")
     if type(metadata["version"]) is not int or metadata["version"] != _FORMAT_VERSION:
         raise ValueError("Unsupported ingest metadata format version.")
-    rows, features, response, key = (
-        metadata[name] for name in ("rows", "features", "response", "key")
+    rows, features, response, response_sha256, key = (
+        metadata[name]
+        for name in ("rows", "features", "response", "response_sha256", "key")
     )
     if (
         type(rows) is not int
@@ -479,6 +481,14 @@ def _read_metadata(path):
         or (
             response is not None
             and (not isinstance(response, str) or not response or response in features)
+        )
+        or (response is None and response_sha256 is not None)
+        or (
+            response is not None
+            and (
+                not isinstance(response_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", response_sha256) is None
+            )
         )
         or not isinstance(key, str)
         or re.fullmatch(r"[0-9a-f]{64}", key) is None
@@ -505,6 +515,15 @@ def _open_result(path, metadata):
                         f"Ingest response sidecar size does not match metadata: "
                         f"expected {expected} bytes, found {size}."
                     )
+                if (
+                    hashlib.file_digest(stream, "sha256").hexdigest()
+                    != metadata["response_sha256"]
+                ):
+                    raise ValueError(
+                        f"Ingest response file {response_path} does not match "
+                        "the feature file it was written with (SHA256 mismatch)."
+                    )
+                stream.seek(0)
                 response = np.memmap(
                     stream, mode="r", dtype=np.float64, shape=(metadata["rows"],)
                 )
@@ -522,7 +541,8 @@ def load(path: str | os.PathLike[str]) -> IngestResult:
     X is an ordinary memory-mapped pyarrow.Table. If the schema records a
     response, y is its read-only float64 memmap, otherwise None. Keep the
     Feather file and its optional .response file together. Their metadata,
-    feature names/order, row count and response byte size are validated.
+    feature names/order, row count, response byte size and SHA256 are validated.
+    Verifying the checksum reads all response bytes with bounded memory.
     Do not change either file while any mapping is in use.
 
     Plain Feather files without ingest metadata should instead be opened
@@ -686,12 +706,19 @@ def ingest(
         raw = _stage(blocks(), columns, types, staging, count)
         _check_source(source, fingerprint)
         output = staging / "data.feather"
+        response_sha256 = None
+        if response is not None:
+            # Hash the staged bytes that will be hard-linked into place,
+            # including their exact floating representations and signed zeros.
+            with raw[response].open("rb") as stream:
+                response_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
         metadata = dict(
             version=_FORMAT_VERSION,
             key=key,
             rows=count,
             features=selected,
             response=response,
+            response_sha256=response_sha256,
         )
         _write_ipc(output, raw, selected, types, count, pa, metadata)
         # Hard links publish without overwriting an existing destination; all
