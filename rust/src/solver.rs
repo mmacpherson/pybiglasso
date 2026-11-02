@@ -1090,10 +1090,16 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> WithSimd for Chunks<'_, Pas
     #[inline(always)]
     fn with_simd<S: Simd>(self, simd: S) -> Sums<f64> {
         let Chunks { pass, i0, r, eta, w } = self;
-        let chunks = r.chunks_mut(CHUNK).zip(eta.chunks_mut(CHUNK)).zip(w.chunks(CHUNK));
-        let mut parts = chunks.enumerate().map(|(k, ((r, eta), w))| pass.chunk(simd, i0 + k * CHUNK, r, eta, w));
-        let first = parts.next().expect("a column has rows");
-        parts.fold(first, Sums::add)
+        // A loop, not map and fold: LLVM didn't inline that closure for Arrow
+        // columns, which compiled it without the SIMD target features and
+        // made every vector operation a call.
+        let mut chunks = r.chunks_mut(CHUNK).zip(eta.chunks_mut(CHUNK)).zip(w.chunks(CHUNK)).enumerate();
+        let (_, ((r0, eta0), w0)) = chunks.next().expect("a column has rows");
+        let mut sums = pass.chunk(simd, i0, r0, eta0, w0);
+        for (k, ((r, eta), w)) in chunks {
+            sums = Sums::add(sums, pass.chunk(simd, i0 + k * CHUNK, r, eta, w));
+        }
+        sums
     }
 }
 

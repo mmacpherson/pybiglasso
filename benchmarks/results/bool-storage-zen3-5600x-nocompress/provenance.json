@@ -1,0 +1,51 @@
+{
+  "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+  "governors": [
+    "performance"
+  ],
+  "python": "3.14.0",
+  "numpy": "2.5.4",
+  "pyarrow": "26.0.0",
+  "source_commit": "3492366183976372806c724f81368bfe39c4019b",
+  "extension_sha256": "77bcab7e3096e8b5805a92eee9a4a5a5799618be1fc1b909ded311a566bf69af",
+  "script_sha256": "e5078d1f06b5051824f8afce1699ce43d20b87ecb327d36a95737eeef0ae2ec6",
+  "design": {
+    "nrow": 50000,
+    "ncol": 240000,
+    "seed": 0
+  },
+  "filesystem": {
+    "type": "btrfs",
+    "options": "rw,noatime,compress=zstd:1,ssd,discard=async,space_cache=v2",
+    "directory": {
+      "btrfs_property": "compression=none",
+      "lsattr": "---------------------m"
+    }
+  },
+  "files": {
+    "X-u8.npy": {
+      "bytes": 12000000128,
+      "allocated": 12000002048,
+      "compression": {
+        "btrfs_property": null,
+        "lsattr": "---------------------m"
+      }
+    },
+    "X.parquet": {
+      "bytes": 769571315,
+      "allocated": 769572864,
+      "compression": {
+        "btrfs_property": null,
+        "lsattr": "---------------------m"
+      }
+    },
+    "X-bool-one.arrow": {
+      "bytes": 1534079514,
+      "allocated": 1534083072,
+      "compression": {
+        "btrfs_property": null,
+        "lsattr": "---------------------m"
+      }
+    }
+  }
+}

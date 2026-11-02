@@ -140,23 +140,46 @@ def test_pandas(tmp_path):
     assert_same_fit(run_recipe("pandas", tmp_path), X, y, names())
 
 
-def test_arrow_file(tmp_path):
+def test_polars(tmp_path):
+    X, y = design()
+    write_csv(tmp_path / "data.csv", table_columns(X, y))
+    assert_same_fit(run_recipe("polars", tmp_path), X, y, names())
+
+
+def test_feather_file(tmp_path):
     import pyarrow as pa
     import pyarrow.feather as pf
 
     X, y = design()
     pf.write_feather(
         pa.table(table_columns(X, y)),
-        tmp_path / "data.arrow",
+        tmp_path / "data.feather",
         compression="uncompressed",
     )
-    assert_same_fit(run_recipe("arrow", tmp_path), X, y, names())
+    assert_same_fit(run_recipe("feather", tmp_path), X, y, names())
 
 
 def test_ingest_csv(tmp_path):
     X, y = design()
     write_csv(tmp_path / "data.csv", table_columns(X, y))
     assert_same_fit(run_recipe("ingest-csv", tmp_path), X, y, names())
+
+
+def test_ingest_load_without_source(tmp_path):
+    from pybiglasso.ingest import ingest, load
+
+    X, y = design()
+    source = tmp_path / "data.csv"
+    write_csv(source, table_columns(X, y))
+    ingest(source, tmp_path / "data.feather", response="y", exclude=["id"])
+    source.unlink()
+    data = load(tmp_path / "data.feather")
+    np.testing.assert_array_equal(np.column_stack(data.X.columns), X)
+    np.testing.assert_array_equal(data.y, y)
+    # Execute the documented reopen/fit snippet verbatim in a fresh process.
+    # Its feature names come from the independently constructed input columns.
+    with run_recipe("ingest-load", tmp_path) as fit:
+        assert fit["feature_names"].tolist() == names()
 
 
 def test_duckdb_transform(tmp_path):

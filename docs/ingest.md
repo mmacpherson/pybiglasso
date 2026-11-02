@@ -1,6 +1,6 @@
 # Blockwise ingest
 
-Install `pybiglasso[arrow]` for CSV, Parquet and Arrow files (Feather v2);
+Install `pybiglasso[arrow]` for CSV, Parquet and Feather files;
 `pybiglasso[ingest]` includes Arrow and the optional `.xlsx` reader.
 Importing pybiglasso does not import either reader dependency.
 
@@ -9,23 +9,41 @@ from pybiglasso import biglasso
 from pybiglasso.ingest import ingest
 
 data = ingest(
-    "observations.parquet", "design.arrow",
+    "observations.parquet", "data.feather",
     response="outcome", match="predictor_*",
 )
-X, y, names = data.design, data.response, data.feature_names  # X is a pyarrow.Table
+X, y, names = data.X, data.y, data.feature_names  # X is a pyarrow.Table
 fit = biglasso(X, y, family="gaussian")
 ```
 
-The converter accepts filesystem paths only: CSV, Parquet, Arrow files (Feather v2)
+The converter accepts filesystem paths only: CSV, Parquet, Feather files
 and `.xlsx`. Tables, streams and file objects are not ingest sources. Existing
 NumPy arrays/memmaps and compatible Tables/RecordBatches can be fitted directly;
-ingest is an optional explicit materializer. See [Arrow inputs](arrow.md).
+ingest is an optional explicit materializer. See [Feather files and Arrow Tables](arrow.md).
 
 It writes **features only** to an
-uncompressed **Arrow file** (Feather v2), containing exactly one nonempty record batch.
+uncompressed **Feather file**, containing exactly one nonempty record batch.
 The response is selected explicitly and stored separately as a read-only
 float64 mapping; no target or family is inferred from column names. The receipt
-is not X: pass `.design` (an ordinary Table) and `.response` explicitly.
+is not X: pass `.X` (an ordinary Table) and `.y` explicitly.
+
+With a response selected, the output is **two files that travel together**:
+`data.feather` holds X, and `data.feather.response` holds y as little-endian
+float64: rows × 8 bytes, with no header. Keep both when
+copying or renaming the output. To reopen them next time, without the source:
+
+```python
+from pybiglasso import biglasso
+from pybiglasso.ingest import load
+
+data = load("data.feather")
+fit = biglasso(data.X, data.y, family="gaussian")
+```
+
+`load` memory-maps X and y read-only. Without a selected response there is
+only the Feather file, and `data.y` is `None`.
+The solver's existing conversion of y to native float64 handles byte order
+on big-endian platforms; the returned mapping keeps its little-endian dtype.
 
 ## Selection and exact representation
 
@@ -69,7 +87,7 @@ bool columns. Source size and modification time are checked between passes.
 - CSV uses Arrow's incremental reader, with string columns to avoid first-block
   type inference rounding later integers. `block_size` is bytes for CSV.
 - Parquet uses bounded `iter_batches`, respecting column selection.
-- Arrow files are read one existing record batch at a time, then sliced into
+- Feather files are read one existing record batch at a time, then sliced into
   blocks. Compressed source batches must be decoded by Arrow; their original
   batch size therefore bounds the decoding allocation, not `block_size`.
 - Excel uses openpyxl's read-only worksheet iterator. `sheet` selects a named
@@ -91,7 +109,7 @@ that ceiling, ingestion refuses with guidance to convert to CSV or Parquet.
 The ceiling can be explicitly raised, accepting the associated memory cost:
 
 ```python
-data = ingest("data.xlsx", "design.arrow", excel_shared_strings_limit=2 << 30)
+data = ingest("data.xlsx", "data.feather", excel_shared_strings_limit=2 << 30)
 ```
 
 Separately, the ZIP directory is capped at 1 MiB and 1,024 entries before
@@ -105,25 +123,41 @@ Workbooks below the ceiling may still require substantial RAM. Prefer CSV or
 Parquet when a strict blockwise-memory workflow is needed.
 
 For non-CSV readers `block_size` counts rows. Output disk space must cover
-both column staging and the final Arrow file during conversion.
+both column staging and the final Feather file during conversion.
 
 ## Persistent outputs and reuse
 
-`IngestResult` exposes `.design` (a standard `pyarrow.Table`), `.response`,
-`.feature_names` and `.path`. The feature Arrow file is ordinary uncompressed
-Arrow storage: `pyarrow.feather.read_table(data.path, memory_map=True)`
-reopens it without any JSON sidecar. The receipt itself is not accepted
+`IngestResult` exposes `.X` (a standard `pyarrow.Table`), `.y`,
+`.feature_names` and `.path`. The feature file is an ordinary uncompressed
+Feather file. Its schema records the format version, rows, feature names and
+order, response name (or null), response SHA256 (or null) and cache key under
+`pybiglasso.ingest`.
+`load(data.path)` validates that metadata against the feature file and checks
+the response file's exact byte size before mapping y. It detects a missing
+response file, one of the wrong size, or contents that do not match the recorded
+checksum. Both `load` and cache reuse read all response bytes to verify SHA256,
+using bounded memory; X remains memory-mapped.
+
+Ordinary Arrow or Polars readers see the feature columns in their selected
+order. PyArrow preserves the schema metadata; Polars drops it on `to_arrow`
+or `write_ipc`. A file rewritten that way gets the plain-Feather error from
+`load`, so reopen the original ingest output instead.
+For a plain Feather file created elsewhere, use
+`pyarrow.feather.read_table(path, memory_map=True)`; `load` requires ingest
+metadata. The receipt itself is not accepted
 as a fitting input. Mappings are read-only. Files persist independently of the Python result, so
-retained designs and responses do not depend on a temporary-directory owner.
+retained X and y mappings do not depend on a temporary-directory owner.
 
 An explicit persistent `out` or `cache_dir` is required. With `out=None`,
 output lives in a fresh subdirectory of the supplied `cache_dir`. `cache=True`
 instead reuses an artifact keyed by resolved source path, byte size, nanosecond
 mtime and conversion options. It does not hash all source contents. Explicit
-output paths and their sidecars are never overwritten. The caller owns the Arrow
-file, optional `.response` raw-float64 sidecar and `.json` metadata sidecar;
+output paths and their response files are never overwritten. The caller owns
+the Feather file and optional `.response` little-endian float64 file;
 remove them only after all mappings are no longer in use.
 There is no implicit temporary destination or automatic artifact deletion.
+Publication links the response first and the metadata-bearing Feather file
+last, so a visible completed Feather output has its companion ready.
 
 Tests compare values and types against independent Arrow/openpyxl source
 reads, check row errors, selection and caching, and on Linux put the first

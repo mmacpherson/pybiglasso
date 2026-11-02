@@ -54,7 +54,7 @@ CHILD = textwrap.dedent("""
         if str(control) == 'copy':
             whole = pc.read_csv(source, read_options=pc.ReadOptions(use_threads=False))
         result = ingest(source, output, block_size=8192)
-        assert result.design.shape == (160_000, 8)
+        assert result.X.shape == (160_000, 8)
         print(json.dumps({'fits': True}))
     except MemoryError:
         print(json.dumps({'fits': False}))

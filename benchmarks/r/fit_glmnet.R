@@ -22,37 +22,48 @@ fit_case <- function(case_dir) {
   y <- readBin(file.path(case_dir, "y.bin"), "double", n)
 
   warns <- character()
+  family <- if (identical(prm$family, "gaussian")) "gaussian" else "binomial"
+  alpha <- prm$alpha
+  factor <- 1
+  response_scale <- NULL
+  if (identical(family, "gaussian")) {
+    response_scale <- sqrt(mean((y - mean(y))^2))
+    if (isTRUE(prm$generic)) {
+      # Correctness reference only; never selected by the timing runner.
+      family <- gaussian()
+    } else {
+      # Native glmnet fits y/s and returns coefficients in original units.
+      # Its raw-scale L1 and L2 weights are lambda'*alpha' and
+      # lambda'*(1-alpha')/s. Match lambda*alpha and lambda*(1-alpha).
+      factor <- alpha + (1 - alpha) * response_scale
+      alpha <- alpha / factor
+    }
+  }
+  options <- list()
+  if (!is.null(prm$thresh)) {
+    options <- list(control = list(thresh = prm$thresh))
+  }
+  args <- c(list(
+    x = X, y = y, family = family,
+    alpha = alpha, lambda = prm$lambdas * factor,
+    standardize = TRUE, intercept = TRUE
+  ), options)
+  timing <- isTRUE(prm$timing_signals)
+  if (timing) {
+    gc()
+    cat("--timing-start--\n")
+    flush(stdout())
+  }
   elapsed <- system.time({
-    family <- if (identical(prm$family, "gaussian")) "gaussian" else "binomial"
-    alpha <- prm$alpha
-    factor <- 1
-    response_scale <- NULL
-    if (identical(family, "gaussian")) {
-      response_scale <- sqrt(mean((y - mean(y))^2))
-      if (isTRUE(prm$generic)) {
-        # Correctness reference only; never selected by the timing runner.
-        family <- gaussian()
-      } else {
-        # Native glmnet fits y/s and returns coefficients in original units.
-        # Its raw-scale L1 and L2 weights are lambda'*alpha' and
-        # lambda'*(1-alpha')/s. Match lambda*alpha and lambda*(1-alpha).
-        factor <- alpha + (1 - alpha) * response_scale
-        alpha <- alpha / factor
-      }
-    }
-    options <- list()
-    if (!is.null(prm$thresh)) {
-      options <- list(control = list(thresh = prm$thresh))
-    }
-    fit <- withCallingHandlers(do.call(glmnet, c(list(
-      x = X, y = y, family = family,
-      alpha = alpha, lambda = prm$lambdas * factor,
-      standardize = TRUE, intercept = TRUE
-    ), options)), warning = function(w) {
+    fit <- withCallingHandlers(do.call(glmnet, args), warning = function(w) {
       warns <<- c(warns, conditionMessage(w))
       invokeRestart("muffleWarning")
     })
-  })[["elapsed"]]
+  }, gcFirst = !timing)[["elapsed"]]
+  if (timing) {
+    cat("--timing-stop-- ", sprintf("%.17g", elapsed), "\n", sep = "")
+    flush(stdout())
+  }
 
   beta <- as.matrix(fit$beta)
   writeLines(
