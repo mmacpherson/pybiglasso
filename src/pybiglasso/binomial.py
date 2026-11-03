@@ -9,7 +9,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from ._threads import resolve_threads
-from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
+from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
 from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
@@ -110,9 +110,8 @@ def biglasso(
     y = _response(y)
     if feature_names is None and hasattr(X, "columns"):
         feature_names = [str(c) for c in X.columns]
+    X = _as_array(X)
     mapped = isinstance(X, _ArrowMatrix)
-    if not mapped and not isinstance(X, np.ndarray):
-        X = np.asarray(X)
     y = np.asarray(y)
 
     # first, a few checks on data shape and type

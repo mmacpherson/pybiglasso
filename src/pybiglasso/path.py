@@ -5,7 +5,7 @@ import dataclasses
 import numpy as np
 import scipy.sparse as sps
 
-from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
+from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
 
 INTERCEPT = "(Intercept)"
 METRICS = ("deviance", "auc", "accuracy")
@@ -203,7 +203,7 @@ def linear_predictor(X, coef, intercept, row_indices=None):
     that bounds the memory used. Raises ValueError if the values read aren't
     all finite.
     """
-    X = _as_arrow_matrix(X)
+    X = _as_array(_as_arrow_matrix(X))
     coef = sps.csc_array(coef)
     used = np.unique(coef.indices)
     nrow = X.shape[0] if row_indices is None else len(row_indices)
