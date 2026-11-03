@@ -83,6 +83,23 @@ for vector in cases:
         safe_count += 1
     else:
         none_count += 1
+# Guard the transformed input, not an earlier raw vector. These pairs force
+# opposite routing decisions before and after centering/differencing.
+raw_large = [2 * high, math.nextafter(2 * high, math.inf)]
+quantum = raw_large[1] - raw_large[0]
+transformed_routes = [
+    ([high, -high], True),
+    ([0.0, math.nextafter(2 * high, math.inf)], False),
+    (raw_large, False),
+    ([(v - raw_large[0]) / quantum for v in raw_large], True),
+    ([quantum, 0.0], True),
+]
+for vector, expected_fast in transformed_routes:
+    fast, safe, selected = native._vep_norm_paths(vector)
+    assert (fast is not None) == expected_fast
+    assert selected == (fast if expected_fast else safe)
+    exact_square = sum((Fraction(v) ** 2 for v in vector), Fraction(0))
+    assert selected is not None and Fraction(selected) ** 2 >= exact_square
 score_enclosures = score_fallbacks = 0
 for n in [7, 8, 9]:
     for magnitude in values + [1e-200]:
@@ -125,6 +142,7 @@ print(
     json.dumps(
         dict(
             cases=len(cases),
+            transformed_guard_cases=len(transformed_routes),
             score_enclosures=score_enclosures,
             score_safe_fallbacks=score_fallbacks,
             fast_enclosures=fast_count,

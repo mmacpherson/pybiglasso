@@ -46,9 +46,11 @@ The fixed-input, round-to-nearest, gradual-underflow assumptions above still
 apply. `norm` checks the executing thread's arithmetic first. A failed check
 returns None; it does not enter either numerical norm path.
 
-The fast path uses exact constants A=2^-240, B=2^240, S=2^-256 and R=2^256.
-The implementation names the inverse scale R `FAST_UNSCALE`; unit roundoff
-remains `u=2^-53` as defined above.
+The fast path uses exact constants A=2^-240 and B=2^240. It deliberately
+DOES NOT scale accepted values. Scaling by2^-256 was considered and removed:
+this guard already gives ample overflow headroom, while scaling would move
+small products unnecessarily closer to the normal floor and add operations.
+Only the existing safe fallback uses dynamic scaling.
 
 1. Form the checked integer m=2*n+64, checking integer overflow, exact binary64
    conversion (m<=2^53), and the existing `gamma_terms` validity guard. It
@@ -56,48 +58,66 @@ remains `u=2^-53` as defined above.
    In particular n<2^50 and g<1/2. Failure selects the safe path.
 2. In ONE pass, for every v=abs(at(i)), accumulate the predicate
    `v==0 || A<=v<=B`. Nonfinite values fail this predicate. For passing values
-   form w=v*S; for failing values use dummy w=0. Accumulate the ordinary
+   use w=v; for failing values use dummy w=0. Accumulate the ordinary
    round-to-nearest `T = fl(T + fl(w*w))`, starting at zero. This pass uses
-   no per-element outward additions or divisions. The dummy branch prevents
-   rejected tiny/huge/nonfinite values from generating candidate products.
+   no per-element scaling, outward additions or divisions. The dummy branch
+   prevents rejected tiny/huge/nonfinite values from generating products.
 3. If ANY predicate failed, discard T entirely and run the unchanged safe
    norm below on the original values. No partial norm or zero sentinel from
    a failed guard can authorize a certificate. If all predicates passed and
    T=0, all values were zero, so return exact0.
 4. Otherwise take d=next_down(fl(1-g)), form Qhi=up(T/d), then return
-   `up(FAST_UNSCALE * up(sqrt(Qhi)))`. Every written `up` uses the existing
-   outward primitive; d is finite and positive.
+   `up(sqrt(Qhi))`. Each `up` uses the existing outward primitive; d is
+   finite and positive. There is no rescaling step.
 
 ### Normal-range proof at the operation level
 
-For a nonzero passing input, the multiplication by S is EXACT: shifting its
-binary exponent leaves the result normal and preserves every significand bit.
-Its magnitude lies in [2^-496,2^-16], so its exact square lies in
-[2^-992,2^-32]. Products and every nonzero partial sum are normal; sums of zero
-terms are exact. For every prefix, positivity and n<2^50 bound the ideal sum
-by2^18. Applying at most2*n rounding factors, each prefix is below
-`2^18/(1-m*u) < 2^19`; induction proves that an overflowing partial sum cannot
-be the first violation of this bound. No product or partial-sum underflow
-occurs. Thus a relative-error-only argument is valid INSIDE this guard, unlike
-the withdrawn unscaled recipe for arbitrary magnitudes.
+A nonzero passing input lies in[2^-240,2^240], so its exact square lies
+in[2^-480,2^480]. Products and every nonzero partial sum are normal; sums of
+zero terms are exact. For every prefix, positivity and n<2^50 bound the ideal
+sum by2^530. At most2*n rounding factors bound each prefix by
+`2^530/(1-m*u) < 2^531`. Induction proves that an overflowing partial sum
+cannot be the first violation of this bound. No product or partial-sum
+underflow occurs. Thus a relative-error-only argument is valid INSIDE this
+guard, unlike the withdrawn arbitrary-magnitude unscaled recipe.
 
-Let Q=sum_i (v_i*S)^2 in real arithmetic. At most2*n rounded product/addition
+Let Q=sum_i v_i^2 in real arithmetic. At most2*n rounded product/addition
 nodes affect the sum. Unfolding their multiplicative errors gives
-`|T-Q|<=gamma_m*Q`; there is no additive underflow term because all nonzero
+`|T-Q|<=gamma_m*Q`; no additive underflow term is needed because all nonzero
 products/sums are normal. An FMA contracts nodes and remains covered by m.
-The scale multiplications themselves are exact and need no rounding node.
-The existing operation-count validity guard implies gamma_m<1/3; its outward
+The operation-count validity guard implies gamma_m<1/3; its outward
 implementation still gives g<1/2. Therefore
 
     Q <= T/(1-gamma_m) <= T/(1-g) <= T/d <= Qhi.
 
 The lower denominator d accounts for rounding in constructing1-g. Outward
-division and correctly rounded/outward sqrt enclose sqrt(Q). Rescaling by the
-positive exact power of two, with outward multiplication, encloses ||v||.
-Here Qhi<2^20, sqrt(Qhi)<2^10 and the result<2^266, so the final operations
-also stay finite/normal. The zero case is handled separately. Even if an
-unexpected enclosure operation fails, the candidate returns None and selects
-the safe path.
+division and correctly rounded/outward sqrt enclose sqrt(Q)=||v||. The bounds
+above leave Qhi<2^532 and the result<2^266; the smallest positive squared sum
+is at least2^-480. Thus final division/sqrt also stay finite/normal, with a
+large margin at both ends. The zero case is handled separately. An unexpected
+enclosure failure still selects the safe path.
+
+### Which quantity is guarded
+
+The guard is INSIDE `norm_fast`, immediately on the value returned by its
+`at(i)` closure and before that value is squared. It is not a precheck on raw
+X reused for a later transform. Concretely:
+
+- Raw score metadata's x norm guards x_i itself.
+- Raw score metadata's coefficient norm guards0 for x_i==c, otherwise
+  `next_up(abs(fl(x_i-c)))`, which encloses the exact difference.
+- Centered-fallback metadata guards the actual rounded coefficient
+  `fl(fl(x_i-c)/s)` used by the stock score.
+- A residual norm guards r_i.
+- A residual-change norm guards0 for a_i==b_i, otherwise
+  `next_up(abs(fl(a_i-b_i)))`.
+
+A raw value inside the guard can yield an outside centered difference; that
+transformed norm must use the safe path. Conversely large raw values outside
+the guard may yield small accepted centered coefficients. The branch is chosen
+from the actual squared quantity in each case. The native transformed-input
+test exercises BOTH directions. Rounded difference enclosures remain norm
+inputs; unrounded real differences are never substituted into floating code.
 
 ### Exact differences and coverage
 

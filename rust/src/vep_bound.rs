@@ -33,12 +33,10 @@ pub(crate) fn arithmetic_ok() -> bool {
         && (min * std::hint::black_box(0.5)).to_bits() == (1u64 << 51)
 }
 
-// Fixed scaling is exact throughout the guarded input range. Its squares
-// remain normal, and the checked operation count bounds every partial sum.
+// Guard the actual norm input, after any centering/differencing transform.
+// Its unscaled square is normal; the count bounds every partial sum.
 const FAST_MIN: f64 = f64::from_bits((1023 - 240) << 52);
 const FAST_MAX: f64 = f64::from_bits((1023 + 240) << 52);
-const FAST_SCALE: f64 = f64::from_bits((1023 - 256) << 52);
-const FAST_UNSCALE: f64 = f64::from_bits((1023 + 256) << 52);
 
 fn norm_fast(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
     let (gamma, _) = gamma_terms(n.checked_mul(2)?.checked_add(64)?)?;
@@ -50,8 +48,8 @@ fn norm_fast(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
         valid &= in_range;
         // Invalid inputs contribute a dummy zero; no overflowing or tiny
         // candidate products are evaluated. The entire candidate is discarded.
-        let scaled = if in_range { value * FAST_SCALE } else { 0. };
-        squared += scaled * scaled;
+        let guarded = if in_range { value } else { 0. };
+        squared += guarded * guarded;
     }
     if !valid {
         return None;
@@ -60,9 +58,9 @@ fn norm_fast(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
         return Some(0.);
     }
     // |T-Q| <= gamma*Q, so Q <= T/(1-gamma). Lower the
-    // denominator, then round division, sqrt and rescaling outward.
+    // denominator, then round division and sqrt outward.
     let denominator = (1. - gamma).next_down();
-    mul(FAST_UNSCALE, up(div(squared, denominator)?.sqrt())?)
+    up(div(squared, denominator)?.sqrt())
 }
 
 pub(crate) fn norm(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
@@ -288,6 +286,22 @@ mod tests {
     #[test]
     fn operation_count_rejects_before_reading() {
         assert!(norm_fast(usize::MAX, |_| unreachable!()).is_none());
+    }
+
+    #[test]
+    fn guard_checks_the_transformed_quantity() {
+        let raw = [FAST_MAX, -FAST_MAX];
+        assert!(norm_fast(raw.len(), |i| raw[i]).is_some());
+        assert!(
+            norm_fast(raw.len(), |i| { if raw[i] == FAST_MAX { 0. } else { (raw[i] - FAST_MAX).abs().next_up() } })
+                .is_none()
+        );
+
+        let center = 2. * FAST_MAX;
+        let raw = [center, center.next_up()];
+        let scale = raw[1] - center;
+        assert!(norm_fast(raw.len(), |i| raw[i]).is_none());
+        assert!(norm_fast(raw.len(), |i| (raw[i] - center) / scale).unwrap() >= 1.);
     }
 
     #[test]
