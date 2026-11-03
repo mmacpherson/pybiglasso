@@ -86,12 +86,31 @@ fn whole_pool_mode(flags: &str) -> Option<&str> {
     flags.strip_prefix("all-").or_else(|| flags.strip_prefix("inherit-"))
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn assert_creator_thread_policy(mode: &str) {
+    let word = fp::control_word();
+    if cfg!(target_os = "linux") {
+        assert!(fp::flush_mode_active(mode), "Linux worker must inherit creator flags: {word:#x}");
+        assert!(!bound::arithmetic_ok());
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        // XNU machine_thread_state_initialize sets FPCR_DEFAULT = 0.
+        // Read the state before any worker-side control-register write.
+        assert_eq!(word, 0, "new macOS ARM64 worker must start with default FPCR");
+        assert!(bound::arithmetic_ok());
+    } else {
+        // Do not assume another platform's inheritance policy. Its observed
+        // uniform state must be either the requested mode or supported arithmetic.
+        assert!(fp::flush_mode_active(mode) || bound::arithmetic_ok(), "unexpected worker FP state: {word:#x}");
+    }
+}
+
 #[test]
 fn isolated_path_child() {
     let Ok(output) = std::env::var("PYBIGLASSO_TEST_OUTPUT") else {
         return;
     };
     let mut bytes = vec![];
+    let mut worker_support = vec![];
     for alpha in [1., 0.5] {
         let mut first_thread = None;
         for threads in [1, 2, 4, 6] {
@@ -110,8 +129,7 @@ fn isolated_path_child() {
                     {
                         if let Some(mode) = worker_bad_clone.strip_prefix("inherit-") {
                             // Read-only check BEFORE any worker-side mode setter.
-                            assert!(fp::flush_mode_active(mode), "worker must inherit the exact creator control bits");
-                            assert!(!bound::arithmetic_ok(), "inherited worker environment must reject certificates");
+                            assert_creator_thread_policy(mode);
                         } else if let Some(mode) = worker_bad_clone.strip_prefix("all-") {
                             fp::set_mode(mode);
                             assert!(!bound::arithmetic_ok(), "all workers must use unsupported arithmetic");
@@ -124,6 +142,14 @@ fn isolated_path_child() {
                 })
                 .build()
                 .unwrap();
+            let expected_support = whole_pool_mode(&worker_bad).map(|_| {
+                let observed = pool.broadcast(|_| bound::arithmetic_ok());
+                assert!(observed.iter().all(|&v| v == observed[0]), "worker environment must be uniform");
+                // One ordinary and one subnormal fit follow. Record the observed
+                // worker support independently of the candidate cache metadata.
+                worker_support.extend([u8::from(observed[0]); 2]);
+                observed[0]
+            });
             let x = Array2::from_shape_fn((128, 7).f(), |(i, j)| if (i >> j) & 1 == 0 { -1. } else { 1. });
             let y: Vec<f64> = (0..128).map(|i| 2. * x[(i, 0)]).collect();
             let lambdas = [1., 63. / 64., 31. / 32., 61. / 64., 15. / 16.];
@@ -155,8 +181,8 @@ fn isolated_path_child() {
                 } else {
                     None
                 };
-                if whole_pool_mode(&worker_bad).is_some() {
-                    assert!(!bound::arithmetic_ok(), "fitting thread must use unsupported arithmetic");
+                if let Some(supported) = expected_support {
+                    assert_eq!(bound::arithmetic_ok(), supported, "fit must use the observed worker environment");
                 }
                 let design = ContigX::<_, true> { x: x.view() };
                 let fit = Fit { x: &design, y: &y, params: &params, mask: None, rows: None, n_fit: 128 };
@@ -184,10 +210,10 @@ fn isolated_path_child() {
                 }
             }
             let mut cell_bytes = path_bytes(&path);
-            if whole_pool_mode(&worker_bad).is_some() {
-                // All workers retain the same fixed flags, including subnormal
-                // inputs. Compare stock under those flags, not against RN output.
-                pool.install(|| subnormal_case(&mut cell_bytes, alpha));
+            if let Some(supported) = expected_support {
+                // Compare the same actual worker state in stock and enabled:
+                // inherited flags on Linux, defaults on macOS ARM64.
+                pool.install(|| subnormal_case(&mut cell_bytes, alpha, supported));
             }
             if worker_bad.is_empty() && std::env::var("PYBIGLASSO_TEST_FAULT").unwrap_or_default().is_empty() {
                 pool.install(|| storage_cases(&mut cell_bytes, alpha));
@@ -202,6 +228,7 @@ fn isolated_path_child() {
             bytes.extend(cell_bytes);
         }
     }
+    fs::write(std::path::Path::new(&output).with_extension("fp"), worker_support).unwrap();
     fs::write(output, bytes).unwrap();
 }
 
@@ -393,6 +420,9 @@ mod fp {
         // A zero mask denotes the architectural default, which excludes DAZ.
         mask & (1 << 6) != 0
     }
+    pub(super) fn control_word() -> u64 {
+        get() as u64
+    }
     pub(super) fn flush_modes() -> Vec<&'static str> {
         let mut modes = vec!["ftz"];
         if supports_daz() {
@@ -456,6 +486,9 @@ mod fp {
         unsafe {
             core::arch::asm!("msr fpcr, {}", "isb",in(reg)value,options(nostack,preserves_flags));
         }
+    }
+    pub(super) fn control_word() -> u64 {
+        get()
     }
     pub(super) fn flush_modes() -> Vec<&'static str> {
         vec!["fz"]
@@ -528,8 +561,8 @@ fn fitting_thread_and_all_workers_with_flush_flags_match_stock() {
 }
 
 #[test]
-#[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn inherited_flush_flags_match_stock_without_worker_writes() {
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn creator_flush_flags_follow_platform_policy_without_worker_writes() {
     assert_whole_pool_matches_stock("inherit");
 }
 
@@ -543,20 +576,37 @@ fn assert_whole_pool_matches_stock(prefix: &str) {
         succeeded(&enabled);
         assert_eq!(fs::read(stock.dir.join("path")).unwrap(), fs::read(enabled.dir.join("path")).unwrap());
         compare_traces(&stock, &enabled, false);
+        let supported = fs::read(enabled.dir.join("path.fp")).unwrap();
+        assert_eq!(
+            supported,
+            fs::read(stock.dir.join("path.fp")).unwrap(),
+            "stock and candidate must observe the same worker state"
+        );
         let rows = stats(&enabled);
         assert_eq!(rows.len(), 16); // normal and subnormal paths, two alphas x four thread counts
-        for s in rows {
+        assert_eq!(supported.len(), rows.len());
+        if supported.contains(&1) {
+            assert!(
+                rows.iter().any(|s| s[0] > s[1] && s[3] > 0 && s[4] > 0),
+                "supported worker state must exercise positive-radius/next-threshold skips"
+            );
+        }
+        for (s, &support) in rows.iter().zip(&supported) {
             assert!(s[0] > 0, "must exercise inactive scans");
-            assert_eq!(s[0], s[1], "unsupported arithmetic must read every selected column");
-            assert_eq!(s[2], 0, "no certificates, including same-epoch shortcuts");
-            assert_eq!(s[4], 0, "no next-strong certificates");
-            assert_eq!(s[5], 0, "cache must remain disabled");
+            assert_eq!(s[5], support as usize, "cache validity must match the observed worker environment");
+            if support == 0 {
+                assert_eq!(s[0], s[1], "unsupported arithmetic must read every selected column");
+                assert_eq!(s[2], 0, "no certificates, including same-epoch shortcuts");
+                assert_eq!(s[4], 0, "no next-strong certificates");
+            } else {
+                assert!(s[1] <= s[0]);
+            }
         }
     }
 }
 
-fn subnormal_case(out: &mut Vec<u8>, alpha: f64) {
-    assert!(!bound::arithmetic_ok());
+fn subnormal_case(out: &mut Vec<u8>, alpha: f64, supported: bool) {
+    assert_eq!(bound::arithmetic_ok(), supported);
     let x = Array2::from_shape_fn((128, 7).f(), |(i, j)| if (i >> j) & 1 == 0 { -1. } else { 1. });
     // Construct bit patterns directly, so fixture creation cannot flush them.
     let y: Vec<f64> = (0..128).map(|i| f64::from_bits((1 << 51) | if i & 1 == 0 { 1 << 63 } else { 0 })).collect();

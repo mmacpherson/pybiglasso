@@ -46,26 +46,43 @@ same gradual-underflow assumptions. The original coordinate/score formulas
 then execute under the caller's flags. Such a fit is compared with stock
 under those same flags, not with an ordinary gradual-underflow fit.
 
-The inherited-mode regression sets flags on the creating thread before
-building a pool, then checks the exact inherited control bits in every worker
-before any worker-side mode setter runs. The fitting thread and every worker
-must reject certification. This Unix regression models a library enabling
-flushing before Rayon workers are created. A separate explicit uniform-mode
-case also sets every worker, including on Windows. They compare full
-outputs and recorded trajectory with stock at 1/2/4/6 threads for both
-alphas, including bit-constructed subnormal response inputs. They require
-zero skipped reads and zero next-strong certificates. Separate fit-thread
-and single-other-worker cases remain covered. Test-only RAII controls use
-MXCSR on x86-64 and FPCR.FZ on AArch64; the AArch64 register layout and access
-are specified in [Arm DDI 0502G, section 2.3](https://documentation-service.arm.com/static/5e907926c8052b16087615a6).
-All control state is restored on the creating/fitting thread; worker controls
-are confined to their isolated child process.
+The creator-mode regression sets flags before building a pool, then reads
+each worker's actual control state before any worker-side mode setter.
+Thread creation is platform-specific:
 
-Platform validation is separate from the fallback contract: local runtime
-tests execute on Linux x86-64 (FTZ, DAZ and both). AArch64 Linux/macOS checks
-compile the native test code and FPCR controls; these cross-checks do not
-establish native FPCR.FZ behavior. Native ARM execution is delegated to the
-Linux ARM and macOS CI lanes, whose results must be assessed separately.
+- Linux workers must preserve the requested flush and rounding bits, as
+  described by [pthread_create(3)](https://man7.org/linux/man-pages/man3/pthread_create.3.html).
+- macOS ARM64 workers must start with default FPCR=0 and supported arithmetic.
+  Apple's thread-creation path calls
+  [machine_thread_state_initialize](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/arm64/status.c#L2066-L2084),
+  which resets FPCR to
+  [FPCR_DEFAULT=0](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/arm64/proc_reg.h#L838).
+  It does not copy the creator's FZ setting.
+- Other platforms are checked against their observed uniform worker state,
+  without assuming Linux inheritance.
+
+Worker-probe results are recorded independently of cache metadata. Stock and
+enabled fits must observe the same state and match full outputs and recorded
+trajectory at 1/2/4/6 threads for both alphas, including bit-constructed
+subnormal responses. Unsupported workers require zero skipped reads and
+zero next-strong certificates. Supported workers require a valid cache and
+positive-radius/next-threshold skips on the analytic fixture. Thus a flushed
+creator with healthy workers on macOS is checked as well as Linux's inherited
+flush mode. The product probes actual fitting/worker arithmetic; it does not
+infer it from the platform or creator.
+
+The separate explicit uniform-mode test sets every worker to the requested
+unsupported state on all platforms. Fit-thread and single-other-worker cases
+also remain covered. Test-only RAII controls use MXCSR on x86-64 and FPCR.FZ
+on AArch64; the AArch64 register layout and access are specified in
+[Arm DDI 0502G, section 2.3](https://documentation-service.arm.com/static/5e907926c8052b16087615a6).
+Creating/fitting-thread control state is restored; worker controls are confined
+to isolated child processes.
+
+Local runtime tests execute on Linux x86-64 (FTZ, DAZ and both). AArch64
+Linux/macOS cross-checks compile the native test code and FPCR controls;
+cross-compilation is not runtime evidence. Native Linux ARM and macOS CI
+separately validate the actual worker state and fit behavior.
 
 Let `u=2^-53` and `eta=2^-1074`. For a finite result in this environment,
 `fl(t)` satisfies `|fl(t)-t| <= u*|t| + eta`. This bound includes subnormal
