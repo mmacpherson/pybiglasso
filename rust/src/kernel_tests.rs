@@ -7,6 +7,7 @@ use ndarray::{Array2, ShapeBuilder};
 fn params(penalty_factor: &[f64]) -> Params<'_> {
     Params {
         family: Family::Binomial,
+        update_from_gram: false,
         alpha: 1.0,
         lambdas: None,
         nlambda: 1,

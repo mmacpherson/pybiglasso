@@ -177,6 +177,7 @@ impl Dataset {
         let (ybar, null_deviance) = family.null_model(&self.y, train).map_err(str::to_owned)?;
         let params = Params {
             family,
+            update_from_gram: false,
             alpha: options.alpha,
             lambdas: options.lambdas.as_deref(),
             nlambda,

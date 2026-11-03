@@ -79,6 +79,7 @@ fn check_irls_row_formulas(compatible: bool, wrong_label: bool) {
         let pf = [1.0];
         let params = Params {
             family: Family::Binomial,
+            update_from_gram: false,
             alpha: 1.0,
             lambdas: None,
             nlambda: 2,

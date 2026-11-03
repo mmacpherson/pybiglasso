@@ -1107,6 +1107,7 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> WithSimd for Chunks<'_, Pas
 
 pub(crate) struct Params<'a> {
     pub(crate) family: Family,
+    pub(crate) update_from_gram: bool,
     pub(crate) alpha: f64,
     pub(crate) lambdas: Option<&'a [f64]>,
     pub(crate) nlambda: usize,
@@ -1532,6 +1533,12 @@ impl<D: Design> Fit<'_, D> {
     }
 
     pub(crate) fn run(&self, center: Vec<f64>, scale: Vec<f64>) -> Result<Path, String> {
+        if self.params.update_from_gram && (self.params.family != Family::Gaussian || self.params.r_compatible) {
+            return Err(
+                "update_from='gram' requires Gaussian fits without r_compatible; use update_from='residuals' instead."
+                    .into(),
+            );
+        }
         if self.params.family == Family::Gaussian {
             return self.run_gaussian(center, scale);
         }

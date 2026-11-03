@@ -115,6 +115,7 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
             eps=self.tol,
             max_iter=self.max_iter,
             backend=self.backend,
+            update_from=self.update_from,
         )
 
     def decision_function(self, X):
@@ -167,6 +168,7 @@ class _RegressionBase(RegressorMixin, BaseEstimator):
             eps=self.tol,
             max_iter=self.max_iter,
             backend=self.backend,
+            update_from=self.update_from,
         )
 
     def predict(self, X):
@@ -193,6 +195,7 @@ class BiglassoRegressor(_RegressionBase):
         tol=1e-7,
         max_iter=1000,
         backend=None,
+        update_from=None,
     ):
         self.alpha = alpha
         self.l1_ratio = l1_ratio
@@ -200,6 +203,7 @@ class BiglassoRegressor(_RegressionBase):
         self.tol = tol
         self.max_iter = max_iter
         self.backend = backend
+        self.update_from = update_from
 
     def fit(self, X, y):
         X, y = self._validate_xy(X, y)
@@ -238,6 +242,7 @@ class BiglassoRegressorCV(_RegressionBase):
         max_iter=1000,
         n_jobs=None,
         backend=None,
+        update_from=None,
     ):
         self.l1_ratio = l1_ratio
         self.n_alphas = n_alphas
@@ -251,6 +256,7 @@ class BiglassoRegressorCV(_RegressionBase):
         self.max_iter = max_iter
         self.n_jobs = n_jobs
         self.backend = backend
+        self.update_from = update_from
 
     def fit(self, X, y):
         if self.scoring not in ("mse", "deviance", "r2"):
@@ -325,6 +331,7 @@ class BiglassoClassifier(_BiglassoBase):
         tol=1e-7,
         max_iter=1000,
         backend=None,
+        update_from=None,
     ):
         self.alpha = alpha
         self.l1_ratio = l1_ratio
@@ -332,6 +339,7 @@ class BiglassoClassifier(_BiglassoBase):
         self.tol = tol
         self.max_iter = max_iter
         self.backend = backend
+        self.update_from = update_from
 
     def fit(self, X, y):
         X, y = self._validate_xy(X, y)
@@ -418,6 +426,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         n_jobs=None,
         backend=None,
         early_stopping=None,
+        update_from=None,
     ):
         self.l1_ratio = l1_ratio
         self.n_alphas = n_alphas
@@ -431,6 +440,7 @@ class BiglassoClassifierCV(_BiglassoBase):
         self.max_iter = max_iter
         self.n_jobs = n_jobs
         self.backend = backend
+        self.update_from = update_from
         self.early_stopping = early_stopping
 
     def fit(self, X, y):

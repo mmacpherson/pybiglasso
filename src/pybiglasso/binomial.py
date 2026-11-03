@@ -55,6 +55,7 @@ def biglasso(
     n_threads="auto",
     backend=None,
     _stop=None,
+    update_from=None,
 ):
     """Fit a lasso or elastic-net binomial or Gaussian regression path.
 
@@ -68,6 +69,16 @@ def biglasso(
 
     X may be a pyarrow Table/RecordBatch or a NumPy array/memmap in Fortran order;
     it is read a column at a time and never copied.
+
+    `update_from=None` or "residuals" uses R biglasso's residual updates.
+    For Gaussian fits, `update_from="gram"` caches covariance columns lazily,
+    making each coordinate update independent of the row count. It supports
+    the same X types and row subsets, but reads columns again to compute each
+    new covariance column and reserves up to 1 GiB for that cache. Exceeding
+    this fixed limit raises ValueError; use "residuals" for larger problems.
+    Gram mode is unavailable with r_compatible=True or the binomial family.
+    The two modes solve the same objective but can differ in rounding and
+    iteration counts. The returned path records its resolved `update_from`.
 
     Like R, a binomial path stops early once training deviance falls below 1% of the
     null deviance; `stop_on_saturation=False` (not in R) fits every lambda.
@@ -105,6 +116,16 @@ def biglasso(
     # _stop(il, lambdas, cols, beta, intercept) after each lambda is fit, with
     # the whole grid and that fit's nonzero coefficients on X's scale; a true
     # result ends the path there, as dfmax does, but without a warning
+
+    if update_from is None:
+        update_from = "residuals"
+    if update_from not in ("residuals", "gram"):
+        raise ValueError("update_from must be 'residuals' or 'gram'.")
+    if update_from == "gram" and (family != "gaussian" or r_compatible):
+        raise ValueError(
+            "update_from='gram' requires family='gaussian' and r_compatible=False; "
+            "use update_from='residuals' instead."
+        )
 
     X = _as_arrow_matrix(X)
     y = _response(y)
@@ -283,7 +304,9 @@ def biglasso(
             beta, intercept = _unstandardize(vals, intercept, center, scale)
             return bool(_stop(il, lambdas, cols, beta, intercept))
 
-    results = fit_path_rust(X, y, row_indices, params, n_threads, on_lambda, family)
+    results = fit_path_rust(
+        X, y, row_indices, params, n_threads, on_lambda, family, update_from
+    )
 
     # keep the part of the path that was fit (it stops early on saturation
     # or dfmax), and untransform coefficients back to the scale of X
@@ -321,6 +344,7 @@ def biglasso(
         feature_names=feature_names,
         alpha=alpha,
         family=family,
+        update_from=update_from,
     )
 
 
@@ -333,7 +357,14 @@ def _unstandardize(vals, intercept, center, scale):
 
 
 def fit_path_rust(
-    X, y, row_indices, params, n_threads, on_lambda=None, family="binomial"
+    X,
+    y,
+    row_indices,
+    params,
+    n_threads,
+    on_lambda=None,
+    family="binomial",
+    update_from="residuals",
 ):
     """fit_path, run by the Rust backend in one call."""
     from . import _rust
@@ -361,6 +392,7 @@ def fit_path_rust(
         settings.boundscheck,
         on_lambda=on_lambda,
         family=family,
+        update_from=update_from,
     )
     path.pop("row_path")  # gathered or masked rows; reported for tests
     for kind, il in path.pop("events"):

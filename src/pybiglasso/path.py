@@ -30,6 +30,7 @@ class BiglassoPath:
       feature_names: (ncol,) column names
       alpha: elastic-net mixing parameter (1 is the lasso)
       family: "binomial" or "gaussian"
+      update_from: resolved coordinate update mode, "residuals" or "gram"
     """
 
     lambdas: np.ndarray
@@ -46,6 +47,7 @@ class BiglassoPath:
     # Pickles from before families existed have no instance field, so they
     # fall back here. New fits always record their actual family explicitly.
     family: str = "binomial"
+    update_from: str = "residuals"
 
     def __len__(self):
         return len(self.lambdas)

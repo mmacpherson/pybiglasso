@@ -349,7 +349,7 @@ fn run_mapped(
 /// Fit a binomial path; arguments and result as the numba backend's
 /// fit_path. Null-model statistics use the same portable math as the fit.
 #[pyfunction]
-#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, n_threads, boundscheck, row_path = "auto", on_lambda = None, family = "binomial"))]
+#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, n_threads, boundscheck, row_path = "auto", on_lambda = None, family = "binomial", update_from = "residuals"))]
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
@@ -372,7 +372,11 @@ fn fit_path<'py>(
     row_path: &str,
     on_lambda: Option<Bound<'py, PyAny>>,
     family: &str,
+    update_from: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
+    if !["residuals", "gram"].contains(&update_from) {
+        return Err(PyValueError::new_err("update_from must be 'residuals' or 'gram'."));
+    }
     if !["auto", "gather", "mask"].contains(&row_path) {
         return Err(PyValueError::new_err("row_path must be 'auto', 'gather' or 'mask'."));
     }
@@ -491,6 +495,7 @@ fn fit_path<'py>(
     };
     let params = Params {
         family,
+        update_from_gram: update_from == "gram",
         alpha,
         lambdas: lambdas_vec.as_deref(),
         nlambda,

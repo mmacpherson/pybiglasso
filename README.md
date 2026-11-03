@@ -437,6 +437,16 @@ with a comment beginning "Differs from R biglasso".
 
 **Least squares.**
 
+- **Optional covariance updates.** R biglasso updates residuals after each
+  coordinate. This remains pybiglasso's default. `update_from="gram"` instead
+  caches a covariance column when a feature first becomes nonzero, so later
+  coordinate updates cost O(p) rather than O(n). It solves the same objective
+  with different rounding and potentially different iteration counts. The
+  cache has a fixed 1 GiB limit; exceeding it raises an error recommending
+  `update_from="residuals"`. Both modes accept the same feature storage and
+  row subsets. Gram mode refreshes residuals and gradients before accepting
+  each lambda and is unavailable with `r_compatible=True`. The fitted path's
+  `.update_from` records the mode used.
 - **Constant responses.** R's strict convergence comparison against
   a zero null loss uses the full iteration budget for a constant response.
   pybiglasso stops once the coefficients no longer change;

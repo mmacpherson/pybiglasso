@@ -414,7 +414,7 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
     monkeypatch.setattr(
         bl.binomial,
         "fit_path_rust",
-        lambda X, y, rows, params, threads, on_lambda, family: solver(
+        lambda X, y, rows, params, threads, on_lambda, family, update_from: solver(
             X, y, rows, params
         ),
     )
