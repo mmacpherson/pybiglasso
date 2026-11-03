@@ -134,7 +134,9 @@ def fit(args):
 
 def busy_fraction(seconds):
     def sample():
-        values = list(map(int, open("/proc/stat").readline().split()[1:]))
+        values = list(
+            map(int, pathlib.Path("/proc/stat").read_text().splitlines()[0].split()[1:])
+        )
         return sum(values[:8]), sum(values[:3])
 
     total0, busy0 = sample()
