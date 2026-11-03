@@ -16,10 +16,10 @@ X, y, names = data.X, data.y, data.feature_names  # X is a pyarrow.Table
 fit = biglasso(X, y, family="gaussian")
 ```
 
-The converter accepts filesystem paths only: CSV, Parquet, Feather files
-and `.xlsx`. Tables, streams and file objects are not ingest sources. Existing
-NumPy arrays/memmaps and compatible Tables/RecordBatches can be fitted directly;
-ingest is an optional explicit materializer. See [Feather files and Arrow Tables](arrow.md).
+The converter accepts CSV, Parquet, Feather and `.xlsx` paths, and
+[Arrow streams](#arrow-streams) from readers, Tables and compatible data tools.
+Existing NumPy arrays/memmaps and compatible Tables/RecordBatches can be fitted
+directly; ingest writes a persistent file when you need one. See [Feather files and Arrow Tables](arrow.md).
 
 It writes **features only** to an
 uncompressed **Feather file**, containing exactly one nonempty record batch.
@@ -44,6 +44,56 @@ fit = biglasso(data.X, data.y, family="gaussian")
 only the Feather file, and `data.y` is `None`.
 The solver's existing conversion of y to native float64 handles byte order
 on big-endian platforms; the returned mapping keeps its little-endian dtype.
+
+## Arrow streams
+
+Pass a reader or another object with `__arrow_c_stream__` and choose where to
+keep the result. For example, a producer can supply batches through a reader:
+
+```python
+import pyarrow as pa
+from pybiglasso.ingest import ingest
+
+schema = pa.schema([("x", pa.int64()), ("y", pa.float64())])
+reader = pa.RecordBatchReader.from_batches(schema, [
+    pa.record_batch([[1, 2], [0.5, 1.5]], schema=schema),
+    pa.record_batch([[3], [2.5]], schema=schema),
+])
+data = ingest(reader, "stream.feather", response="y", dtypes="preserve")
+```
+
+The same call accepts a PyArrow Table, an eager Polars DataFrame, a DuckDB
+relation's Arrow reader or an ADBC Arrow reader. It uses Arrow's standard
+`RecordBatchReader.from_stream` interface, without adapters for each tool.
+It acquires and consumes the stream once; empty batches do not end the stream.
+Pass the Arrow reader exported by a cursor, rather than the database connection.
+
+`dtypes="preserve"` keeps the selected fields' types, nullability and field
+metadata, together with the schema metadata (ingest replaces its own reserved
+`pybiglasso.ingest` key). Supported feature storage is bool, any 8/16/32/64-bit
+integer, float32 or float64. Selected values must still be finite and non-null.
+The response is always converted exactly to the separate little-endian float64
+file. Wider integers can stay exact in X, but a response integer that cannot be
+represented exactly as float64 is rejected. Preserve mode also works for
+Parquet and Feather paths; CSV and Excel need `auto` or a dtype mapping.
+
+The default `dtypes="auto"` and partial dtype mappings inspect **every selected
+value**, including late batches. The stream is written losslessly to a temporary
+uncompressed spool while types are inferred, then converted from that spool.
+There is no sampling or second request to the producer. Preserve mode validates
+and stages in one pass, without this spool. Both modes check each batch's schema,
+report errors with cumulative one-based row numbers and publish only after the
+whole stream succeeds. The producer must obey Arrow's fixed-schema stream
+contract: the C interface supplies one schema for the whole stream, so hidden
+type changes in a malformed producer cannot be discovered after import.
+
+Streams require an explicit `out`; `cache=True` and `cache_dir` are rejected
+before acquisition. A stream has no stable source path to use as a cache key.
+Reopen the finished output with `load`, as above. Conversion memory is the
+**producer's batch plus bounded consumer work**: `block_size` limits the rows
+converted at once, but cannot shrink a batch the producer already allocated.
+Nothing concatenates all batches into RAM. Disk space must also cover column
+staging, the final output and, in auto mode, the lossless selected-column spool.
 
 ## Selection and exact representation
 
@@ -76,7 +126,7 @@ values are rejected with the column name and one-based data-row number
 
 ## Bounded conversion
 
-The first pass infers types and counts rows. The second stages typed columns
+For paths in auto mode, the first pass infers types and counts rows. The second stages typed columns
 on disk. CSV, Parquet and Feather are read by block or source record batch,
 with per-column state. Excel is an explicit exception to block-bounded memory.
 The writer maps those raw columns read-only and writes one Arrow record batch;
@@ -148,7 +198,7 @@ metadata. The receipt itself is not accepted
 as a fitting input. Mappings are read-only. Files persist independently of the Python result, so
 retained X and y mappings do not depend on a temporary-directory owner.
 
-An explicit persistent `out` or `cache_dir` is required. With `out=None`,
+For paths, an explicit persistent `out` or `cache_dir` is required. With `out=None`,
 output lives in a fresh subdirectory of the supplied `cache_dir`. `cache=True`
 instead reuses an artifact keyed by resolved source path, byte size, nanosecond
 mtime and conversion options. It does not hash all source contents. Explicit

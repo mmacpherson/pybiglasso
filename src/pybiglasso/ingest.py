@@ -1,4 +1,4 @@
-"""Blockwise conversion from source paths to ordinary Arrow Tables and files."""
+"""Blockwise conversion from paths and Arrow streams to persistent Arrow files."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import struct
 import tempfile
 import zipfile
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -151,15 +152,11 @@ def _numeric(value, column, row):
 
 
 def _exact(value, dtype):
-    if dtype in ("bool", "int8", "uint8", "int16"):
+    if np.dtype(dtype).kind in "biu":
         if isinstance(value, float) and value == 0 and math.copysign(1, value) < 0:
             return False
-        lower, upper = {
-            "bool": (0, 1),
-            "int8": (-128, 127),
-            "uint8": (0, 255),
-            "int16": (-32768, 32767),
-        }[dtype]
+        limits = None if dtype == "bool" else np.iinfo(dtype)
+        lower, upper = (0, 1) if limits is None else (limits.min, limits.max)
         return lower <= value <= upper and int(value) == value
     try:
         with np.errstate(over="ignore", invalid="ignore"):
@@ -417,10 +414,11 @@ def _stage(blocks, columns, types, directory, count):
                 _numeric(raw, name, seen + index + 1)
                 for index, raw in enumerate(block[name])
             ]
-            if not all(_exact(value, types[name]) for value in values):
-                raise ValueError(
-                    f"Column {name!r}: source values changed during ingest."
-                )
+            for index, value in enumerate(values, seen + 1):
+                if not _exact(value, types[name]):
+                    raise ValueError(
+                        f"Column {name!r}, row {index}: no supported exact dtype."
+                    )
             array = np.asarray(values, dtype=types[name])
             if types[name] == "bool":
                 bits = np.concatenate((tails[name], array))
@@ -430,13 +428,13 @@ def _stage(blocks, columns, types, directory, count):
             with paths[name].open("ab") as stream:
                 stream.write(array.tobytes())
         seen += len(block[columns[0]])
-    if seen != count:
+    if count is not None and seen != count:
         raise ValueError("Source row count changed during ingest.")
     for name, tail in tails.items():
         if len(tail):
             with paths[name].open("ab") as stream:
                 stream.write(np.packbits(tail, bitorder="little").tobytes())
-    return paths
+    return paths, seen
 
 
 def _read_metadata(path):
@@ -555,26 +553,27 @@ def load(path: str | os.PathLike[str]) -> IngestResult:
     return _open_result(path, _read_metadata(path))
 
 
-def _write_ipc(path, raw, selected, types, count, pa, metadata):
+def _write_ipc(path, raw, selected, types, count, pa, metadata, schema=None):
     # Keep mmap-backed arrays local to this call: release every staging view
     # before TemporaryDirectory removes its files, including on Windows.
     arrays = []
-    arrow_types = {
-        "bool": pa.bool_(),
-        "int8": pa.int8(),
-        "uint8": pa.uint8(),
-        "int16": pa.int16(),
-        "float32": pa.float32(),
-        "float64": pa.float64(),
-    }
     for name in selected:
         buffer = pa.memory_map(str(raw[name]), "r").read_buffer()
         arrays.append(
-            pa.Array.from_buffers(arrow_types[types[name]], count, [None, buffer])
+            pa.Array.from_buffers(
+                pa.from_numpy_dtype(types[name]), count, [None, buffer]
+            )
         )
-    batch = pa.record_batch(arrays, names=list(selected))
+    batch = (
+        pa.record_batch(arrays, names=list(selected))
+        if schema is None
+        else pa.RecordBatch.from_arrays(arrays, schema=schema)
+    )
     batch = batch.replace_schema_metadata(
-        {_METADATA_KEY: json.dumps(metadata, sort_keys=True).encode()}
+        {
+            **(batch.schema.metadata or {}),
+            _METADATA_KEY: json.dumps(metadata, sort_keys=True).encode(),
+        }
     )
     with (
         pa.OSFile(str(path), "wb") as stream,
@@ -583,6 +582,220 @@ def _write_ipc(path, raw, selected, types, count, pa, metadata):
         ) as writer,
     ):
         writer.write_batch(batch)
+
+
+def _publish(
+    staging, raw, selected, types, count, path, response, key, pa, schema=None
+):
+    response_path = path.with_suffix(path.suffix + ".response")
+    output = staging / "data.feather"
+    response_sha256 = None
+    if response is not None:
+        # Hash the staged bytes that will be hard-linked into place,
+        # including their exact floating representations and signed zeros.
+        with raw[response].open("rb") as stream:
+            response_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+    metadata = dict(
+        version=_FORMAT_VERSION,
+        key=key,
+        rows=count,
+        features=selected,
+        response=response,
+        response_sha256=response_sha256,
+    )
+    _write_ipc(output, raw, selected, types, count, pa, metadata, schema)
+    # Hard links publish without overwriting an existing destination; all
+    # staging files are on this filesystem. Roll back only our own links.
+    published = []
+    try:
+        for origin, destination in [
+            *(([(raw[response], response_path)]) if response is not None else []),
+            (output, path),
+        ]:
+            os.link(origin, destination)
+            published.append(destination)
+    except OSError:
+        for destination in published:
+            destination.unlink()
+        raise
+    return metadata
+
+
+def _stream_blocks(reader, columns, block_size, spool=None):
+    schema = reader.schema
+    for batch in reader:
+        if not batch.schema.equals(schema, check_metadata=True):
+            raise ValueError("Arrow stream schema changed during ingest.")
+        # Empty batches carry a schema, not an end-of-stream indication.
+        for start in range(0, batch.num_rows, block_size):
+            selected = batch.select(list(columns)).slice(start, block_size)
+            if spool is not None:
+                spool.write_batch(selected)
+            block = {name: selected.column(name).to_pylist() for name in columns}
+            del selected
+            yield block
+            del block
+        # Do not keep the preceding producer batch alive while requesting
+        # its successor; even a small slice owns the full producer buffers.
+        del batch
+
+
+def _spooled_blocks(path, columns, block_size, pa):
+    with pa.memory_map(str(path), "r") as mapping:
+        reader = pa.ipc.open_file(mapping)
+        for index in range(reader.num_record_batches):
+            batch = reader.get_batch(index)
+            for start in range(0, batch.num_rows, block_size):
+                yield {
+                    name: batch.column(name).slice(start, block_size).to_pylist()
+                    for name in columns
+                }
+
+
+def _preserved_types(schema, selected, pa):
+    types = {}
+    for name in selected:
+        dtype = schema.field(name).type
+        if not (
+            pa.types.is_boolean(dtype)
+            or pa.types.is_integer(dtype)
+            or dtype in (pa.float32(), pa.float64())
+        ):
+            raise ValueError(
+                f"Column {name!r}: dtypes='preserve' needs bool, integer, "
+                f"float32 or float64 storage, found {dtype}."
+            )
+        types[name] = np.dtype(dtype.to_pandas_dtype()).name
+    return types
+
+
+def _ingest_stream(
+    reader,
+    path,
+    response,
+    features,
+    exclude,
+    match,
+    dtypes,
+    block_size,
+    pa,
+    fingerprint=None,
+    key=None,
+):
+    names = _names(reader.schema.names)
+    selected = _selection(names, response, features, exclude, match)
+    preserve = isinstance(dtypes, str) and dtypes == "preserve"
+    overrides = _dtype_overrides(dtypes, selected)
+    columns = (*selected, *((response,) if response is not None else ()))
+    schema = (
+        pa.schema(
+            [reader.schema.field(name) for name in selected],
+            metadata=reader.schema.metadata,
+        )
+        if preserve
+        else None
+    )
+    types = _preserved_types(reader.schema, selected, pa) if preserve else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    response_path = path.with_suffix(path.suffix + ".response")
+    if any(p.exists() for p in (path, response_path)):
+        raise FileExistsError(f"Ingest output already exists: {path}")
+    if key is None:
+        key = hashlib.sha256(os.urandom(32)).hexdigest()
+    with tempfile.TemporaryDirectory(prefix=".ingest-", dir=path.parent) as temporary:
+        staging = Path(temporary)
+        if preserve:
+            if response is not None:
+                types[response] = _RESPONSE_DTYPE
+            raw, count = _stage(
+                _stream_blocks(reader, columns, block_size),
+                columns,
+                types,
+                staging,
+                None,
+            )
+            if not count:
+                raise ValueError("Source must contain at least one data row.")
+        else:
+            spool_path = staging / "source.arrow"
+            spool_schema = pa.schema([reader.schema.field(name) for name in columns])
+            with (
+                pa.OSFile(str(spool_path), "wb") as stream,
+                pa.ipc.new_file(
+                    stream,
+                    spool_schema,
+                    options=pa.ipc.IpcWriteOptions(compression=None),
+                ) as spool,
+            ):
+                types, count = _infer(
+                    _stream_blocks(reader, columns, block_size, spool),
+                    columns,
+                    {
+                        **overrides,
+                        **({response: _RESPONSE_DTYPE} if response is not None else {}),
+                    },
+                )
+            raw, _ = _stage(
+                _spooled_blocks(spool_path, columns, block_size, pa),
+                columns,
+                types,
+                staging,
+                count,
+            )
+        if fingerprint is not None:
+            _check_source(*fingerprint)
+        metadata = _publish(
+            staging, raw, selected, types, count, path, response, key, pa, schema
+        )
+    return _open_result(path, metadata)
+
+
+@contextmanager
+def _preserve_reader(source, columns, block_size, pa):
+    if source.suffix.lower() in (".parquet", ".pq"):
+        import pyarrow.parquet as pq
+
+        with pq.ParquetFile(source) as file:
+            with pa.RecordBatchReader.from_batches(
+                pa.schema(
+                    [file.schema_arrow.field(name) for name in columns],
+                    metadata=file.schema_arrow.metadata,
+                ),
+                file.iter_batches(
+                    batch_size=block_size, columns=list(columns), use_threads=False
+                ),
+            ) as reader:
+                yield reader
+    elif source.suffix.lower() in (".feather", ".arrow", ".ipc"):
+        with pa.memory_map(str(source), "r") as mapping:
+            file = pa.ipc.open_file(mapping)
+            with pa.RecordBatchReader.from_batches(
+                file.schema, (file.get_batch(i) for i in range(file.num_record_batches))
+            ) as reader:
+                yield reader
+    else:
+        raise ValueError(
+            "dtypes='preserve' requires an Arrow stream, Feather or "
+            "Parquet schema; use 'auto' or a mapping for CSV/Excel."
+        )
+
+
+def _dtype_overrides(dtypes, selected):
+    if isinstance(dtypes, str):
+        if dtypes not in ("auto", "preserve"):
+            raise ValueError("dtypes must be 'auto', 'preserve' or a mapping.")
+        overrides = {}
+    elif isinstance(dtypes, Mapping):
+        overrides = {name: np.dtype(dtype).name for name, dtype in dtypes.items()}
+    else:
+        raise ValueError("dtypes must be 'auto', 'preserve' or a mapping.")
+    if set(overrides) - set(selected) or any(
+        dtype not in _TYPES for dtype in overrides.values()
+    ):
+        raise ValueError(
+            "dtype overrides must name selected features and supported types."
+        )
+    return overrides
 
 
 def ingest(
@@ -602,8 +815,15 @@ def ingest(
 ):
     """Convert a numeric source to persistent, feature-only Arrow file storage.
 
-    ``match`` is a glob string or compiled regex. ``dtypes`` is ``'auto'`` or
-    a partial mapping of feature names to exact supported physical types.
+    Paths and Arrow ``__arrow_c_stream__`` producers are accepted. Streams
+    require an explicit ``out`` and do not support cache reuse. A stream is
+    acquired once, never rewound; memory is its batch plus bounded consumer work.
+
+    ``match`` is a glob string or compiled regex. ``dtypes='auto'`` infers exact
+    types from every value; a partial mapping fixes selected physical types.
+    Streams spool losslessly to disk for this second pass. ``'preserve'`` keeps
+    supported Arrow field types and metadata in one pass (streams, Parquet and
+    Feather); selected values are still checked for nulls and finiteness.
     Response selection is explicit and produces a separate read-only f64
     mapping. No response/family is inferred from names. Error row numbers are
     one-based data rows (excluding the header).
@@ -622,14 +842,20 @@ def ingest(
     the returned Feather output and its optional .response file. Use load()
     to reopen them later, even when the source has been removed.
     """
-    if out is None and cache_dir is None:
+    is_path = isinstance(source, (str, os.PathLike))
+    if not is_path:
+        if out is None:
+            raise ValueError("Arrow streams require an explicit persistent out.")
+        if cache or cache_dir is not None:
+            raise ValueError("Arrow streams do not support cache or cache_dir.")
+        if not hasattr(source, "__arrow_c_stream__"):
+            raise TypeError(
+                "ingest accepts a filesystem path or an Arrow stream "
+                "with __arrow_c_stream__."
+            )
+    elif out is None and cache_dir is None:
         raise ValueError("Specify a persistent out or cache_dir for ingest.")
-    if not isinstance(source, (str, os.PathLike)):
-        raise TypeError(
-            "ingest accepts a filesystem path, not a Table, receipt, stream or file object."
-        )
     pa = _arrow()
-    source = Path(source).resolve(strict=True)
     if (
         not isinstance(block_size, int)
         or isinstance(block_size, bool)
@@ -642,22 +868,18 @@ def ingest(
         or excel_shared_strings_limit <= 0
     ):
         raise ValueError("excel_shared_strings_limit must be a positive integer.")
+    if not is_path:
+        path = Path(out).absolute()
+        if path.exists() or path.with_suffix(path.suffix + ".response").exists():
+            raise FileExistsError(f"Ingest output already exists: {path}")
+        with pa.RecordBatchReader.from_stream(source) as reader:
+            return _ingest_stream(
+                reader, path, response, features, exclude, match, dtypes, block_size, pa
+            )
+    source = Path(source).resolve(strict=True)
     names = _headers(source, pa, sheet, excel_shared_strings_limit)
     selected = _selection(names, response, features, exclude, match)
-    if isinstance(dtypes, str):
-        if dtypes != "auto":
-            raise ValueError("dtypes must be 'auto' or a mapping.")
-        overrides = {}
-    elif isinstance(dtypes, Mapping):
-        overrides = {name: np.dtype(dtype).name for name, dtype in dtypes.items()}
-    else:
-        raise ValueError("dtypes must be 'auto' or a mapping.")
-    if set(overrides) - set(selected) or any(
-        dtype not in _TYPES for dtype in overrides.values()
-    ):
-        raise ValueError(
-            "dtype overrides must name selected features and supported types."
-        )
+    overrides = _dtype_overrides(dtypes, selected)
     columns = (*selected, *((response,) if response is not None else ()))
     fingerprint = _fingerprint(source)
     options = dict(
@@ -665,7 +887,7 @@ def ingest(
         source=fingerprint,
         features=selected,
         response=response,
-        dtypes=overrides,
+        dtypes="preserve" if dtypes == "preserve" else overrides,
         sheet=sheet,
         block_size=block_size,
         excel_shared_strings_limit=excel_shared_strings_limit,
@@ -690,6 +912,22 @@ def ingest(
     if any(p.exists() for p in (path, response_path)):
         raise FileExistsError(f"Ingest output already exists: {path}")
 
+    if isinstance(dtypes, str) and dtypes == "preserve":
+        with _preserve_reader(source, columns, block_size, pa) as reader:
+            return _ingest_stream(
+                reader,
+                path,
+                response,
+                selected,
+                None,
+                None,
+                dtypes,
+                block_size,
+                pa,
+                (source, fingerprint),
+                key,
+            )
+
     def blocks():
         return _blocks(
             source, columns, names, block_size, sheet, pa, excel_shared_strings_limit
@@ -704,36 +942,9 @@ def ingest(
     _check_source(source, fingerprint)
     with tempfile.TemporaryDirectory(prefix=".ingest-", dir=path.parent) as temporary:
         staging = Path(temporary)
-        raw = _stage(blocks(), columns, types, staging, count)
+        raw, _ = _stage(blocks(), columns, types, staging, count)
         _check_source(source, fingerprint)
-        output = staging / "data.feather"
-        response_sha256 = None
-        if response is not None:
-            # Hash the staged bytes that will be hard-linked into place,
-            # including their exact floating representations and signed zeros.
-            with raw[response].open("rb") as stream:
-                response_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
-        metadata = dict(
-            version=_FORMAT_VERSION,
-            key=key,
-            rows=count,
-            features=selected,
-            response=response,
-            response_sha256=response_sha256,
+        metadata = _publish(
+            staging, raw, selected, types, count, path, response, key, pa
         )
-        _write_ipc(output, raw, selected, types, count, pa, metadata)
-        # Hard links publish without overwriting an existing destination; all
-        # staging files are on this filesystem. Roll back only our own links.
-        published = []
-        try:
-            for origin, destination in [
-                *(([(raw[response], response_path)]) if response is not None else []),
-                (output, path),
-            ]:
-                os.link(origin, destination)
-                published.append(destination)
-        except OSError:
-            for destination in published:
-                destination.unlink()
-            raise
     return _open_result(path, metadata)

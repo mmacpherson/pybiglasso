@@ -35,7 +35,7 @@ def _as_arrow_matrix(X):
     ) and not hasattr(X, "__array__"):
         raise TypeError(
             "X must be array-like, a pyarrow.Table or a pyarrow.RecordBatch. "
-            "Convert explicitly to a pyarrow.Table, or use ingest on a file."
+            "Convert explicitly to a pyarrow.Table, or materialize it with ingest."
         )
     return X
 

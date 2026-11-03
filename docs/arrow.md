@@ -96,7 +96,7 @@ Table or RecordBatch to borrow Arrow buffers directly.
 
 An Arrow `__arrow_c_stream__`/`__arrow_c_array__` exporter without `__array__`
 (such as a RecordBatchReader) is not a matrix input and is rejected without
-consuming it. Convert it explicitly to a Table, or use ingest on a file.
+consuming it. Convert it explicitly to a Table, or materialize it with [ingest](ingest.md#arrow-streams).
 Exporting or building a Table upstream may itself allocate.
 
 All classifier/regressor estimators, including CV, accept these Arrow X types.
