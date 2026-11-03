@@ -852,6 +852,9 @@ fn for_each_value<C: Col>(c: &C, mut visit: impl FnMut(f64)) {
 }
 
 /// sum(x * s), in LANES accumulators.
+/// Differs from R biglasso, which sums serially: the fixed accumulator order
+/// lets SIMD and threads share the work without changing the result, so
+/// scores agree with R's to floating-point precision rather than bit for bit.
 #[inline(always)]
 fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
     struct Op<'a, C>(&'a C, &'a [f64]);
@@ -1432,6 +1435,8 @@ impl<D: Design> Fit<'_, D> {
             let shift = new_beta - st.beta[j];
             if shift != 0.0 {
                 max_update = max_update.max(v * (shift * shift));
+                // Differs from R biglasso, which updates by (shift * (x - c)) / scale:
+                // one division per coordinate, not per row, so the row pass vectorizes.
                 pending = Some((jj, shift / sc, c));
             }
             st.beta[j] = new_beta;

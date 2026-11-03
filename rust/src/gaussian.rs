@@ -192,6 +192,8 @@ impl<D: Design> Fit<'_, D> {
             if shift != 0.0 {
                 st.version += 1;
                 largest = largest.max(shift * shift);
+                // Differs from R biglasso, which groups the update as
+                // (shift * (x - c)) / scale; the results agree to the last bits.
                 // Keep seqsum's exact left-to-right order over the updated
                 // values, including masked zeros, without a second row pass.
                 let mut sum = 0.0;

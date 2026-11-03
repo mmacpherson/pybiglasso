@@ -212,7 +212,10 @@ grids, `dfmax` truncation, and saturation. The comparison runs pybiglasso with
 `r_compatible=True`; for cases with penalty factors it passes R pybiglasso's
 lambda grid, which sets aside the zero-penalty-factor case under Differences.
 A weekly job reruns the grid live against the current CRAN release, to catch
-upstream changes.
+upstream changes. The two agree to floating-point precision rather than bit
+for bit: R sums serially, while pybiglasso sums in a fixed order across several
+accumulators, so that SIMD and threads don't change its results, and groups a
+few operations differently.
 
 **Independent of R.**
 
