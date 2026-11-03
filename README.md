@@ -430,6 +430,11 @@ with a comment beginning "Differs from R biglasso".
   without a warning; in our tests some scales came out as NaN. pybiglasso
   computes these columns' moments from centered values, so a constant shift of
   X leaves the solution unchanged.
+- **Arithmetic order.** R sums serially; pybiglasso sums in a fixed order
+  across several accumulators, so SIMD and threads don't change its results,
+  and groups some products and quotients differently. Results can differ from
+  R's in the low bits, and agree to floating-point precision (see
+  [Validation](#validation)).
 - **Invalid input.** NaN or infinite values in the rows being fit, and
   non-finite penalty factors or lambdas, raise `ValueError`; R instead drops
   the affected column or returns the null model.
