@@ -20,7 +20,7 @@ from sklearn.utils.multiclass import check_classification_targets, type_of_targe
 from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
 from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
-from .binomial import biglasso
+from .fit import biglasso
 from .path import METRICS, _expit, linear_predictor, score_logits
 
 __all__ = [

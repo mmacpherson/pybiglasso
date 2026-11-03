@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import pybiglasso as bl
-from pybiglasso import binomial
+from pybiglasso import fit
 
 _rust = pytest.importorskip("pybiglasso._rust")
 
@@ -28,9 +28,7 @@ def test_bounds_setting_is_forwarded_to_rust(monkeypatch, checked, order, select
         "mask": np.arange(8),
         "gather": np.array([3, 0, 1, 3, 0, 1]),
     }[selection]
-    monkeypatch.setattr(
-        binomial, "settings", replace(binomial.settings, boundscheck=checked)
-    )
+    monkeypatch.setattr(fit, "settings", replace(fit.settings, boundscheck=checked))
     original = _rust.fit_path
     signature = inspect.signature(original)
     calls = []
