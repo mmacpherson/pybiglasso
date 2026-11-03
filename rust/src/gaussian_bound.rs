@@ -1,5 +1,5 @@
-//! EXPERIMENT ONLY. Directed enclosures for the Gaussian shadow prototype.
-//! No public API; see experiments/vep-skip/proof.md for arithmetic assumptions.
+//! Score-change enclosures for inactive Gaussian columns.
+//! See docs/gaussian-screening.md for the arithmetic assumptions and proof.
 use super::*;
 const U: f64 = 1.1102230246251565e-16;
 const ETA: f64 = f64::from_bits(1);
@@ -159,6 +159,18 @@ impl Meta {
         };
         Some(Self { xnorm, coefficient_norm, center: center.abs(), denominator, n, centered })
     }
+    #[cfg(test)]
+    pub(super) fn test_metadata(self) -> [u64; 7] {
+        [
+            1,
+            self.xnorm.to_bits(),
+            self.coefficient_norm.to_bits(),
+            self.center.to_bits(),
+            self.denominator.to_bits(),
+            self.n as u64,
+            u64::from(self.centered),
+        ]
+    }
     pub(crate) fn error(&self, rnorm: f64) -> Option<f64> {
         if !arithmetic_ok() {
             return None;
@@ -227,15 +239,18 @@ pub(crate) fn distance(hi: f64, anchor_lo: f64) -> Option<f64> {
     up(hi - anchor_lo)
 }
 
+#[cfg(test)]
 pub(crate) fn test_norm(values: &[f64]) -> Option<f64> {
     norm(values.len(), |i| values[i])
 }
+#[cfg(test)]
 pub(crate) fn test_norm_paths(values: &[f64]) -> (Option<f64>, Option<f64>, Option<f64>) {
     if !arithmetic_ok() {
         return (None, None, None);
     }
     (norm_fast(values.len(), |i| values[i]), norm_safe(values.len(), |i| values[i]), test_norm(values))
 }
+#[cfg(test)]
 pub(crate) fn test_bound(x: &[f64], a: &[f64], b: &[f64], center: f64, scale: f64, n_fit: usize) -> Option<Vec<f64>> {
     if x.len() != a.len() || x.len() != b.len() {
         return None;
@@ -312,5 +327,52 @@ mod tests {
         assert!(upper < 0.5);
         assert!(gamma_terms(1usize << 51).is_none());
         assert!(norm_fast((1usize << 50) - 32, |_| unreachable!()).is_none());
+    }
+}
+
+#[cfg(all(test, feature = "python"))]
+mod rational_tests {
+    use super::{test_bound, test_norm, test_norm_paths};
+    use pyo3::{prelude::*, types::PyModule};
+    #[pyfunction]
+    fn norm(values: Vec<f64>) -> Option<f64> {
+        test_norm(&values)
+    }
+    #[pyfunction]
+    fn norm_paths(values: Vec<f64>) -> (Option<f64>, Option<f64>, Option<f64>) {
+        test_norm_paths(&values)
+    }
+    #[pyfunction]
+    fn bound(x: Vec<f64>, a: Vec<f64>, b: Vec<f64>, center: f64, scale: f64, n_fit: usize) -> Option<Vec<f64>> {
+        test_bound(&x, &a, &b, center, scale, n_fit)
+    }
+    #[pyfunction]
+    fn decide(score: f64, radius: f64, cutoff: f64) -> Option<bool> {
+        super::decide(score, radius, cutoff)
+    }
+
+    #[test]
+    fn retained_fraction_audits_of_actual_native_operations() {
+        // Embedded Python supplies arbitrary precision Fraction expectations;
+        // these wrappers exist only in this unit-test executable, not the wheel.
+        Python::initialize();
+        Python::attach(|py| {
+            let native = PyModule::new(py, "bound_audit").unwrap();
+            native.add_function(wrap_pyfunction!(norm, &native).unwrap()).unwrap();
+            native.add_function(wrap_pyfunction!(norm_paths, &native).unwrap()).unwrap();
+            native.add_function(wrap_pyfunction!(bound, &native).unwrap()).unwrap();
+            native.add_function(wrap_pyfunction!(decide, &native).unwrap()).unwrap();
+            for (name, code) in [
+                ("guarded_norm", include_str!("../../tests/support/gaussian_screening/guarded_norm.py")),
+                ("bound", include_str!("../../tests/support/gaussian_screening/bound.py")),
+                ("raw_centers", include_str!("../../tests/support/gaussian_screening/raw_centers.py")),
+                ("long_bound", include_str!("../../tests/support/gaussian_screening/long_bound.py")),
+            ] {
+                let code = std::ffi::CString::new(code).unwrap();
+                let name = std::ffi::CString::new(name).unwrap();
+                let module = PyModule::from_code(py, &code, &name, &name).unwrap();
+                module.getattr("audit").unwrap().call1((&native,)).unwrap();
+            }
+        });
     }
 }

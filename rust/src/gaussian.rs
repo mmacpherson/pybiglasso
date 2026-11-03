@@ -1,9 +1,8 @@
-// EXPERIMENT ONLY: scalar shadow/enabled skip behind VEP_SKIP.
 //! R biglasso's Gaussian SSR path, sharing column access and fixed-order scores
 //! with the logistic solver. Only row/state/path buffers are allocated; X is
 //! always borrowed and read one column at a time.
 
-use super::vep_bound as bound;
+use super::gaussian_bound as bound;
 use super::*;
 
 struct GaussianState {
@@ -16,8 +15,7 @@ struct GaussianState {
     scores: Vec<f64>,
     version: u64,
     il: usize,
-    skip: Option<SkipExperiment>,
-    sweep_seconds: f64,
+    skip: Option<ScoreCache>,
 }
 
 #[derive(Clone, Copy)]
@@ -37,7 +35,8 @@ struct Anchor {
     rnorm: f64,
     next: Option<NextStrong>,
 }
-struct SkipExperiment {
+struct ScoreCache {
+    #[cfg(test)]
     shadow: bool,
     meta: Vec<Option<bound::Meta>>,
     anchors: Vec<Anchor>,
@@ -47,51 +46,38 @@ struct SkipExperiment {
     lo: f64,
     rnorm: f64,
     valid: bool,
-    setup_seconds: f64,
-    maintenance_seconds: f64,
-    exact_scan_seconds: f64,
+    #[cfg(test)]
     baseline_reads: usize,
+    #[cfg(test)]
     actual_reads: usize,
+    #[cfg(test)]
     candidate_skips: usize,
+    #[cfg(test)]
     next_certificates_used: usize,
+    #[cfg(test)]
     last_skips: Vec<u8>,
+    #[cfg(test)]
     last_radius: Vec<f64>,
-}
-impl Drop for GaussianState {
-    fn drop(&mut self) {
-        if let Some(s) = &self.skip {
-            eprintln!(
-                "VEP_SKIP shadow={} setup_seconds={} maintenance_seconds={} exact_scan_seconds={} sweep_seconds={} baseline_reads={} actual_reads={} candidate_skips={} next_certificates_used={} extra_residual_bytes={}",
-                s.shadow,
-                s.setup_seconds,
-                s.maintenance_seconds,
-                s.exact_scan_seconds,
-                self.sweep_seconds,
-                s.baseline_reads,
-                s.actual_reads,
-                s.candidate_skips,
-                s.next_certificates_used,
-                s.previous.len() * 8
-            );
-        } else if std::env::var_os("VEP_STATS").is_some() {
-            eprintln!("VEP_STOCK sweep_seconds={}", self.sweep_seconds);
-        }
-    }
+    #[cfg(test)]
+    positive_skips: usize,
+    #[cfg(test)]
+    fault_applied: bool,
 }
 #[derive(Clone, Copy, Default)]
 struct Plan {
     selected: bool,
     skip: bool,
     next: Option<NextStrong>,
+    #[cfg(test)]
     radius: f64,
 }
 
-// Raw capture layout is documented in experiments/vep-skip/trace-layout.md.
-// Disabled for all intended timing runs. Capture both stock and experimental
-// states in the same format, including the actual residual and exact scores.
+// Native-test capture: exact trajectory plus the separate certificate metadata.
+// No instrumentation or controls are compiled into the library.
+#[cfg(test)]
 fn observe(path: &Path, st: &GaussianState, kind: u64, lam: f64) {
     use std::io::Write;
-    let Some(name) = std::env::var_os("VEP_TRACE") else {
+    let Some(name) = std::env::var_os("PYBIGLASSO_TEST_TRACE") else {
         return;
     };
     let mut f = std::io::BufWriter::new(std::fs::OpenOptions::new().create(true).append(true).open(name).unwrap());
@@ -133,11 +119,60 @@ fn observe(path: &Path, st: &GaussianState, kind: u64, lam: f64) {
         }
         f.write_all(&zeros).unwrap();
     }
+    if let Some(s) = &st.skip {
+        f.write_all(bytemuck::cast_slice(&[s.version, u64::from(s.valid)])).unwrap();
+        f.write_all(bytemuck::cast_slice(&s.previous)).unwrap();
+        for values in
+            [s.anchors.iter().map(|a| a.prefix_lo).collect::<Vec<_>>(), s.anchors.iter().map(|a| a.rnorm).collect()]
+        {
+            f.write_all(bytemuck::cast_slice(&values)).unwrap();
+        }
+        let epochs: Vec<u64> = s.anchors.iter().map(|a| a.next.map_or(0, |v| v.epoch)).collect();
+        f.write_all(bytemuck::cast_slice(&epochs)).unwrap();
+        for m in &s.meta {
+            let bits = m.map_or([0; 7], |m| m.test_metadata());
+            f.write_all(bytemuck::cast_slice(&bits)).unwrap();
+        }
+    } else {
+        f.write_all(&vec![0; 16 + 8 * st.residual.len() + 80 * st.beta.len()]).unwrap();
+    }
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn observe(_path: &Path, _state: &GaussianState, _kind: u64, _lambda: f64) {}
+
+impl ScoreCache {
+    #[inline(always)]
+    fn shadow(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.shadow
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+}
+
+fn cache_mode() -> (bool, bool) {
+    #[cfg(test)]
+    {
+        match std::env::var("PYBIGLASSO_TEST_SCAN_MODE").as_deref() {
+            Ok("off") => (false, false),
+            Ok("shadow") => (true, true),
+            _ => (true, false),
+        }
+    }
+    #[cfg(not(test))]
+    {
+        (true, false)
+    }
 }
 
 impl<D: Design> Fit<'_, D> {
     fn gaussian_sweep(&self, path: &Path, st: &mut GaussianState, lam: f64) -> f64 {
-        let started = std::time::Instant::now();
         let p = self.params;
         let mut largest: f64 = 0.0;
         for j in 0..st.beta.len() {
@@ -192,7 +227,7 @@ impl<D: Design> Fit<'_, D> {
                 st.beta[j] = value;
             }
         }
-        st.sweep_seconds += started.elapsed().as_secs_f64();
+        #[cfg(test)]
         if st.il == usize::MAX {
             observe(path, st, 9, lam);
         }
@@ -242,7 +277,14 @@ impl<D: Design> Fit<'_, D> {
             observe(path, st, if strong_only { 3 } else { 5 }, lam);
             return answer;
         };
-        let started = std::time::Instant::now();
+        #[cfg(test)]
+        if std::env::var("PYBIGLASSO_TEST_FAULT").as_deref() == Ok("invalidate")
+            && cache.positive_skips > 0
+            && !cache.fault_applied
+        {
+            cache.hi = f64::INFINITY;
+            cache.fault_applied = true;
+        }
         if cache.version != st.version && cache.valid {
             let prepared = bound::difference_norm(&st.residual, &cache.previous)
                 .and_then(|step| bound::advance(cache.hi, cache.lo, step))
@@ -284,7 +326,10 @@ impl<D: Design> Fit<'_, D> {
                 let Some(radius) = radius else {
                     return plan;
                 };
-                plan.radius = radius;
+                #[cfg(test)]
+                {
+                    plan.radius = radius;
+                }
                 if bound::decide(anchor.score, radius, l1) != Some(false) {
                     return plan;
                 }
@@ -307,13 +352,11 @@ impl<D: Design> Fit<'_, D> {
                 plan
             })
             .collect();
-        cache.maintenance_seconds += started.elapsed().as_secs_f64();
-        let started = std::time::Instant::now();
         let oracle: Vec<Option<f64>> = plans
             .par_iter()
             .enumerate()
             .map(|(j, p)| {
-                if !p.selected || (p.skip && !cache.shadow) {
+                if !p.selected || (p.skip && !cache.shadow()) {
                     return None;
                 }
                 let jj = path.col_map[j];
@@ -327,21 +370,32 @@ impl<D: Design> Fit<'_, D> {
                 ))
             })
             .collect();
-        cache.exact_scan_seconds += started.elapsed().as_secs_f64();
-        let started = std::time::Instant::now();
         let mut violations = 0;
         for (j, plan) in plans.iter().enumerate() {
-            cache.last_skips[j] = u8::from(plan.skip);
-            cache.last_radius[j] = plan.radius;
+            #[cfg(test)]
+            {
+                cache.last_skips[j] = u8::from(plan.skip);
+            }
+            #[cfg(test)]
+            {
+                cache.last_radius[j] = plan.radius;
+            }
             if !plan.selected {
                 continue;
             }
-            cache.baseline_reads += 1;
+            #[cfg(test)]
+            {
+                cache.baseline_reads += 1;
+            }
             let jj = path.col_map[j];
             let l1 = lam * self.params.alpha * self.params.penalty_factor[jj];
             let l2 = lam * (1. - self.params.alpha) * self.params.penalty_factor[jj];
             if plan.skip {
-                cache.candidate_skips += 1;
+                #[cfg(test)]
+                {
+                    cache.candidate_skips += 1;
+                    cache.positive_skips += usize::from(plan.radius > 0.);
+                }
                 if let Some(q) = oracle[j] {
                     assert!(
                         q.is_finite() && (q - st.beta[j] * l2).abs() <= l1,
@@ -354,14 +408,20 @@ impl<D: Design> Fit<'_, D> {
                         assert_eq!(q.abs() > cutoff, next.decision, "shadow next SSR mismatch il={} j={}", st.il, j);
                     }
                     st.scores[j] = q;
-                    cache.actual_reads += 1;
+                    #[cfg(test)]
+                    {
+                        cache.actual_reads += 1;
+                    }
                 }
                 cache.anchors[j].represented_epoch = st.version;
                 cache.anchors[j].next = plan.next;
                 // An enabled skip NEVER writes an approximate or anchor score.
             } else {
                 let q = oracle[j].expect("mandatory exact score");
-                cache.actual_reads += 1;
+                #[cfg(test)]
+                {
+                    cache.actual_reads += 1;
+                }
                 st.scores[j] = q;
                 cache.anchors[j] = Anchor {
                     score: q,
@@ -378,7 +438,6 @@ impl<D: Design> Fit<'_, D> {
                 }
             }
         }
-        cache.maintenance_seconds += started.elapsed().as_secs_f64();
         observe(path, st, if strong_only { 3 } else { 5 }, lam);
         violations
     }
@@ -470,7 +529,6 @@ impl<D: Design> Fit<'_, D> {
             version: 0,
             il: usize::MAX,
             skip: None,
-            sweep_seconds: 0.,
             scores: self.compute_z(&path, &residual),
             residual_sum: seqsum(&residual),
             residual,
@@ -544,11 +602,13 @@ impl<D: Design> Fit<'_, D> {
         }
 
         observe(&path, &st, 7, 0.);
-        if let Ok(mode) = std::env::var("VEP_SKIP")
-            && (mode == "shadow" || mode == "enabled")
-        {
-            let started = std::time::Instant::now();
-            let pool_ok = rayon::broadcast(|_| bound::arithmetic_ok()).into_iter().all(|v| v);
+        let (enabled, _shadow) = cache_mode();
+        if enabled {
+            let pool_ok = if rayon::current_num_threads() == 1 {
+                bound::arithmetic_ok()
+            } else {
+                rayon::broadcast(|_| bound::arithmetic_ok()).into_iter().all(|v| v)
+            };
             let meta: Vec<_> = path
                 .col_map
                 .par_iter()
@@ -558,8 +618,9 @@ impl<D: Design> Fit<'_, D> {
                 .collect();
             let rnorm = bound::norm(st.residual.len(), |i| st.residual[i]);
             let rn = rnorm.unwrap_or(0.);
-            st.skip = Some(SkipExperiment {
-                shadow: mode == "shadow",
+            st.skip = Some(ScoreCache {
+                #[cfg(test)]
+                shadow: _shadow,
                 meta,
                 anchors: st
                     .scores
@@ -579,15 +640,22 @@ impl<D: Design> Fit<'_, D> {
                 lo: 0.,
                 rnorm: rn,
                 valid: pool_ok && rnorm.is_some(),
-                setup_seconds: started.elapsed().as_secs_f64(),
-                maintenance_seconds: 0.,
-                exact_scan_seconds: 0.,
+                #[cfg(test)]
                 baseline_reads: 0,
+                #[cfg(test)]
                 actual_reads: 0,
+                #[cfg(test)]
                 candidate_skips: 0,
+                #[cfg(test)]
                 next_certificates_used: 0,
+                #[cfg(test)]
                 last_skips: vec![0; nc],
+                #[cfg(test)]
                 last_radius: vec![0.; nc],
+                #[cfg(test)]
+                positive_skips: 0,
+                #[cfg(test)]
+                fault_applied: false,
             });
         }
         observe(&path, &st, 0, 0.);
@@ -605,6 +673,25 @@ impl<D: Design> Fit<'_, D> {
                 let cutoff = (2.0 * lam - previous) * p.alpha * mult[j];
                 let exact_decision = st.scores[j].abs() > cutoff;
                 if let Some(cache) = st.skip.as_mut() {
+                    #[cfg(test)]
+                    if !cache.fault_applied
+                        && cache.positive_skips > 0
+                        && !st.active[j]
+                        && cache.anchors[j].next.is_some()
+                        && let Ok(fault) = std::env::var("PYBIGLASSO_TEST_FAULT")
+                    {
+                        let a = &mut cache.anchors[j];
+                        let next = a.next.as_mut().unwrap();
+                        match fault.as_str() {
+                            "epoch" => next.epoch ^= 1,
+                            "represented" => a.represented_epoch ^= 1,
+                            "index" => next.il += 1,
+                            "lambda" => next.lambda_bits ^= 1,
+                            "cutoff" => next.cutoff_bits ^= 1,
+                            _ => {}
+                        }
+                        cache.fault_applied = fault != "invalidate";
+                    }
                     let anchor = &mut cache.anchors[j];
                     if !st.active[j] {
                         if let Some(next) = anchor.next.take() {
@@ -614,15 +701,18 @@ impl<D: Design> Fit<'_, D> {
                                 (il, lam.to_bits(), cutoff.to_bits()),
                                 "next threshold mismatch"
                             );
-                            if cache.shadow {
+                            if cache.shadow() {
                                 assert_eq!(
                                     next.decision, exact_decision,
                                     "shadow SSR decision mismatch il={} j={}",
                                     il, j
                                 );
                             }
-                            st.strong[j] = if cache.shadow { exact_decision } else { next.decision };
-                            cache.next_certificates_used += 1;
+                            st.strong[j] = if cache.shadow() { exact_decision } else { next.decision };
+                            #[cfg(test)]
+                            {
+                                cache.next_certificates_used += 1;
+                            }
                         } else {
                             assert_eq!(anchor.epoch, anchor.represented_epoch, "stale exact score without certificate");
                             st.strong[j] = exact_decision;
@@ -713,7 +803,6 @@ mod tests {
                         version: 0,
                         il: 0,
                         skip: None,
-                        sweep_seconds: 0.,
                         residual_sum: seqsum(&residual),
                         residual,
                         beta: vec![0.0; 3],
@@ -736,6 +825,32 @@ mod tests {
                     assert_eq!(state.residual_sum.to_bits(), before);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "gaussian_skip_tests.rs"]
+mod skip_tests;
+
+#[cfg(test)]
+impl Drop for ScoreCache {
+    fn drop(&mut self) {
+        use std::io::Write;
+        if let Some(file) = std::env::var_os("PYBIGLASSO_TEST_STATS") {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(file).unwrap();
+            writeln!(
+                f,
+                "{} {} {} {} {} {} {}",
+                self.baseline_reads,
+                self.actual_reads,
+                self.candidate_skips,
+                self.positive_skips,
+                self.next_certificates_used,
+                self.valid as u8,
+                self.fault_applied as u8
+            )
+            .unwrap();
         }
     }
 }

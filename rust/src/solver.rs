@@ -7,8 +7,8 @@ use rayon::prelude::*;
 
 #[path = "gaussian.rs"]
 mod gaussian;
-#[path = "vep_bound.rs"]
-pub(crate) mod vep_bound;
+#[path = "gaussian_bound.rs"]
+mod gaussian_bound;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Family {
@@ -17,6 +17,8 @@ pub(crate) enum Family {
 }
 
 impl Family {
+    // Used by the Python/JS bindings, which are exercised outside native tests.
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn parse(name: &str) -> Result<Self, &'static str> {
         match name {
             "binomial" => Ok(Self::Binomial),
@@ -697,9 +699,25 @@ pub(crate) fn null_model(y: &[f64], rows: Option<&[usize]>) -> Result<(f64, f64)
 // The tests check this against plain scalar sums, at every width.
 
 /// The CPU's widest vector instructions, detected once.
-static ARCH: std::sync::LazyLock<pulp::Arch> = std::sync::LazyLock::new(|| {
-    if std::env::var_os("VEP_SCALAR").is_some() { pulp::Arch::Scalar } else { pulp::Arch::new() }
-});
+static ARCH: std::sync::LazyLock<pulp::Arch> = std::sync::LazyLock::new(pulp::Arch::new);
+
+#[inline(always)]
+fn dispatch<O: WithSimd>(op: O) -> O::Output {
+    // These controls exist in the native test executable only, never the wheel.
+    #[cfg(test)]
+    match std::env::var("PYBIGLASSO_TEST_SIMD").as_deref() {
+        Ok("scalar") => return Simd::vectorize(pulp::Scalar, op),
+        Ok("128") => return Simd::vectorize(pulp::Scalar128b, op),
+        Ok("256") => return Simd::vectorize(pulp::Scalar256b, op),
+        Ok("512") => return Simd::vectorize(pulp::Scalar512b, op),
+        #[cfg(target_arch = "x86_64")]
+        Ok("avx2") => return Simd::vectorize(pulp::x86::V3::try_new().expect("AVX2 available"), op),
+        #[cfg(target_arch = "x86_64")]
+        Ok("avx512") => return Simd::vectorize(pulp::x86::V4::try_new().expect("AVX512 available"), op),
+        _ => {}
+    }
+    ARCH.dispatch(op)
+}
 
 /// A block of LANES rows, aligned so it reads as whole vectors at any width.
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -876,7 +894,7 @@ fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
             fold(acc) + tail
         }
     }
-    ARCH.dispatch(Op(c, s))
+    dispatch(Op(c, s))
 }
 
 /// sum(a * b) over two vectors, in LANES accumulators.
@@ -932,6 +950,8 @@ const PAR_IRLS_ROWS: usize = 16_384;
 /// Half is about where they break even (AMD Ryzen 5 7640U, one thread: there
 /// the mask is 9% faster on wide data and 3% slower on tall, and either way
 /// the gap widens quickly with the share).
+// The Python driver chooses mask versus gather; pytest covers that boundary.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) const MASK_SHARE: f64 = 0.5;
 /// The mask sweeps the rows it leaves out with weight 0, where each enters
 /// only as a product with a 0 (w, s, and so the residual's terms), and those
@@ -1072,11 +1092,11 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> Pass<'_, C, SHIFT, MOMENTS>
             let chunks = r.par_chunks_mut(CHUNK).zip(eta.par_chunks_mut(CHUNK)).zip(w.par_chunks(CHUNK));
             let parts: Vec<Sums<f64>> = chunks
                 .enumerate()
-                .map(|(k, ((r, eta), w))| ARCH.dispatch(Chunks { pass: self, i0: k * CHUNK, r, eta, w }))
+                .map(|(k, ((r, eta), w))| dispatch(Chunks { pass: self, i0: k * CHUNK, r, eta, w }))
                 .collect();
             parts.into_iter().reduce(Sums::add).expect("a column has rows")
         } else {
-            ARCH.dispatch(Chunks { pass: self, i0: 0, r, eta, w })
+            dispatch(Chunks { pass: self, i0: 0, r, eta, w })
         }
     }
 }

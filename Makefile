@@ -31,7 +31,7 @@ lint:
 # its kernels against plain scalar sums, at every SIMD width this CPU runs
 .PHONY: test-rust
 test-rust:
-	cargo test --release --manifest-path rust/Cargo.toml
+	uv run --no-project python scripts/test_rust.py
 
 .PHONY: browser test-browser
 browser:

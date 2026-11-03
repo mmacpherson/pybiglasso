@@ -1,8 +1,8 @@
-# Experimental scalar score certificate: arithmetic derivation
+# Gaussian score certificates: arithmetic derivation
 
-This is a proposed derivation for review, not a production safety claim.
-The previous `sqrt(dot(v,v)) + n*min_normal` recipe is withdrawn. Its squared
-domain can underflow; adding a linear-domain padding afterward is invalid.
+A certificate omits an inactive-column read only when it proves the same
+KKT and next strong-rule decisions as an exact score. A naive squared norm
+can underflow (for example at 1e-200); padding after sqrt does not repair it.
 
 ## Arithmetic assumptions and supported paths
 
@@ -11,11 +11,11 @@ nearest, ties to even, with gradual underflow, no FTZ/DAZ, no fast-math or
 reassociation. `sqrt` is correctly rounded. The data and the floating point
 environment stay fixed during a fit, as required for deterministic evaluation.
 Rust's normal compilation is used; no reciprocal approximation is introduced.
-The prototype tests rounding and denormal behavior using runtime `black_box`
+The implementation tests rounding and denormal behavior using runtime `black_box`
 operands. All Rayon workers are checked before enabling the cache; norm/error
 helpers also check their executing thread. Unsupported arithmetic disables
 certification and leaves exact reads in place. Changing the FP environment
-from a callback during a fit is outside this experiment's assumptions.
+from a callback during a fit is outside the fixed-environment assumptions.
 
 Let `u=2^-53` and `eta=2^-1074`. For a finite result in this environment,
 `fl(t)` satisfies `|fl(t)-t| <= u*|t| + eta`. This bound includes subnormal
@@ -297,15 +297,20 @@ KKT decision and next-strong decision against the actual stock score while
 maintaining the candidate's own last-exact anchors. Enabled mode performs the
 skips and is compared bitwise with stock, including activation/residual traces.
 
-## Evidence and remaining review
+## Validation and scope
 
-`test_bound.py` uses exact Python Fractions to compare squared norm enclosures,
-actual float score errors versus the exact rational linear models, and exact
-float score differences versus the radius. It includes subnormals, large
-exponents, cancellation, tiny scales/products, overflow, NaN/Inf and neighboring
-thresholds. It also checks Astra's explicit 1e-200 counterexample. This testing
-supports the derivation but is not a substitute for its review.
+The native test executable embeds Python's arbitrary-precision Fractions to
+check the actual compiled bound operations. Retained cases include nonzero
+raw centers, ratios around the centered-score threshold, subnormals, large
+exponents, cancellation, tiny scales/products, overflow, NaN/Inf, and adjacent
+thresholds. The 1e-200 counterexample must safely fall back. These checks
+support the derivation; they do not replace its arithmetic assumptions.
 
-Broad path/shadow checks and phase/I/O measurements are separate artifacts.
-This experiment makes no claim for binomial, nonlinear updates, mutating X,
-changing FP modes during a fit, or an automatic/default Gram policy.
+Separate isolated native processes force scalar, 128/256/512-bit emulated
+widths and available CPU backends, with exact/shadow/enabled paths and fixed
+thread counts. They compare numeric outputs, warnings and recorded trajectory,
+and explicitly compare certificate metadata. Injected prefix failures must
+fall back; stale epochs and threshold identities must fail before use.
+
+The certificate is Gaussian only. It makes no claim for nonlinear updates,
+mutating X or changing the floating-point environment during a fit.

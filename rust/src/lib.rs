@@ -23,7 +23,9 @@
 #[cfg_attr(not(feature = "python"), allow(dead_code))]
 mod solver;
 
-#[cfg(feature = "python")]
+// Python bindings are exercised by pytest. The native test executable embeds
+// only its Fraction audit module, without exporting a second extension module.
+#[cfg(all(feature = "python", not(test)))]
 mod python;
 
 #[cfg(feature = "wasm")]
