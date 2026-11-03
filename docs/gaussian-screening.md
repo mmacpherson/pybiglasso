@@ -17,6 +17,47 @@ helpers also check their executing thread. Unsupported arithmetic disables
 certification and leaves exact reads in place. Changing the FP environment
 from a callback during a fit is outside the fixed-environment assumptions.
 
+### Detecting unsupported floating-point environments
+
+The bound is **not** asserted under FTZ/DAZ or AArch64 FZ. The library does
+not read or change control registers. Instead, `arithmetic_ok()` uses
+runtime `black_box` operands and inspects result bits:
+
+- `1 + 2^-53` and `1 + 3*2^-54` distinguish ties-to-even from directed modes.
+- `2^-1074 * 1` must retain its subnormal input.
+- `MIN_NORMAL * 0.5` must produce the exact subnormal with bits `1 << 51`.
+- `MIN_NORMAL * 0.1` must produce bits `0x000199999999999a`, including
+  rounding an inexact subnormal result. Using both output probes covers
+  flush behavior that distinguishes exact and inexact products.
+
+For the last probe, the binary64 value 0.1 has significand
+`0x1999999999999a` and exponent -56. In units of `2^-1074`, its product
+with `MIN_NORMAL = 2^-1022` is exactly `0x1999999999999a / 16`.
+The discarded hexadecimal digit is a (greater than the half-way digit 8),
+so round-to-nearest gives `0x199999999999a`.
+
+At cache setup, all workers are probed; the fitting thread's residual norm
+also probes its own arithmetic. Either failure makes the cache invalid.
+An invalid cache requires exact column-score reads before even considering
+the same-epoch shortcut. Norm/error helpers and scan decisions also probe
+the executing thread. No safe-norm fallback or zero sentinel authorizes a
+certificate when the arithmetic check fails: the safe norm requires the
+same gradual-underflow assumptions. The original coordinate/score formulas
+then execute under the caller's flags. Such a fit is compared with stock
+under those same flags, not with an ordinary gradual-underflow fit.
+
+The native tests set flags on the creating thread before building a pool,
+explicitly set every worker to the same mode, and assert that the actual
+fitting thread and every worker reject certification. They compare full
+outputs and recorded trajectory with stock at 1/2/4/6 threads for both
+alphas, including bit-constructed subnormal response inputs. They require
+zero skipped reads and zero next-strong certificates. Separate fit-thread
+and single-other-worker cases remain covered. Test-only RAII controls use
+MXCSR on x86-64 and FPCR.FZ on AArch64; the AArch64 register layout and access
+are specified in [Arm DDI 0502G, section 2.3](https://documentation-service.arm.com/static/5e907926c8052b16087615a6).
+All control state is restored on the creating/fitting thread; worker controls
+are confined to their isolated child process.
+
 Let `u=2^-53` and `eta=2^-1074`. For a finite result in this environment,
 `fl(t)` satisfies `|fl(t)-t| <= u*|t| + eta`. This bound includes subnormal
 rounding; it does not pretend that every operation has a relative error bound.

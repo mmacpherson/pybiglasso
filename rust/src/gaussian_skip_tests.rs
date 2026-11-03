@@ -92,15 +92,22 @@ fn isolated_path_child() {
         let mut first_thread = None;
         for threads in [1, 2, 4, 6] {
             let worker_bad = std::env::var("PYBIGLASSO_TEST_FP").unwrap_or_default();
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            let _creator_fp = worker_bad.strip_prefix("all-").map(fp::Guard::new);
             let worker_bad_clone = worker_bad.clone();
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .start_handler(move |index| {
-                    #[cfg(target_arch = "x86_64")]
-                    if worker_bad_clone.starts_with("worker-") && index == threads - 1 {
-                        fp::set_mode(worker_bad_clone.trim_start_matches("worker-"));
+                    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+                    {
+                        if let Some(mode) = worker_bad_clone.strip_prefix("all-") {
+                            fp::set_mode(mode);
+                            assert!(!bound::arithmetic_ok(), "all workers must use unsupported arithmetic");
+                        } else if worker_bad_clone.starts_with("worker-") && index == threads - 1 {
+                            fp::set_mode(worker_bad_clone.trim_start_matches("worker-"));
+                        }
                     }
-                    #[cfg(not(target_arch = "x86_64"))]
+                    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
                     let _ = (&worker_bad_clone, index);
                 })
                 .build()
@@ -130,12 +137,15 @@ fn isolated_path_child() {
                 if worker_bad.starts_with("worker-") && threads > 1 {
                     assert!(bound::arithmetic_ok(), "fit thread must be normal; another worker is unsupported");
                 }
-                #[cfg(target_arch = "x86_64")]
+                #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
                 let _guard = if worker_bad.starts_with("main-") {
                     Some(fp::Guard::new(worker_bad.trim_start_matches("main-")))
                 } else {
                     None
                 };
+                if worker_bad.starts_with("all-") {
+                    assert!(!bound::arithmetic_ok(), "fitting thread must use unsupported arithmetic");
+                }
                 let design = ContigX::<_, true> { x: x.view() };
                 let fit = Fit { x: &design, y: &y, params: &params, mask: None, rows: None, n_fit: 128 };
                 let (center, scale, _) = fit.center_scale().unwrap();
@@ -162,6 +172,11 @@ fn isolated_path_child() {
                 }
             }
             let mut cell_bytes = path_bytes(&path);
+            if worker_bad.starts_with("all-") {
+                // All workers retain the same fixed flags, including subnormal
+                // inputs. Compare stock under those flags, not against RN output.
+                pool.install(|| subnormal_case(&mut cell_bytes, alpha));
+            }
             if worker_bad.is_empty() && std::env::var("PYBIGLASSO_TEST_FAULT").unwrap_or_default().is_empty() {
                 pool.install(|| storage_cases(&mut cell_bytes, alpha));
             }
@@ -273,16 +288,18 @@ fn compare_traces(a: &Cell, b: &Cell, metadata: bool) {
 }
 #[test]
 fn all_widths_threads_shadow_and_enabled_match_exact() {
-    let mut widths = vec!["scalar", "128", "256", "512", "auto"];
+    let widths = vec!["scalar", "128", "256", "512", "auto"];
     #[cfg(target_arch = "x86_64")]
-    {
+    let widths = {
+        let mut widths = widths;
         if pulp::x86::V3::try_new().is_some() {
             widths.push("avx2");
         }
         if pulp::x86::V4::try_new().is_some() {
             widths.push("avx512");
         }
-    }
+        widths
+    };
     let stock = run("off", "scalar", "", "");
     succeeded(&stock);
     let expected = fs::read(stock.dir.join("path")).unwrap();
@@ -364,12 +381,20 @@ mod fp {
         // A zero mask denotes the architectural default, which excludes DAZ.
         mask & (1 << 6) != 0
     }
+    pub(super) fn flush_modes() -> Vec<&'static str> {
+        let mut modes = vec!["ftz"];
+        if supports_daz() {
+            modes.extend(["daz", "ftz-daz"]);
+        }
+        modes
+    }
     pub(super) fn set_mode(mode: &str) {
         let old = get();
-        assert!(mode != "daz" || supports_daz(), "DAZ unsupported by this CPU");
+        assert!(!mode.contains("daz") || supports_daz(), "DAZ unsupported by this CPU");
         let bits = match mode {
             "ftz" => 1 << 15,
             "daz" => 1 << 6,
+            "ftz-daz" => (1 << 15) | (1 << 6),
             "down" => 1 << 13,
             "up" => 2 << 13,
             "zero" => 3 << 13,
@@ -391,13 +416,57 @@ mod fp {
         }
     }
 }
-#[test]
-#[cfg(target_arch = "x86_64")]
-fn unsupported_main_and_worker_fp_environment_uses_exact_reads() {
-    for mode in ["ftz", "daz", "down", "up", "zero"] {
-        if mode == "daz" && !fp::supports_daz() {
-            continue;
+// FPCR layout and access: Arm DDI 0502G, section 2.3.
+// https://documentation-service.arm.com/static/5e907926c8052b16087615a6
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+mod fp {
+    fn get() -> u64 {
+        let value;
+        // SAFETY: reading FPCR is an unprivileged AArch64 operation.
+        unsafe {
+            core::arch::asm!("mrs {}, fpcr",out(reg)value,options(nostack,preserves_flags));
         }
+        value
+    }
+    fn put(value: u64) {
+        // SAFETY: preserve the original FPCR except its architectural FZ and
+        // rounding fields. Exceptions remain masked; no reserved bits are set.
+        unsafe {
+            core::arch::asm!("msr fpcr, {}", "isb",in(reg)value,options(nostack,preserves_flags));
+        }
+    }
+    pub(super) fn flush_modes() -> Vec<&'static str> {
+        vec!["fz"]
+    }
+    pub(super) fn set_mode(mode: &str) {
+        let bits = match mode {
+            "fz" => 1 << 24,
+            "up" => 1 << 22,
+            "down" => 2 << 22,
+            "zero" => 3 << 22,
+            _ => panic!("unknown FP mode"),
+        };
+        put((get() & !((3 << 22) | (1 << 24))) | bits);
+    }
+    pub(super) struct Guard(u64);
+    impl Guard {
+        pub(super) fn new(mode: &str) -> Self {
+            let old = get();
+            set_mode(mode);
+            Self(old)
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            put(self.0);
+        }
+    }
+}
+#[test]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn unsupported_main_and_worker_fp_environment_uses_exact_reads() {
+    for mode in fp::flush_modes().into_iter().chain(["down", "up", "zero"]) {
         {
             let _guard = fp::Guard::new(mode);
             assert!(!bound::arithmetic_ok());
@@ -407,7 +476,7 @@ fn unsupported_main_and_worker_fp_environment_uses_exact_reads() {
         // Directed rounding is rejected above. A heterogeneous rounding pool
         // need not itself produce deterministic stock signed zeros. The full
         // path comparison uses FTZ/DAZ on normal-valued dyadic inputs.
-        if !["ftz", "daz"].contains(&mode) {
+        if !fp::flush_modes().contains(&mode) {
             continue;
         }
         for scope in ["main", "worker"] {
@@ -425,6 +494,58 @@ fn unsupported_main_and_worker_fp_environment_uses_exact_reads() {
             }
         }
     }
+}
+
+#[test]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn fitting_thread_and_all_workers_with_flush_flags_match_stock() {
+    for mode in fp::flush_modes() {
+        let flags = format!("all-{mode}");
+        let stock = run("off", "auto", &flags, "");
+        succeeded(&stock);
+        let enabled = run("enabled", "auto", &flags, "");
+        succeeded(&enabled);
+        assert_eq!(fs::read(stock.dir.join("path")).unwrap(), fs::read(enabled.dir.join("path")).unwrap());
+        compare_traces(&stock, &enabled, false);
+        let rows = stats(&enabled);
+        assert_eq!(rows.len(), 16); // normal and subnormal paths, two alphas x four thread counts
+        for s in rows {
+            assert!(s[0] > 0, "must exercise inactive scans");
+            assert_eq!(s[0], s[1], "unsupported arithmetic must read every selected column");
+            assert_eq!(s[2], 0, "no certificates, including same-epoch shortcuts");
+            assert_eq!(s[4], 0, "no next-strong certificates");
+            assert_eq!(s[5], 0, "cache must remain disabled");
+        }
+    }
+}
+
+fn subnormal_case(out: &mut Vec<u8>, alpha: f64) {
+    assert!(!bound::arithmetic_ok());
+    let x = Array2::from_shape_fn((128, 7).f(), |(i, j)| if (i >> j) & 1 == 0 { -1. } else { 1. });
+    // Construct bit patterns directly, so fixture creation cannot flush them.
+    let y: Vec<f64> = (0..128).map(|i| f64::from_bits((1 << 51) | if i & 1 == 0 { 1 << 63 } else { 0 })).collect();
+    assert!(y.iter().all(|v| v.to_bits() & 0x7fff_ffff_ffff_ffff == 1 << 51));
+    let lambdas = [f64::from_bits(1 << 50), f64::from_bits(1 << 49)];
+    let penalties = [1.; 7];
+    let (ybar, null_deviance) = Family::Gaussian.null_model(&y, None).unwrap();
+    let params = Params {
+        family: Family::Gaussian,
+        alpha,
+        lambdas: Some(&lambdas),
+        nlambda: 2,
+        eps: 1e-7,
+        lambda_min: 0.01,
+        lambda_log_scale: true,
+        penalty_factor: &penalties,
+        dfmax: 7,
+        max_iter: 100,
+        stop_on_saturation: false,
+        r_compatible: false,
+        ybar,
+        null_deviance,
+        on_lambda: None,
+    };
+    add_case(out, &ContigX::<_, true> { x: x.view() }, &y, &params, None, None);
 }
 
 fn add_case<D: Design>(

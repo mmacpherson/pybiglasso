@@ -31,6 +31,9 @@ pub(crate) fn arithmetic_ok() -> bool {
         && (x + three_quarters).to_bits() == 1.0f64.next_up().to_bits()
         && (tiny * x).to_bits() == 1
         && (min * std::hint::black_box(0.5)).to_bits() == (1u64 << 51)
+        // Include an inexact subnormal output, not only an exactly representable
+        // product: flush policies can distinguish the two.
+        && (min * std::hint::black_box(0.1)).to_bits() == 0x0001_9999_9999_999a
 }
 
 // Guard the actual norm input, after any centering/differencing transform.
