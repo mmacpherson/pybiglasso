@@ -340,8 +340,8 @@ twice the columns, which would need about 12 GB and 76 GB on the wide ones.
 **Accuracy.** Accuracy here is each path's worst relative gap, over its
 lambdas, between its objective and the best any solver reached at that lambda
 (not a certified gap to the optimum). glmnet fits every path about as
-accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. R biglasso matches
-pybiglasso exactly for the lasso; for the elastic net each runs its own update
+accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. R biglasso fits the
+same lasso path as pybiglasso, to floating-point precision; for the elastic net each runs its own update
 (see [Differences](#differences-from-r-biglasso)), and pybiglasso with
 `r_compatible=True`, which matches R, takes about as long as its default. R's
 adaptive screening rule is no faster than SSR on these problems.
@@ -462,8 +462,8 @@ with a comment beginning "Differs from R biglasso".
 - **Elastic-net update.** For `alpha < 1`, R's logistic coordinate update divides by
   `v * (1 + l2)`, where the elastic-net objective in its documentation calls
   for `v + l2`, so the two solve somewhat different problems. pybiglasso uses
-  `v + l2`, as glmnet and scikit-learn do; `r_compatible=True` reproduces R
-  exactly for this update.
+  `v + l2`, as glmnet and scikit-learn do; `r_compatible=True` uses R's
+  update.
 - **Probability clipping.** R sets probabilities
   to 0 or 1 beyond `|eta| > 10`, with weights of `1e-4`. Default mode uses
   glmnet's `pmin = 1e-9` boundary, `|eta| > log(1 / pmin - 1)` (about 20.7).
