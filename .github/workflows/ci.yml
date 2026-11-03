@@ -51,10 +51,13 @@ jobs:
         full=true
         if [ "$EVENT" = pull_request ]; then
           full=false
-          builds='^(pyproject\.toml|uv\.lock|Makefile|rust-toolchain(\.toml)?|rust/(Cargo\.(toml|lock)|build\.rs|src/(lib|python)\.rs)|\.github/|scripts/check_(wheel|dist|arch_bits)\.py)'
+          builds='^(pyproject\.toml|uv\.lock|Makefile|rust-toolchain(\.toml)?|rust/(Cargo\.(toml|lock)|build\.rs|src/(lib|python)\.rs)|\.github/|scripts/(check_(wheel|dist|arch_bits)|wheel_provenance)\.py)'
+          # On its own line so a failed diff stops the step (bash -e) rather
+          # than reading as "nothing build-related changed"
+          files=$(git diff --name-only "$BASE...$HEAD")
           if jq -e 'any(.[]?; . == "full-ci")' <<<"$LABELS" >/dev/null; then
             full=true; echo "full coverage: full-ci label"
-          elif changed=$(git diff --name-only "$BASE...$HEAD" | grep -E "$builds"); then
+          elif changed=$(grep -E "$builds" <<<"$files"); then
             full=true; echo "full coverage: build-related changes:"; echo "$changed"
           fi
         fi
