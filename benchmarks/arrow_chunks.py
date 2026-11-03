@@ -69,6 +69,9 @@ def main():
             ).hexdigest()
             for name in (
                 "src/solver.rs",
+                "src/columns.rs",
+                "src/kernels.rs",
+                "src/binomial.rs",
                 "src/gaussian.rs",
                 "src/python.rs",
                 "Cargo.lock",
