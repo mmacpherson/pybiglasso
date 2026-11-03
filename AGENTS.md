@@ -97,11 +97,17 @@ to observed output.
 
 ## Architecture
 
-- `src/pybiglasso/binomial.py` — `biglasso()`: validation, then the Rust
-  solver, and the fitted path's assembly
-- `rust/src/solver.rs` — the shared solver: the whole
-  path in one call, with Python bindings in `rust/src/python.rs` and browser
-  bindings in `rust/src/wasm.rs`. The README maps its steps to R biglasso's C++.
+- `src/pybiglasso/fit.py` — `biglasso()`, for both families: validation, then
+  the Rust solver, and the fitted path's assembly
+- `rust/src/solver.rs` — what both families share: parameters,
+  standardization, scores, and `run`, the whole path in one call, which hands
+  the fit to its family. Python bindings are in `rust/src/python.rs` and
+  browser bindings in `rust/src/wasm.rs`. The README maps its steps to R
+  biglasso's C++.
+- `rust/src/columns.rs` — reading X a column at a time, whatever its layout
+  or storage; `rust/src/kernels.rs` — the fixed-order sums and SIMD dot products
+- `rust/src/binomial.rs` — logistic SSR coordinate descent: IRLS, the
+  intercept, the fused coordinate sweep, and the lambda loop
 - `rust/src/gaussian.rs` — Gaussian SSR coordinate descent, using the same
   column access, standardization and fixed-order score reductions.
 - `web/` — the static browser playground and CSV/Parquet import worker;
