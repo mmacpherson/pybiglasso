@@ -199,7 +199,7 @@ def test_auto_never_reacquires_and_uses_lossless_spool(tmp_path, monkeypatch):
     assert producer.acquisitions == 1
 
 
-def test_schema_drift_and_midstream_failure_do_not_publish(tmp_path):
+def test_midstream_failure_does_not_publish(tmp_path):
     schema = pa.schema([("x", pa.int8())])
 
     def batches():
@@ -339,6 +339,8 @@ def test_response_first_publication_rolls_back_on_stream_failure(tmp_path, monke
 
 
 def test_schema_drift_check_without_c_interface_normalization(tmp_path):
+    # Exercises exposed batch types only. C-stream import may conceal an
+    # invalid producer's original types; matching imported schemas prove none.
     module = importlib.import_module("pybiglasso.ingest")
 
     class Reader:

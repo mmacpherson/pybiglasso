@@ -68,6 +68,14 @@ relation's Arrow reader or an ADBC Arrow reader. It uses Arrow's standard
 It acquires and consumes the stream once; empty batches do not end the stream.
 Pass the Arrow reader exported by a cursor, rather than the database connection.
 
+**Stream producers must supply every batch using the declared schema.**
+Ingest preserves and validates the schema exposed by the stream; it cannot
+recover original types if a producer mislabels its buffers. Such malformed
+streams can yield **incorrect values without an error**. Producers should
+compare each batch's schema with the intended schema before exporting it.
+After import, a matching schema or a successful Arrow `validate(full=True)`
+check does not establish what the producer's original types were.
+
 `dtypes="preserve"` keeps the selected fields' types, nullability and field
 metadata, together with the schema metadata (ingest replaces its own reserved
 `pybiglasso.ingest` key). Supported feature storage is bool, any 8/16/32/64-bit
@@ -81,11 +89,10 @@ The default `dtypes="auto"` and partial dtype mappings inspect **every selected
 value**, including late batches. The stream is written losslessly to a temporary
 uncompressed spool while types are inferred, then converted from that spool.
 There is no sampling or second request to the producer. Preserve mode validates
-and stages in one pass, without this spool. Both modes check each batch's schema,
-report errors with cumulative one-based row numbers and publish only after the
-whole stream succeeds. The producer must obey Arrow's fixed-schema stream
-contract: the C interface supplies one schema for the whole stream, so hidden
-type changes in a malformed producer cannot be discovered after import.
+and stages in one pass, without this spool. Both modes reject schema differences
+exposed by imported batches, report value errors with cumulative one-based row
+numbers and publish only after the whole stream succeeds. These checks do not
+recover types concealed by a malformed producer.
 
 Streams require an explicit `out`; `cache=True` and `cache_dir` are rejected
 before acquisition. A stream has no stable source path to use as a cache key.
