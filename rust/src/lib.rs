@@ -15,7 +15,7 @@
 //!   gives; it is never copied or converted.
 
 #![deny(unsafe_code)]
-// index loops, as in the numba backend, so the two read side by side
+// index loops, as in R biglasso's C++, so the two read side by side
 #![allow(clippy::needless_range_loop)]
 
 // Each binding uses different views; keep the native strided/gathered kernels
