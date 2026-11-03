@@ -235,6 +235,8 @@ jobs:
   wheels:
     name: Wheel (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1
     strategy:
       fail-fast: false
       matrix:
@@ -242,9 +244,11 @@ jobs:
         - platform: linux-x86_64
           os: ubuntu-latest
           target: x86_64
+          container: quay.io/pypa/manylinux2014_x86_64@sha256:dc58399aca4cfb0de257f92e2de71b4f8421e60cce8542fcd5e28df0c0760942
         - platform: linux-aarch64
           os: ubuntu-24.04-arm
           target: aarch64
+          container: quay.io/pypa/manylinux2014_aarch64@sha256:db68ee9e5e879da5945dfbc8cab446f02245da6522aca0a9e4cda9256c911d2f
         - platform: macos-arm64
           os: macos-latest
           target: aarch64
@@ -262,15 +266,21 @@ jobs:
       with:
         command: build
         target: ${{ matrix.target }}
+        rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+        container: ${{ matrix.container }}
         manylinux: auto
+        before-script-linux: make wheel-provenance
         args: --release --out dist
+    - name: Record the host wheel build toolchain
+      if: runner.os != 'Linux'
+      run: make wheel-provenance
     - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
       with:
         enable-cache: false
         python-version: ${{ matrix.python }}
     - name: Fit from the wheel with no extras
       shell: bash
-      run: uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py
+      run: make check-wheel
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
       with:
         name: dist-wheel-${{ matrix.platform }}

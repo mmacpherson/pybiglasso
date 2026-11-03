@@ -707,6 +707,29 @@ def input_digest(X, y):
     return digest.hexdigest()
 
 
+def compiler_provenance():
+    from importlib.util import find_spec
+
+    try:
+        rustc = subprocess.check_output(
+            ["rustc", "-vV"], text=True, stderr=subprocess.DEVNULL, timeout=5
+        ).strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        rustc = None
+    native_digest = None
+    try:
+        spec = find_spec("pybiglasso._rust")
+        if spec is not None and spec.origin is not None:
+            native_digest = hashlib.sha256(
+                pathlib.Path(spec.origin).read_bytes()
+            ).hexdigest()
+    except (ImportError, OSError, ValueError):
+        pass
+    # A host compiler isn't proof of which compiler built an installed wheel.
+    # The actual extension digest lets a controlled run join its build record.
+    return dict(host_rustc_vv=rustc, pybiglasso_native_sha256=native_digest)
+
+
 def environment():
     import importlib.metadata as md
 
@@ -739,6 +762,7 @@ def environment():
         source_commit=subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=HERE, text=True
         ).strip(),
+        **compiler_provenance(),
         **versions,
     )
 

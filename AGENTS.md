@@ -53,6 +53,12 @@ to observed output.
 
 ## Dependency & toolchain versions
 
+- **Release Rust**: wheel jobs pin `RUSTUP_TOOLCHAIN` in `.github/workflows/ci.yml`
+  and pass it to maturin; the Linux matrix also pins both manylinux images by
+  digest. To bump deliberately, update those pins, check `make wheel-provenance`
+  logs (Rust, LLVM and maturin) and the wheel smoke checks on every platform,
+  and run the usual gates. Other jobs and local development keep their selected
+  toolchains.
 - **Python (uv)**: loose `pyproject.toml` constraints for users, and a committed
   `uv.lock` that pins development and CI only (it never ships). CI installs from
   the lock as committed (`UV_LOCKED=1`), and a latest-deps job tests the newest
