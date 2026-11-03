@@ -86,6 +86,59 @@ def test_feature_names_from_dataframe(data):
     assert p.feature_names[0] == "snp0"
 
 
+@pytest.mark.parametrize("family", ["gaussian", "binomial"])
+@pytest.mark.parametrize(
+    ("dtypes", "common"),
+    [
+        (("bool", "int8", "float64"), np.float64),
+        (("bool", "int8"), np.int8),
+        (("bool", "uint16", "float32"), np.float32),
+    ],
+)
+def test_pandas_frame_with_mixed_bool_and_numeric_columns(family, dtypes, common):
+    # pandas makes an object array of such a frame; the fit and predictions
+    # must be those of the same values as an array of their common type
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(7)
+    n = 150
+    columns = {
+        f"{dtype}_{j}": (
+            rng.random(n) < 0.4
+            if dtype == "bool"
+            else rng.integers(0, 5, n)
+            if dtype in ("int8", "uint16")
+            else rng.normal(size=n)
+        ).astype(dtype)
+        for j, dtype in enumerate(dtypes)
+    }
+    frame = pd.DataFrame(columns)
+    values = np.asfortranarray(
+        np.column_stack([v.astype(common) for v in columns.values()])
+    )
+    signal = values.astype(np.float64) @ np.linspace(1, -1, len(dtypes))
+    y = signal + rng.normal(size=n)
+    if family == "binomial":
+        y = (y > np.median(y)).astype(np.float64)
+    fit = bl.biglasso(frame, y, family=family, nlambda=5)
+    reference = bl.biglasso(values, y, family=family, nlambda=5)
+    assert_bitwise(fit, reference)
+    assert fit.feature_names == tuple(columns)
+    assert_bitwise(fit.decision_function(frame), reference.decision_function(values))
+
+
+def test_predict_accepts_a_pandas_frame(data):
+    pd = pytest.importorskip("pandas")
+    X, y = data
+    path = bl.biglasso(X, y, nlambda=4, family="binomial")
+    frame = pd.DataFrame(X)
+    assert_bitwise(path.decision_function(frame), path.decision_function(X))
+    rows = np.array([3, 0, 7])
+    assert_bitwise(
+        path.decision_function(frame, row_indices=rows),
+        path.decision_function(X, row_indices=rows),
+    )
+
+
 def assert_matches_saga(sklm, path, k, X, y, alpha):
     """saga at the path's k-th lambda: both pass KKT for that lambda and the
     alpha requested, and convexity bounds their distance."""

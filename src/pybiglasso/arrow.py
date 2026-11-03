@@ -40,6 +40,26 @@ def _as_arrow_matrix(X):
     return X
 
 
+def _as_array(X):
+    """X as a NumPy array, unless it's already one or an Arrow matrix.
+
+    DataFrames are converted, which may copy them. pandas turns a frame mixing
+    bool and numeric columns into an object array, so such a frame is converted
+    to the columns' common NumPy type instead, as Polars does.
+    """
+    if isinstance(X, (np.ndarray, _ArrowMatrix)):
+        return X
+    if type(X).__module__.partition(".")[0] == "pandas" and hasattr(X, "dtypes"):
+        dtypes = list(X.dtypes)
+        if (
+            len(set(dtypes)) > 1
+            and all(isinstance(d, np.dtype) for d in dtypes)
+            and all(d.kind in "biuf" for d in dtypes)
+        ):
+            return X.to_numpy(dtype=np.result_type(*dtypes))
+    return np.asarray(X)
+
+
 def _field(metadata, table, index):
     """A checked FlatBuffers table field for IPC preflight."""
 

@@ -60,7 +60,8 @@ fit = bl.biglasso(X, y)
 ### pandas or Polars DataFrames
 
 The DataFrame is converted to a NumPy array. That may copy it, so leave room
-in memory for a second copy of the data:
+in memory for a second copy of the data. Columns of different types, such as
+bool and float, are converted to one common numeric type:
 
 <!-- recipe: pandas -->
 ```python
