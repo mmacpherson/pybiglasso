@@ -82,6 +82,10 @@ fn framed_path_digest_is_unambiguous() {
     assert_ne!(a, b);
 }
 
+fn whole_pool_mode(flags: &str) -> Option<&str> {
+    flags.strip_prefix("all-").or_else(|| flags.strip_prefix("inherit-"))
+}
+
 #[test]
 fn isolated_path_child() {
     let Ok(output) = std::env::var("PYBIGLASSO_TEST_OUTPUT") else {
@@ -93,14 +97,22 @@ fn isolated_path_child() {
         for threads in [1, 2, 4, 6] {
             let worker_bad = std::env::var("PYBIGLASSO_TEST_FP").unwrap_or_default();
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-            let _creator_fp = worker_bad.strip_prefix("all-").map(fp::Guard::new);
+            let _creator_fp = whole_pool_mode(&worker_bad).map(fp::Guard::new);
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            if let Some(mode) = worker_bad.strip_prefix("inherit-") {
+                assert!(fp::flush_mode_active(mode), "creator must have the requested flags before pool creation");
+            }
             let worker_bad_clone = worker_bad.clone();
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .start_handler(move |index| {
                     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
                     {
-                        if let Some(mode) = worker_bad_clone.strip_prefix("all-") {
+                        if let Some(mode) = worker_bad_clone.strip_prefix("inherit-") {
+                            // Read-only check BEFORE any worker-side mode setter.
+                            assert!(fp::flush_mode_active(mode), "worker must inherit the exact creator control bits");
+                            assert!(!bound::arithmetic_ok(), "inherited worker environment must reject certificates");
+                        } else if let Some(mode) = worker_bad_clone.strip_prefix("all-") {
                             fp::set_mode(mode);
                             assert!(!bound::arithmetic_ok(), "all workers must use unsupported arithmetic");
                         } else if worker_bad_clone.starts_with("worker-") && index == threads - 1 {
@@ -143,7 +155,7 @@ fn isolated_path_child() {
                 } else {
                     None
                 };
-                if worker_bad.starts_with("all-") {
+                if whole_pool_mode(&worker_bad).is_some() {
                     assert!(!bound::arithmetic_ok(), "fitting thread must use unsupported arithmetic");
                 }
                 let design = ContigX::<_, true> { x: x.view() };
@@ -172,7 +184,7 @@ fn isolated_path_child() {
                 }
             }
             let mut cell_bytes = path_bytes(&path);
-            if worker_bad.starts_with("all-") {
+            if whole_pool_mode(&worker_bad).is_some() {
                 // All workers retain the same fixed flags, including subnormal
                 // inputs. Compare stock under those flags, not against RN output.
                 pool.install(|| subnormal_case(&mut cell_bytes, alpha));
@@ -388,6 +400,15 @@ mod fp {
         }
         modes
     }
+    pub(super) fn flush_mode_active(mode: &str) -> bool {
+        let expected = match mode {
+            "ftz" => 1 << 15,
+            "daz" => 1 << 6,
+            "ftz-daz" => (1 << 15) | (1 << 6),
+            _ => panic!("unknown flush mode"),
+        };
+        get() & ((3 << 13) | (1 << 15) | (1 << 6)) == expected
+    }
     pub(super) fn set_mode(mode: &str) {
         let old = get();
         assert!(!mode.contains("daz") || supports_daz(), "DAZ unsupported by this CPU");
@@ -438,6 +459,10 @@ mod fp {
     }
     pub(super) fn flush_modes() -> Vec<&'static str> {
         vec!["fz"]
+    }
+    pub(super) fn flush_mode_active(mode: &str) -> bool {
+        assert_eq!(mode, "fz");
+        get() & ((3 << 22) | (1 << 24)) == (1 << 24)
     }
     pub(super) fn set_mode(mode: &str) {
         let bits = match mode {
@@ -499,8 +524,19 @@ fn unsupported_main_and_worker_fp_environment_uses_exact_reads() {
 #[test]
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn fitting_thread_and_all_workers_with_flush_flags_match_stock() {
+    assert_whole_pool_matches_stock("all");
+}
+
+#[test]
+#[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn inherited_flush_flags_match_stock_without_worker_writes() {
+    assert_whole_pool_matches_stock("inherit");
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn assert_whole_pool_matches_stock(prefix: &str) {
     for mode in fp::flush_modes() {
-        let flags = format!("all-{mode}");
+        let flags = format!("{prefix}-{mode}");
         let stock = run("off", "auto", &flags, "");
         succeeded(&stock);
         let enabled = run("enabled", "auto", &flags, "");

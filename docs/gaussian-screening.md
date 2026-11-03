@@ -46,9 +46,12 @@ same gradual-underflow assumptions. The original coordinate/score formulas
 then execute under the caller's flags. Such a fit is compared with stock
 under those same flags, not with an ordinary gradual-underflow fit.
 
-The native tests set flags on the creating thread before building a pool,
-explicitly set every worker to the same mode, and assert that the actual
-fitting thread and every worker reject certification. They compare full
+The inherited-mode regression sets flags on the creating thread before
+building a pool, then checks the exact inherited control bits in every worker
+before any worker-side mode setter runs. The fitting thread and every worker
+must reject certification. This Unix regression models a library enabling
+flushing before Rayon workers are created. A separate explicit uniform-mode
+case also sets every worker, including on Windows. They compare full
 outputs and recorded trajectory with stock at 1/2/4/6 threads for both
 alphas, including bit-constructed subnormal response inputs. They require
 zero skipped reads and zero next-strong certificates. Separate fit-thread
@@ -57,6 +60,12 @@ MXCSR on x86-64 and FPCR.FZ on AArch64; the AArch64 register layout and access
 are specified in [Arm DDI 0502G, section 2.3](https://documentation-service.arm.com/static/5e907926c8052b16087615a6).
 All control state is restored on the creating/fitting thread; worker controls
 are confined to their isolated child process.
+
+Platform validation is separate from the fallback contract: local runtime
+tests execute on Linux x86-64 (FTZ, DAZ and both). AArch64 Linux/macOS checks
+compile the native test code and FPCR controls; these cross-checks do not
+establish native FPCR.FZ behavior. Native ARM execution is delegated to the
+Linux ARM and macOS CI lanes, whose results must be assessed separately.
 
 Let `u=2^-53` and `eta=2^-1074`. For a finite result in this environment,
 `fl(t)` satisfies `|fl(t)-t| <= u*|t| + eta`. This bound includes subnormal
