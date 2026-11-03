@@ -76,7 +76,7 @@ def biglasso(
     documented objective, (1/n) * NLL + lambda * (alpha * |b|_1 +
     (1 - alpha) / 2 * |b|_2^2), as glmnet and scikit-learn do. R biglasso's
     logistic update instead divides by v * (1 + l2) rather than v + l2, which
-    solves a different problem; `r_compatible=True` reproduces R exactly.
+    solves a different problem; `r_compatible=True` uses R's update formula.
     The default binomial probability cutoff also differs from R: it uses
     glmnet's pmin=1e-9 boundary with a positive weight floor; compatibility
     mode retains R's |eta| > 10 cutoff and 1e-4 weights.
