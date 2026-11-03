@@ -536,8 +536,29 @@ fn fit_path<'py>(
     Err(PyValueError::new_err("X must have a native real numeric dtype (float32/64 or integer)."))
 }
 
+// Private experiment helpers, absent from product builds.
+#[pyfunction]
+fn _vep_norm(values: Vec<f64>) -> Option<f64> {
+    crate::solver::vep_bound::test_norm(&values)
+}
+#[pyfunction]
+fn _vep_norm_paths(values: Vec<f64>) -> (Option<f64>, Option<f64>, Option<f64>) {
+    crate::solver::vep_bound::test_norm_paths(&values)
+}
+#[pyfunction]
+fn _vep_bound(x: Vec<f64>, a: Vec<f64>, b: Vec<f64>, center: f64, scale: f64, n_fit: usize) -> Option<Vec<f64>> {
+    crate::solver::vep_bound::test_bound(&x, &a, &b, center, scale, n_fit)
+}
+#[pyfunction]
+fn _vep_decide(score: f64, radius: f64, cutoff: f64) -> Option<bool> {
+    crate::solver::vep_bound::decide(score, radius, cutoff)
+}
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fit_path, m)?)?;
+    m.add_function(wrap_pyfunction!(_vep_norm, m)?)?;
+    m.add_function(wrap_pyfunction!(_vep_norm_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(_vep_decide, m)?)?;
+    m.add_function(wrap_pyfunction!(_vep_bound, m)?)?;
     Ok(())
 }

@@ -7,6 +7,8 @@ use rayon::prelude::*;
 
 #[path = "gaussian.rs"]
 mod gaussian;
+#[path = "vep_bound.rs"]
+pub(crate) mod vep_bound;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Family {
@@ -695,7 +697,9 @@ pub(crate) fn null_model(y: &[f64], rows: Option<&[usize]>) -> Result<(f64, f64)
 // The tests check this against plain scalar sums, at every width.
 
 /// The CPU's widest vector instructions, detected once.
-static ARCH: std::sync::LazyLock<pulp::Arch> = std::sync::LazyLock::new(pulp::Arch::new);
+static ARCH: std::sync::LazyLock<pulp::Arch> = std::sync::LazyLock::new(|| {
+    if std::env::var_os("VEP_SCALAR").is_some() { pulp::Arch::Scalar } else { pulp::Arch::new() }
+});
 
 /// A block of LANES rows, aligned so it reads as whole vectors at any width.
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
