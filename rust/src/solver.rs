@@ -852,6 +852,9 @@ fn for_each_value<C: Col>(c: &C, mut visit: impl FnMut(f64)) {
 }
 
 /// sum(x * s), in LANES accumulators.
+/// Differs from R biglasso, which sums serially: the fixed accumulator order
+/// lets SIMD and threads share the work without changing the result, so
+/// scores agree with R's to floating-point precision rather than bit for bit.
 #[inline(always)]
 fn dot_col<C: Col>(c: &C, s: &[f64]) -> f64 {
     struct Op<'a, C>(&'a C, &'a [f64]);
@@ -916,7 +919,9 @@ fn centered_moments<C: Col>(c: &C, r: &[f64], w: &[f64], center: f64, scale: f64
 
 /// Standardized score x_j'(s) / n, with a centered fallback.
 /// Differs from R biglasso, which always uses raw moments: cancellation can
-/// lose precision when a column's mean is large relative to its spread.
+/// lose precision when a column's mean is large relative to its spread. R's
+/// KKT scan also divides by scale * n, but its Gaussian coordinate update
+/// divides by scale and then by n.
 #[inline(always)]
 fn standardized_score<C: Col>(c: &C, s: &[f64], s_sum: f64, center: f64, scale: f64, n_fit: f64) -> f64 {
     let n = c.n();
@@ -1021,6 +1026,9 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> Pass<'_, C, SHIFT, MOMENTS>
             acc.wr += w * *r;
         }
         if MOMENTS {
+            // Differs from R biglasso, which forms (x * r) * w and w * (x * x)
+            // and sums serially: w * x is shared by all three sums, and the
+            // sums run in LANES accumulators per CHUNK, in a fixed order.
             let wx = w * xn;
             acc.xwr += wx * *r;
             acc.wxx += wx * xn;
@@ -1426,12 +1434,15 @@ impl<D: Design> Fit<'_, D> {
                 let sign = if u > 0.0 { 1.0 } else { -1.0 };
                 // Differs from R biglasso: R divides by v * (1 + l2), while
                 // the documented elastic-net objective requires v + l2.
-                // r_compatible retains R's arithmetic; l2 = 0 agrees in both.
+                // r_compatible keeps R's formula, dividing by v and then by
+                // 1 + l2 where R divides by v * (1 + l2); l2 = 0 agrees in both.
                 if p.r_compatible { sign * (u.abs() - l1) / v / (1.0 + l2) } else { sign * (u.abs() - l1) / (v + l2) }
             };
             let shift = new_beta - st.beta[j];
             if shift != 0.0 {
                 max_update = max_update.max(v * (shift * shift));
+                // Differs from R biglasso, which updates by (shift * (x - c)) / scale:
+                // one division per coordinate, not per row, so the row pass vectorizes.
                 pending = Some((jj, shift / sc, c));
             }
             st.beta[j] = new_beta;

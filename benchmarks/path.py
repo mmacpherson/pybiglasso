@@ -101,7 +101,8 @@ class FitClock:
 
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
 LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
-# R's elastic-net update; identical to pybiglasso's for the lasso
+# pybiglasso with r_compatible=True, which uses R's elastic-net update; for
+# the lasso its coordinate-update formula agrees with the default mode's
 ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
 R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
@@ -398,7 +399,7 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial", *, cloc
         d = pathlib.Path(d)
         np.asfortranarray(X, dtype=np.float64).ravel(order="F").tofile(d / "X.bin")
         np.asarray(y, dtype=np.float64).tofile(d / "y.bin")
-        # R's default grid on unit penalty factors is exactly pybiglasso's
+        # R builds its default grid on unit penalty factors the same way pybiglasso does
         params = dict(
             nrow=nrow,
             ncol=ncol,

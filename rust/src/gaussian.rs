@@ -185,6 +185,8 @@ impl<D: Design> Fit<'_, D> {
             let score = standardized_score(&column, &st.residual, st.residual_sum, center, scale, self.n_fit as f64)
                 + st.beta[j];
             st.scores[j] = score;
+            // Differs from R biglasso, which multiplies lambda by the penalty
+            // factor first, as the binomial solver here does.
             let l1 = lam * p.alpha * p.penalty_factor[jj];
             let l2 = lam * (1.0 - p.alpha) * p.penalty_factor[jj];
             let value = if score.abs() <= l1 { 0.0 } else { score.signum() * (score.abs() - l1) / (1.0 + l2) };
@@ -192,6 +194,9 @@ impl<D: Design> Fit<'_, D> {
             if shift != 0.0 {
                 st.version += 1;
                 largest = largest.max(shift * shift);
+                // Differs from R biglasso, which groups the update as
+                // (shift * (x - c)) / scale. The two can differ in the low bits;
+                // the R comparison checks agreement to rtol=1e-9.
                 // Keep seqsum's exact left-to-right order over the updated
                 // values, including masked zeros, without a second row pass.
                 let mut sum = 0.0;
@@ -257,6 +262,8 @@ impl<D: Design> Fit<'_, D> {
                     path.scale[jj],
                     self.n_fit as f64,
                 );
+                // Differs from R biglasso in the order of the penalty product,
+                // as in the sweep.
                 let l1 = lam * p.alpha * p.penalty_factor[jj];
                 let l2 = lam * (1.0 - p.alpha) * p.penalty_factor[jj];
                 if (*score - beta[j] * l2).abs() > l1 {
