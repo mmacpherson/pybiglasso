@@ -340,8 +340,8 @@ twice the columns, which would need about 12 GB and 76 GB on the wide ones.
 **Accuracy.** Accuracy here is each path's worst relative gap, over its
 lambdas, between its objective and the best any solver reached at that lambda
 (not a certified gap to the optimum). glmnet fits every path about as
-accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. R biglasso fits the
-same lasso path as pybiglasso, to floating-point precision; for the elastic net each runs its own update
+accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. For the lasso, R
+biglasso and pybiglasso use the same coordinate update; for the elastic net each runs its own update
 (see [Differences](#differences-from-r-biglasso)), and pybiglasso with
 `r_compatible=True`, which matches R, takes about as long as its default. R's
 adaptive screening rule is no faster than SSR on these problems.

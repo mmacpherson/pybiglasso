@@ -102,7 +102,7 @@ class FitClock:
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
 LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
 # pybiglasso with r_compatible=True, which uses R's elastic-net update; for
-# the lasso it fits the same path as pybiglasso's default mode
+# the lasso its coordinate-update formula agrees with the default mode's
 ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
 R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
