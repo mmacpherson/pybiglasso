@@ -167,3 +167,5 @@ An independent valid XLSX fixture has 4,096 unique strings in an unselected
 column: it ingests below the ceiling, while an explicitly smaller ceiling
 rejects it before any workbook-reader or decompression call. Directory-size
 probes check the default 1 GiB boundary without allocating a giant workbook.
+
+<!-- CI probe: light coverage; this PR is closed unmerged. -->
