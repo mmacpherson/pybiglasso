@@ -114,17 +114,20 @@ STREAM_CHILD = textwrap.dedent("""
     from pybiglasso.ingest import ingest
 
     output, mode = Path(sys.argv[1]), sys.argv[2]
+    batch_size = int(sys.argv[3])
     pa.set_cpu_count(1)
     pa.set_io_thread_count(1)
     pa.set_memory_pool(pa.system_memory_pool())
     schema = pa.schema([(f'x{i}', pa.float64()) for i in range(8)])
     def reader(rows):
         def batches():
-            for start in range(0, rows, 512):
+            for start in range(0, rows, batch_size):
                 yield pa.record_batch([
-                    pa.array(np.full(min(512, rows-start), 0.25)) for _ in range(8)
+                    pa.array(np.full(min(batch_size, rows-start), 0.25)) for _ in range(8)
                 ], schema=schema)
         return pa.RecordBatchReader.from_batches(schema, batches())
+    dtype_option = {"x0": "float64"} if mode == 'mapping' else (
+        'auto' if mode == 'copy' else mode)
     # Warm both conversion routes and the whole-table control independently.
     for dtype in ('auto', 'preserve'):
         warm = ingest(reader(8), output.with_suffix(f'.{dtype}'), dtypes=dtype,
@@ -147,7 +150,7 @@ STREAM_CHILD = textwrap.dedent("""
         source = reader(160_000)
         if mode == 'copy':
             source = source.read_all()
-        result = ingest(source, output, dtypes='auto' if mode == 'copy' else mode,
+        result = ingest(source, output, dtypes=dtype_option,
                         block_size=512)
         assert result.X.shape == (160_000, 8)
         assert result.X['x0'][159999].as_py() == 0.25
@@ -157,10 +160,27 @@ STREAM_CHILD = textwrap.dedent("""
 """)
 
 
-@pytest.mark.parametrize("mode", ["preserve", "auto", "copy"])
-def test_arrow_stream_memory_is_bounded_by_batches(tmp_path, mode):
+@pytest.mark.parametrize(
+    "mode,batch_size",
+    [
+        ("preserve", 512),
+        ("auto", 512),
+        ("copy", 512),
+        ("preserve", 1),
+        ("auto", 1),
+        ("mapping", 1),
+    ],
+)
+def test_arrow_stream_memory_is_bounded_by_batches(tmp_path, mode, batch_size):
     completed = subprocess.run(
-        [sys.executable, "-c", STREAM_CHILD, str(tmp_path / "data.feather"), mode],
+        [
+            sys.executable,
+            "-c",
+            STREAM_CHILD,
+            str(tmp_path / "data.feather"),
+            mode,
+            str(batch_size),
+        ],
         env={
             **os.environ,
             "MALLOC_ARENA_MAX": "1",

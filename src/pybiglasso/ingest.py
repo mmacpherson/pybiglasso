@@ -641,15 +641,11 @@ def _stream_blocks(reader, columns, block_size, spool=None):
 
 
 def _spooled_blocks(path, columns, block_size, pa):
-    with pa.memory_map(str(path), "r") as mapping:
-        reader = pa.ipc.open_file(mapping)
-        for index in range(reader.num_record_batches):
-            batch = reader.get_batch(index)
-            for start in range(0, batch.num_rows, block_size):
-                yield {
-                    name: batch.column(name).slice(start, block_size).to_pylist()
-                    for name in columns
-                }
+    with (
+        pa.memory_map(str(path), "r") as mapping,
+        pa.ipc.open_stream(mapping) as reader,
+    ):
+        yield from _stream_blocks(reader, columns, block_size)
 
 
 def _preserved_types(schema, selected, pa):
@@ -719,9 +715,12 @@ def _ingest_stream(
         else:
             spool_path = staging / "source.arrow"
             spool_schema = pa.schema([reader.schema.field(name) for name in columns])
+            # A file-format spool retains an index entry for every batch and
+            # rejects replacement dictionaries. A sequential stream needs no
+            # footer index and permits each fixed-schema batch's dictionary.
             with (
                 pa.OSFile(str(spool_path), "wb") as stream,
-                pa.ipc.new_file(
+                pa.ipc.new_stream(
                     stream,
                     spool_schema,
                     options=pa.ipc.IpcWriteOptions(compression=None),

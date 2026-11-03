@@ -440,3 +440,17 @@ def test_preserve_path_detects_changes_before_publication(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="Source changed"):
         ingest(path, tmp_path / "data.feather", dtypes="preserve")
     assert not (tmp_path / "data.feather").exists()
+
+
+@pytest.mark.parametrize("dtypes", ["auto", {"x": "int16"}])
+def test_spool_accepts_fixed_schema_replacement_dictionaries(tmp_path, dtypes):
+    # Each batch has the same physical type but a different valid dictionary.
+    arrays = [pa.array(values).dictionary_encode() for values in ([1, 2], [3, 4])]
+    schema = pa.schema([("x", arrays[0].type)])
+    producer = Once(
+        schema, [pa.record_batch([array], schema=schema) for array in arrays]
+    )
+    result = ingest(producer, tmp_path / "data.feather", dtypes=dtypes, block_size=1)
+    assert result.X["x"].to_pylist() == [1, 2, 3, 4]
+    assert result.X.schema.types == [pa.int8() if dtypes == "auto" else pa.int16()]
+    assert producer.acquisitions == 1 and producer.reads == 2

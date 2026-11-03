@@ -87,20 +87,24 @@ Parquet and Feather paths; CSV and Excel need `auto` or a dtype mapping.
 
 The default `dtypes="auto"` and partial dtype mappings inspect **every selected
 value**, including late batches. The stream is written losslessly to a temporary
-uncompressed spool while types are inferred, then converted from that spool.
-There is no sampling or second request to the producer. Preserve mode validates
-and stages in one pass, without this spool. Both modes reject schema differences
-exposed by imported batches, report value errors with cumulative one-based row
-numbers and publish only after the whole stream succeeds. These checks do not
-recover types concealed by a malformed producer.
+uncompressed Arrow stream spool while types are inferred, then converted from
+that spool. The spool is sequential: it keeps no growing batch index and accepts
+replacement dictionaries with a fixed schema. There is no sampling or second
+request to the producer. Preserve mode validates and stages in one pass, without
+this spool. Both modes reject schema differences exposed by imported batches,
+report value errors with cumulative one-based row numbers and publish only after
+the whole stream succeeds. These checks do not recover types concealed by a
+malformed producer.
 
 Streams require an explicit `out`; `cache=True` and `cache_dir` are rejected
 before acquisition. A stream has no stable source path to use as a cache key.
 Reopen the finished output with `load`, as above. Conversion memory is the
 **producer's batch plus bounded consumer work**: `block_size` limits the rows
 converted at once, but cannot shrink a batch the producer already allocated.
-Nothing concatenates all batches into RAM. Disk space must also cover column
-staging, the final output and, in auto mode, the lossless selected-column spool.
+For dictionary columns, this includes the producer's dictionary values; a small
+batch may still refer to a large dictionary. Nothing concatenates all batches
+into RAM. Disk space must also cover column staging, the final output and, in
+auto mode, the lossless selected-column spool.
 
 ## Selection and exact representation
 
