@@ -34,7 +34,7 @@ jobs:
         python-version: '3.14'
     - run: make run-hooks-all-files
 
-  # the kernels don't depend on Python, so once per platform, beside the tests
+  # Native kernels and exact-rational certificate audits, once per platform.
   rust-kernels:
     name: Rust kernels (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -46,6 +46,9 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+      with:
+        python-version: '3.14'
     # The Rust build, from main's last run, when the Rust sources are
     # unchanged: the key hashes their contents, and only an exact hit restores.
     # A checkout dates every file now, so cargo would rebuild; dating the
@@ -61,11 +64,11 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
       with:
         path: rust/target
-        key: rust-test-${{ matrix.os }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+        key: rust-test-${{ matrix.os }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml', 'tests/support/gaussian_screening/**') }}
     - name: Date the Rust sources before the restored build
       if: steps.rust-cache.outputs.cache-hit == 'true'
       shell: bash
-      run: git ls-files -z rust | xargs -0 touch -t 200001010000
+      run: git ls-files -z rust tests/support/gaussian_screening | xargs -0 touch -t 200001010000
     - name: Bit for bit at every SIMD width this CPU runs
       run: make test-rust
     - name: Save the Rust build for later runs
