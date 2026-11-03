@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # labeled: adding the full-ci label reruns a PR with full coverage
+    types: [opened, synchronize, reopened, labeled]
   workflow_call:  # from release.yml, on the tagged commit
 
 permissions:
@@ -22,6 +24,51 @@ env:
   UV_LOCKED: 1
 
 jobs:
+  # Pull requests get every platform's tests but only the Linux x86 wheel; the
+  # other wheels build on main, on release, and on any PR that changes
+  # packaging, bindings, the toolchain, dependencies or CI, or that carries
+  # the full-ci label. (A small inline decision rather than a make recipe: it
+  # is CI plumbing, with nothing to run locally.)
+  scope:
+    name: Choose coverage
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.choose.outputs.full }}
+      wheels: ${{ steps.choose.outputs.wheels }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+    - id: choose
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        BASE: ${{ github.event.pull_request.base.sha }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+      run: |
+        full=true
+        if [ "$EVENT" = pull_request ]; then
+          full=false
+          builds='^(pyproject\.toml|uv\.lock|Makefile|rust-toolchain(\.toml)?|rust/(Cargo\.(toml|lock)|build\.rs|src/(lib|python)\.rs)|\.github/|scripts/check_(wheel|dist|arch_bits)\.py)'
+          if jq -e 'any(.[]?; . == "full-ci")' <<<"$LABELS" >/dev/null; then
+            full=true; echo "full coverage: full-ci label"
+          elif changed=$(git diff --name-only "$BASE...$HEAD" | grep -E "$builds"); then
+            full=true; echo "full coverage: build-related changes:"; echo "$changed"
+          fi
+        fi
+        wheels='[
+          {"platform": "linux-x86_64", "os": "ubuntu-latest", "target": "x86_64"},
+          {"platform": "linux-aarch64", "os": "ubuntu-24.04-arm", "target": "aarch64"},
+          {"platform": "macos-arm64", "os": "macos-latest", "target": "aarch64"},
+          {"platform": "macos-x86_64", "os": "macos-15-intel", "target": "x86_64"},
+          {"platform": "windows-x86_64", "os": "windows-latest", "target": "x64"}
+        ]'
+        if [ "$full" = false ]; then wheels=$(jq '[.[0]]' <<<"$wheels"); fi
+        echo "full=$full" >> "$GITHUB_OUTPUT"
+        echo "wheels=$(jq -c . <<<"$wheels")" >> "$GITHUB_OUTPUT"
+
   hooks:
     name: Pre-commit hooks
     runs-on: ubuntu-latest
@@ -34,14 +81,15 @@ jobs:
         python-version: '3.14'
     - run: make run-hooks-all-files
 
-  # Native kernels and exact-rational certificate audits, once per platform.
+  # Native kernels and exact-rational certificate audits, once per platform
+  # (macOS runs them in the macos job).
   rust-kernels:
     name: Rust kernels (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -88,8 +136,6 @@ jobs:
         python: ['3.11', '3.12', '3.13', '3.14', '3.15']
         include:
         - os: ubuntu-24.04-arm
-          python: '3.14'
-        - os: macos-latest
           python: '3.14'
         - os: windows-latest
           python: '3.14'
@@ -140,9 +186,58 @@ jobs:
         if-no-files-found: error
         retention-days: 7
 
+  # macOS runners queue longest, so its native kernels, Python tests and
+  # bit snapshot share one runner.
+  macos:
+    name: macOS (Rust kernels, Python 3.14, bit snapshot)
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+      with:
+        python-version: '3.14'
+    # The Rust builds, as in the jobs above: one cache holds both the kernel
+    # tests' build and the extension's.
+    - name: Name the Rust compiler
+      id: rustc
+      shell: bash
+      run: |
+        echo "commit=$(rustc -vV | sed -n 's/^commit-hash: //p' | tr -d '\r' | cut -c1-12)" >> "$GITHUB_OUTPUT"
+    - name: Restore the Rust build, if its sources are unchanged
+      id: rust-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: rust-macos-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml', 'tests/support/gaussian_screening/**') }}
+    - name: Date the Rust sources before the restored build
+      if: steps.rust-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: git ls-files -z rust tests/support/gaussian_screening | xargs -0 touch -t 200001010000
+    - name: Bit for bit at every SIMD width this CPU runs
+      run: make test-rust
+    - name: Tests (against stored R biglasso 1.7.2 output)
+      run: make test
+    - name: Save the Rust build for later runs
+      if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
+      with:
+        path: rust/target
+        key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+    - name: Record fixed Rust fits for the cross-architecture check
+      shell: bash
+      run: uv run python scripts/check_arch_bits.py record rust-bits-macos-latest.json
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
+      with:
+        name: rust-bits-macos-latest
+        path: rust-bits-macos-latest.json
+        if-no-files-found: error
+        retention-days: 7
+
   rust-cross-architecture:
     name: Rust fits, bit-identical across platforms
-    needs: test
+    needs: [test, macos]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
@@ -234,26 +329,12 @@ jobs:
   # publishes these with the sdist
   wheels:
     name: Wheel (${{ matrix.platform }})
+    needs: scope
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-        - platform: linux-x86_64
-          os: ubuntu-latest
-          target: x86_64
-        - platform: linux-aarch64
-          os: ubuntu-24.04-arm
-          target: aarch64
-        - platform: macos-arm64
-          os: macos-latest
-          target: aarch64
-        - platform: macos-x86_64
-          os: macos-15-intel
-          target: x86_64
-        - platform: windows-x86_64
-          os: windows-latest
-          target: x64
+        include: ${{ fromJSON(needs.scope.outputs.wheels) }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -276,3 +357,20 @@ jobs:
         name: dist-wheel-${{ matrix.platform }}
         path: dist/*.whl
         retention-days: 7
+
+  # The one check to require before merging: it fails unless every job above
+  # succeeded, so a failed, cancelled or skipped job blocks the merge.
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [scope, hooks, rust-kernels, test, macos, rust-cross-architecture, latest-deps, minimum-deps, recipes, sdist, wheels]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Every job succeeded
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+        FULL: ${{ needs.scope.outputs.full }}
+      run: |
+        echo "full coverage: ${FULL:-unknown}"
+        jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
+        jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null
