@@ -309,25 +309,9 @@ def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_pa
         assert getattr(actual, field).tobytes() == getattr(reference, field).tobytes()
 
 
-@pytest.mark.parametrize(
-    "source_type", ["table", "batch", "reader", "file", "exporter"]
-)
-def test_ingest_accepts_paths_only(tmp_path, source_type):
+def test_ingest_rejects_plain_file_objects(tmp_path):
     import io
 
-    table = pa.table({"x": [1, 2]})
-
-    class Exporter:
-        def __arrow_c_stream__(self, *args):
-            pytest.fail("Path-only ingest consumed an exporter")
-
-    sources = {
-        "table": table,
-        "batch": table.to_batches()[0],
-        "reader": pa.RecordBatchReader.from_batches(table.schema, table.to_batches()),
-        "file": io.BytesIO(b"x\n1\n2\n"),
-        "exporter": Exporter(),
-    }
-    with pytest.raises(TypeError, match="filesystem path"):
-        ingest(sources[source_type], tmp_path / "out.arrow")
+    with pytest.raises(TypeError, match="filesystem path or an Arrow stream"):
+        ingest(io.BytesIO(b"x\n1\n2\n"), tmp_path / "out.arrow")
     assert not (tmp_path / "out.arrow").exists()
