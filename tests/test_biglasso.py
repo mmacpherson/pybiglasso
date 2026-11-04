@@ -474,3 +474,44 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
     X = np.zeros((4, ncol), order="F")
     fit = bl.biglasso(X, np.array([0, 1, 0, 1]), lambdas=[0.1], family="binomial")
     assert fit.intercept[0] == -exact
+
+
+@pytest.fixture
+def named_fit():
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(11)
+    frame = pd.DataFrame(rng.normal(size=(120, 3)), columns=["a", "b", "c"])
+    y = 2 * frame["a"] - frame["c"] + rng.normal(size=120)
+    return frame, bl.biglasso(frame, y, nlambda=4)
+
+
+def test_predict_matches_the_array_when_columns_match(named_fit):
+    frame, path = named_fit
+    assert_bitwise(path.predict(frame), path.predict(frame.to_numpy()))
+
+
+def test_predict_rejects_reordered_columns(named_fit):
+    frame, path = named_fit
+    with pytest.raises(ValueError, match="different order"):
+        path.predict(frame[["c", "b", "a"]])
+
+
+def test_predict_rejects_reordered_arrow_columns(named_fit):
+    pa = pytest.importorskip("pyarrow")
+    frame, path = named_fit
+    table = pa.Table.from_pandas(frame[["b", "a", "c"]], preserve_index=False)
+    with pytest.raises(ValueError, match="different order"):
+        path.predict(table)
+
+
+def test_predict_rejects_other_column_names(named_fit):
+    frame, path = named_fit
+    with pytest.raises(ValueError, match="don't match"):
+        path.predict(frame.set_axis(["a", "b", "z"], axis=1))
+
+
+def test_predict_accepts_named_columns_on_an_unnamed_fit(named_fit):
+    frame, _ = named_fit
+    rng = np.random.default_rng(12)
+    path = bl.biglasso(frame.to_numpy(), rng.normal(size=len(frame)), nlambda=4)
+    assert_bitwise(path.predict(frame), path.predict(frame.to_numpy()))

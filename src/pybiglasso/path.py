@@ -78,12 +78,32 @@ class BiglassoPath:
             index[k] = hits[0]
         return index
 
+    def _check_column_names(self, X):
+        """Reject named columns that aren't the fitted ones in order: a
+        coefficient would otherwise be applied to the wrong feature."""
+        if not hasattr(X, "columns"):
+            return
+        names = tuple(str(c) for c in X.columns)
+        fitted = tuple(self.feature_names)
+        if names == fitted:
+            return
+        if sorted(names) == sorted(fitted):
+            raise ValueError(
+                "X has the fitted columns in a different order; select them in "
+                "the fitted order first, e.g. X[path.feature_names]."
+            )
+        # A path fit on an unnamed array has default names; any named X fits it.
+        if fitted != tuple(f"x{j}" for j in range(len(fitted))):
+            raise ValueError("X's column names don't match the fitted feature_names.")
+
     def decision_function(self, X, lambdas=None, row_indices=None):
         """Linear predictor (log-odds for binomial), shape (nrow, nlambda).
 
         Only the columns of X with a nonzero coefficient somewhere among the
         selected lambdas are read, which matters when X is a large memmap.
-        With `row_indices`, predict for those rows of X only.
+        With `row_indices`, predict for those rows of X only. If X names its
+        columns (a DataFrame or Arrow table), they must be the fitted
+        `feature_names`, in the same order.
         """
         X = _as_arrow_matrix(X)
         index = self._lambda_index(lambdas)
@@ -91,6 +111,7 @@ class BiglassoPath:
             raise ValueError(
                 f"X has {X.shape[1]} columns; the model was fit on {self.coef.shape[0]}."
             )
+        self._check_column_names(X)
         return linear_predictor(
             X, self.coef[:, index], self.intercept[index], row_indices
         )
