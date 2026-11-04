@@ -73,6 +73,43 @@ SOLVERS = [
 ]
 TIMING_START = "--timing-start--"
 TIMING_STOP = "--timing-stop--"
+LOAD_PRE = "--load-pre--"
+LOAD_POST = "--load-post--"
+
+
+def cpu_use(seconds):
+    def counters():
+        values = list(
+            map(
+                int, pathlib.Path("/proc/stat").read_text().splitlines()[0].split()[1:9]
+            )
+        )
+        return sum(values), sum(values[:3])
+
+    before = counters()
+    time.sleep(seconds)
+    after = counters()
+    return (after[1] - before[1]) / (after[0] - before[0])
+
+
+def wait_for_quiet():
+    """The existing recording gate, before each three-repeat solver cell."""
+    quiet, samples = 0, []
+    while quiet < 180:
+        sample = cpu_use(5)
+        samples.append(sample)
+        quiet = quiet + 5 if sample < 0.1 else 0
+        if len(samples) % 6 == 0:
+            print(json.dumps(dict(stage="quiet-gate", quiet_seconds=quiet)), flush=True)
+    return dict(samples=samples, threshold=0.1, consecutive_seconds=180)
+
+
+def load_bookend(marker):
+    value = cpu_use(1)
+    print(f"{marker} {value:.17g}", flush=True)
+    if value > 0.15:
+        raise RuntimeError(f"busy recording bookend {marker}: {value}")
+    return value
 
 
 class FitClock:
@@ -86,8 +123,12 @@ class FitClock:
     def __init__(self, signals=False):
         self.signals = signals
         self.seconds = 0.0
+        self.recording = signals and os.environ.get("PYBIGLASSO_BENCH_RECORD") == "1"
+        self.intervals_total, self.intervals_done = 1, 0
 
     def __enter__(self):
+        if self.recording and self.intervals_done == 0:
+            load_bookend(LOAD_PRE)
         if self.signals:
             print(TIMING_START, flush=True)
         self.started = time.perf_counter()
@@ -97,6 +138,9 @@ class FitClock:
         self.seconds += time.perf_counter() - self.started
         if self.signals:
             print(f"{TIMING_STOP} {self.seconds:.17g}", flush=True)
+        self.intervals_done += 1
+        if self.recording and self.intervals_done == self.intervals_total:
+            load_bookend(LOAD_POST)
 
 
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
@@ -254,6 +298,7 @@ def _warm_loop(model, Xs, y, lambdas, set_lambda, clock=None):
 
     coefs, intercepts = [], []
     clock = clock or FitClock()
+    clock.intervals_total = len(lambdas)
     for lam in lambdas:
         set_lambda(model, lam)
         with clock:
@@ -346,6 +391,7 @@ def fit_statsmodels(
     model = sm.OLS(y, design) if family == "gaussian" else sm.Logit(y, design)
     coefs, intercepts, start = [], [], None
     clock = clock or FitClock()
+    clock.intervals_total = len(lambdas)
     # OLS has no public regularization-path API; start_params is its native
     # warm-start mechanism. Keep the previous full coefficient vector.
     for lam in lambdas:
@@ -415,6 +461,7 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial", *, cloc
             filebacked=False,
             family=family,
             timing_signals=bool(clock and clock.signals),
+            record_cpu=bool(clock and clock.recording),
         )
         if family == "gaussian":
             params["lambdas"] = list(lambdas)
@@ -501,6 +548,7 @@ def fit_r_glmnet(
             generic=generic,
             thresh=thresh,
             timing_signals=bool(clock and clock.signals),
+            record_cpu=bool(clock and clock.recording),
         )
         (d / "params.json").write_text(json.dumps(params))
         (r,) = rcompare.run_r(
@@ -604,7 +652,7 @@ def run_one(args):
 # orchestration ----------------------------------------------------------
 
 
-def run_capped(cmd, env, cap):
+def run_capped(cmd, env, cap, *, audit=None):
     """Cap the same cumulative native-fit intervals the child reports.
 
     A stdout reader works on Windows pipes too. Setup, snapshot export and
@@ -628,7 +676,7 @@ def run_capped(cmd, env, cap):
     threading.Thread(target=read_stdout, daemon=True).start()
     seconds, deadline, active, intervals = 0.0, None, False, 0
 
-    def timed_out():
+    def terminate():
         try:
             if os.name == "posix":
                 # Include local R/container clients in the termination signal.
@@ -638,6 +686,19 @@ def run_capped(cmd, env, cap):
         except ProcessLookupError:
             pass
         proc.wait()
+
+    def timed_out():
+        terminate()
+        if audit is not None:
+            audit.update(
+                timed_out=True, fit_seconds=seconds, native_cap_lower_bound=cap
+            )
+            audit["post"] = cpu_use(1)
+            if any(
+                audit.get(k) is None or not 0 <= audit[k] <= 0.15
+                for k in ("pre", "post")
+            ):
+                raise RuntimeError("invalid recording load around capped fit")
         return False
 
     try:
@@ -650,11 +711,23 @@ def run_capped(cmd, env, cap):
                 return timed_out()
             if line is None:
                 break
-            if line == TIMING_START:
+            if audit is not None and line.startswith((LOAD_PRE + " ", LOAD_POST + " ")):
+                marker, value = line.split()
+                key = "pre" if marker == LOAD_PRE else "post"
+                if key in audit:
+                    raise RuntimeError("duplicate recording bookend")
+                if active:
+                    raise RuntimeError("recording bookend inside fit interval")
+                audit[key] = float(value)
+            elif line == TIMING_START:
                 if active:
                     raise RuntimeError("nested fit timing intervals")
+                if audit is not None and ("pre" not in audit or "post" in audit):
+                    raise RuntimeError("fit interval outside recording bookends")
                 active, deadline = True, time.perf_counter() + cap - seconds
                 intervals += 1
+                if audit is not None:
+                    audit["intervals"] = intervals
             elif line.startswith(TIMING_STOP + " "):
                 if not active:
                     raise RuntimeError("fit timing stop without start")
@@ -662,17 +735,25 @@ def run_capped(cmd, env, cap):
                 if not seconds <= elapsed < float("inf"):
                     raise RuntimeError("invalid cumulative fit time")
                 seconds, active, deadline = elapsed, False, None
+                if audit is not None:
+                    audit["fit_seconds"] = seconds
                 if seconds > cap:
                     return timed_out()
         proc.wait()
     finally:
         if proc.poll() is None:
-            timed_out()
+            terminate()
         proc.stdout.close()
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd)
     if active or not intervals:
         raise RuntimeError("child did not finish its fit timing intervals")
+    if audit is not None:
+        audit.update(timed_out=False, fit_seconds=seconds)
+        if any(
+            audit.get(k) is None or not 0 <= audit[k] <= 0.15 for k in ("pre", "post")
+        ):
+            raise RuntimeError("missing or busy recording bookend")
     return True
 
 
@@ -728,7 +809,30 @@ def compiler_provenance():
         pass
     # A host compiler isn't proof of which compiler built an installed wheel.
     # The actual extension digest lets a controlled run join its build record.
-    return dict(host_rustc_vv=rustc, pybiglasso_native_sha256=native_digest)
+    result = dict(host_rustc_vv=rustc, pybiglasso_native_sha256=native_digest)
+    if filename := os.environ.get("PYBIGLASSO_BUILD_INFO"):
+        build = json.loads(pathlib.Path(filename).read_text())
+        if native_digest != build["native_sha256"]:
+            raise ValueError(
+                "build-info does not identify the installed native extension"
+            )
+        result["wheel_build"] = {
+            k: build[k]
+            for k in (
+                "rustc",
+                "llvm",
+                "target",
+                "opt_level",
+                "lto",
+                "codegen_units",
+                "rustflags",
+                "maturin",
+                "image_digest",
+                "wheel_sha256",
+                "native_source_commit",
+            )
+        }
+    return result
 
 
 def environment():
@@ -770,6 +874,12 @@ def environment():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument(
+        "--record",
+        action="store_true",
+        default=os.environ.get("PYBIGLASSO_BENCH_RECORD") == "1",
+        help="require the Linux quiet/load protocol and retain its audit",
+    )
     ap.add_argument("--dataset", action="append", choices=list(DATASETS))
     ap.add_argument(
         "--solver",
@@ -793,6 +903,8 @@ def main():
     ap.add_argument("--run-one", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--lambdas", help=argparse.SUPPRESS)
     args, _ = ap.parse_known_args()
+    if args.record:
+        os.environ["PYBIGLASSO_BENCH_RECORD"] = "1"
 
     if args.run_one:
         args.dataset, args.solver = args.dataset[0], args.solver[0]
@@ -816,8 +928,17 @@ def main():
     threads = args.threads or [1]
     filename = "path-gaussian.jsonl" if args.family == "gaussian" else "path.jsonl"
     out = pathlib.Path(args.out or HERE / "results" / filename)
+    if args.record and (out.exists() or out.with_suffix(".audit.jsonl").exists()):
+        raise FileExistsError("recording requires new result and audit files")
     out.parent.mkdir(parents=True, exist_ok=True)
     env_info = environment()
+    if (
+        args.record
+        and subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=HERE, text=True
+        ).strip()
+    ):
+        raise RuntimeError("recording requires a clean Git checkout")
 
     for dataset in datasets:
         X, Xs, y = make_data(dataset, family=args.family)
@@ -825,6 +946,7 @@ def main():
         for alpha in alphas:
             lambdas = lambda_grid(X, y, alpha, family=args.family)
             runs = {}
+            load_records = {}
             run_cap = args.cap
             with tempfile.TemporaryDirectory() as tmp:
                 np.save(f"{tmp}/lambdas.npy", lambdas)
@@ -850,6 +972,21 @@ def main():
                         if solver in single_threaded and t != min(threads):
                             continue
                         times, result, versions = [], None, {}
+                        load_records[(solver, t)] = []
+                        if args.record:
+                            print(
+                                json.dumps(
+                                    dict(
+                                        stage="cell",
+                                        dataset=dataset,
+                                        alpha=alpha,
+                                        solver=solver,
+                                        threads=t,
+                                    )
+                                ),
+                                flush=True,
+                            )
+                        gate = wait_for_quiet() if args.record else None
                         for rep in range(args.repeats):
                             res = f"{tmp}/{solver}-{t}-{rep}.npz"
                             env = dict(os.environ)
@@ -875,7 +1012,39 @@ def main():
                             # R retains its absolute budget, now applied to
                             # native fit intervals by the timing markers.
                             cap = args.cap if solver in R_SOLVERS else run_cap
-                            if not run_capped(cmd, env, cap):
+                            audit = (
+                                dict(
+                                    dataset=dataset,
+                                    alpha=alpha,
+                                    solver=solver,
+                                    threads=t,
+                                    repeat=rep,
+                                    cap=cap,
+                                    gate=gate,
+                                )
+                                if args.record
+                                else None
+                            )
+                            try:
+                                completed = (
+                                    run_capped(cmd, env, cap, audit=audit)
+                                    if args.record
+                                    else run_capped(cmd, env, cap)
+                                )
+                            except Exception as error:
+                                if audit is not None:
+                                    audit["error"] = f"{type(error).__name__}: {error}"
+                                raise
+                            finally:
+                                if audit is not None:
+                                    # Keep rejected/partial attempts as well. An
+                                    # error aborts this group, never a timeout row.
+                                    with out.with_suffix(".audit.jsonl").open(
+                                        "a"
+                                    ) as fp:
+                                        fp.write(json.dumps(audit) + "\n")
+                                    load_records[(solver, t)].append(audit)
+                            if not completed:
                                 times.append(float("inf"))
                                 break
                             # Windows cannot remove the temporary directory
@@ -978,6 +1147,8 @@ def main():
                     )
                     if solver in R_SOLVERS:
                         record["r_thread_limits"] = r_thread_limits(t)
+                    if args.record:
+                        record["load_guards"] = load_records[(solver, t)]
                     fp.write(json.dumps(record) + "\n")
 
 

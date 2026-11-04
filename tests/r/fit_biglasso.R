@@ -49,6 +49,22 @@ cgroup_memory <- function() {
   )
 }
 
+
+# Optional benchmark load bookends; outside the native fit clock/cap.
+record_bookend <- function(marker) {
+  counters <- function() {
+    values <- as.numeric(strsplit(trimws(readLines("/proc/stat", n = 1)), " +")[[1]][2:9])
+    c(sum(values), sum(values[1:3]))
+  }
+  before <- counters()
+  Sys.sleep(1)
+  delta <- counters() - before
+  value <- delta[[2]] / delta[[1]]
+  cat(marker, " ", sprintf("%.17g", value), "\n", sep = "")
+  flush(stdout())
+  if (!is.finite(value) || value > 0.15) stop("Busy recording bookend")
+}
+
 fit_case <- function(case_dir) {
   prm <- fromJSON(file.path(case_dir, "params.json"), simplifyVector = TRUE)
   n <- prm$nrow
@@ -77,6 +93,7 @@ fit_case <- function(case_dir) {
   if (timing) {
     # Keep system.time's usual pre-fit GC outside the benchmark cap too.
     gc()
+    if (isTRUE(prm$record_cpu)) record_bookend("--load-pre--")
     cat("--timing-start--\n")
     flush(stdout())
   }
@@ -92,6 +109,7 @@ fit_case <- function(case_dir) {
   if (timing) {
     cat("--timing-stop-- ", sprintf("%.17g", elapsed), "\n", sep = "")
     flush(stdout())
+    if (isTRUE(prm$record_cpu)) record_bookend("--load-post--")
   }
 
   if (isTRUE(prm$cgroup_stats)) after <- cgroup_memory()

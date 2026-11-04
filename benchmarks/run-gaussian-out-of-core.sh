@@ -11,6 +11,7 @@ for count in ${THREADS:-1 $(($(nproc --all) / 2))}; do
   args+=(--threads "$count")
 done
 if [[ "${PREPARE_ONLY:-0}" == 1 ]]; then args+=(--prepare-only); fi
+if [[ "${SKIP_R:-0}" == 1 ]]; then args+=(--skip-r); fi
 if [[ "${DIAGNOSTIC:-0}" == 1 ]]; then args+=(--diagnostic); fi
 if [[ -n "${OUT:-}" ]]; then args+=(--out "$OUT"); fi
 if [[ -n "${BUILD_INFO:-}" ]]; then args+=(--build-info "$BUILD_INFO"); fi
