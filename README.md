@@ -445,6 +445,12 @@ with a comment beginning "Differs from R biglasso".
 
 **Least squares.**
 
+- **Residual summation.** R sums updated residuals in row order. By default,
+  pybiglasso sums them in a fixed eight-lane tree within 2,048-row blocks,
+  without changing each row's update. This lets SIMD accelerate the sweep;
+  coefficients and the automatic lambda grid can differ in their last bits.
+  `r_compatible=True` keeps the serial order.
+
 - **Constant responses.** R's strict convergence comparison against
   a zero null loss uses the full iteration budget for a constant response.
   pybiglasso stops once the coefficients no longer change;

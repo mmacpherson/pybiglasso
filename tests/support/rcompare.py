@@ -362,7 +362,7 @@ def data_digest(data):
 # fitting --------------------------------------------------------------
 
 
-def fit_py(case, data, lambdas=None):
+def fit_py(case, data, lambdas=None, *, r_compatible=True):
     """Fit pybiglasso and return results in R biglasso's layout."""
     t0 = time.perf_counter()
     with warnings.catch_warnings(record=True) as caught:
@@ -382,7 +382,7 @@ def fit_py(case, data, lambdas=None):
             row_indices=data["row_indices"],
             dfmax=case.dfmax,
             max_iter=case.max_iter,
-            r_compatible=True,
+            r_compatible=r_compatible,
         )
     seconds = time.perf_counter() - t0
     return dict(
@@ -419,7 +419,7 @@ def warning_kinds(messages):
     )
 
 
-def prepare_case(case, workdir, lambdas=None, *, fit_python=True):
+def prepare_case(case, workdir, lambdas=None, *, fit_python=True, r_compatible=True):
     """Write a case's inputs for R and fit it in Python.
 
     When the case gives R a lambda grid, binomial uses pybiglasso's default
@@ -456,7 +456,7 @@ def prepare_case(case, workdir, lambdas=None, *, fit_python=True):
         if case.user_lambdas:
             lambdas *= 0.9
     else:
-        grid = fit_py(case, data)["lambda_"]
+        grid = fit_py(case, data, r_compatible=r_compatible)["lambda_"]
         if case.user_lambdas:
             lambdas = grid * 0.9
         else:
@@ -465,7 +465,7 @@ def prepare_case(case, workdir, lambdas=None, *, fit_python=True):
             # R and numba can't flip that check and shift iteration counts
             lambdas = grid.copy()
             lambdas[0] *= 1 + 1e-9
-    py = fit_py(case, data, lambdas) if fit_python else None
+    py = fit_py(case, data, lambdas, r_compatible=r_compatible) if fit_python else None
 
     y = data["y"]
     row_idx = None

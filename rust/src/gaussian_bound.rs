@@ -264,8 +264,8 @@ pub(crate) fn test_bound(x: &[f64], a: &[f64], b: &[f64], center: f64, scale: f6
     let rb = norm(b.len(), |i| b[i])?;
     let d = difference_norm(a, b)?;
     Some(vec![
-        standardized_score(&column, a, seqsum(a), center, scale, n_fit as f64),
-        standardized_score(&column, b, seqsum(b), center, scale, n_fit as f64),
+        standardized_score(&column, a, super::gaussian::blocked_sum(a), center, scale, n_fit as f64),
+        standardized_score(&column, b, super::gaussian::blocked_sum(b), center, scale, n_fit as f64),
         m.radius(d, ra, rb)?,
         ra,
         rb,
