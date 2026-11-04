@@ -43,7 +43,7 @@ def test_warns_and_names_columns_too_far_from_zero(near_2_54):
 
 def test_warns_on_uint64_and_with_row_indices(near_2_54):
     X, y = near_2_54
-    assert _fit(X.astype(np.uint64)[:, :1].copy(order="F"), y)
+    assert _fit(X[:, :1].astype(np.uint64, order="F"), y)
     assert _fit(X, y, row_indices=np.arange(0, len(y), 2))
 
 
