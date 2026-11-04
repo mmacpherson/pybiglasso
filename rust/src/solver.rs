@@ -74,8 +74,8 @@ impl Family {
 const SCALE_MIN: f64 = 1e-6;
 /// Largest error tolerated in a standardized column's mean, which should be
 /// exactly 0. Above it, binary64 can't hold the column's center precisely
-/// (values near 2^54 that vary by a few units, say), and the error biases the
-/// intercept; the caller warns.
+/// (values near 2^54 that vary by a few units, say), and the error can make
+/// the fit, its intercept especially, inaccurate; the caller warns.
 pub(crate) const CENTER_ERROR_MAX: f64 = 1e-6;
 /// row_indices naming at least this share of X's rows, each once, are fit as
 /// a 0/1 weight on every row, so the kernels read whole columns with vector

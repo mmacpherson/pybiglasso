@@ -288,9 +288,9 @@ def biglasso(
         more = f" and {len(imprecise) - 5} more" if len(imprecise) > 5 else ""
         warnings.warn(
             f"Column(s) {names}{more} of X are too far from zero, relative to their "
-            "spread, for float64 to center them precisely, which biases the "
-            "intercept. Subtract a reference value, such as each column's minimum, "
-            "before fitting.",
+            "spread, for float64 to center them precisely, which can make the fit, "
+            "its intercept especially, inaccurate. Subtract a reference value, such "
+            "as each column's minimum, before fitting.",
             stacklevel=2,
         )
 

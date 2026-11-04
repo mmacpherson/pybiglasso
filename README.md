@@ -429,11 +429,13 @@ with a comment beginning "Differs from R biglasso".
   precision in floating point. R's scales, and so its fit, can be affected
   without a warning; in our tests some scales came out as NaN. pybiglasso
   computes these columns' moments from centered values, so a constant shift of
-  X leaves the solution unchanged. That holds while float64 can still store the
-  column's center precisely. A column whose values are huge next to their
-  spread (near 2^54, varying by a few units) can't be centered accurately, which
-  biases the intercept, so pybiglasso warns and names the column. Subtract a
-  reference value, such as the column's minimum, before fitting.
+  X leaves the solution unchanged. A column whose values are huge next to their
+  spread (near 2^54, varying by a few units) can't be centered accurately in
+  float64, which can make the fit, its intercept especially, inaccurate;
+  pybiglasso warns and names such columns. No warning isn't a guarantee: for
+  such data even an intercept on X's own scale can't be stored precisely. For
+  either problem, subtract a reference value, such as each column's minimum,
+  before fitting.
 - **Arithmetic order.** R sums serially; pybiglasso sums in a fixed order
   across several accumulators, so SIMD and threads don't change its results,
   and groups some products and quotients differently. Results can differ from

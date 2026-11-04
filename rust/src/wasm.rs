@@ -255,7 +255,7 @@ impl Dataset {
             .iter()
             .map(|e| match e {
                 Event::ImpreciseCenter(j) => format!(
-                    "Feature {} is too far from zero to center precisely, which biases the intercept; subtract a reference value from it first.",
+                    "Feature {} is too far from zero to center precisely, which can make the fit inaccurate; subtract a reference value from it first.",
                     j + 1
                 ),
                 Event::PrefitSaturated => "The unpenalized columns saturated the model before the path.".into(),
