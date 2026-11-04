@@ -149,7 +149,9 @@ STREAM_CHILD = textwrap.dedent("""
     try:
         source = reader(160_000)
         if mode == 'copy':
+            print('WHOLE_TABLE_READ_START', file=sys.stderr, flush=True)
             source = source.read_all()
+            print('WHOLE_TABLE_READ_DONE', file=sys.stderr, flush=True)
         result = ingest(source, output, dtypes=dtype_option,
                         block_size=512)
         assert result.X.shape == (160_000, 8)
@@ -161,17 +163,27 @@ STREAM_CHILD = textwrap.dedent("""
 
 
 @pytest.mark.parametrize(
-    "mode,batch_size",
+    "mode,batch_size,malloc_mmap_threshold",
     [
-        ("preserve", 512),
-        ("auto", 512),
-        ("copy", 512),
-        ("preserve", 1),
-        ("auto", 1),
-        ("mapping", 1),
+        ("preserve", 512, None),
+        ("auto", 512, None),
+        ("copy", 512, None),
+        ("copy", 512, "4096"),
+        ("preserve", 1, None),
+        ("auto", 1, None),
+        ("mapping", 1, None),
     ],
 )
-def test_arrow_stream_memory_is_bounded_by_batches(tmp_path, mode, batch_size):
+def test_arrow_stream_memory_is_bounded_by_batches(
+    tmp_path, mode, batch_size, malloc_mmap_threshold
+):
+    allocator_env = (
+        {}
+        if malloc_mmap_threshold is None
+        else {"MALLOC_MMAP_THRESHOLD_": malloc_mmap_threshold}
+    )
+    # A small mmap threshold reproduces the C++ bad_alloc path on glibc;
+    # the same unchanged cap can otherwise raise a Python MemoryError.
     completed = subprocess.run(
         [
             sys.executable,
@@ -183,6 +195,7 @@ def test_arrow_stream_memory_is_bounded_by_batches(tmp_path, mode, batch_size):
         ],
         env={
             **os.environ,
+            **allocator_env,
             "MALLOC_ARENA_MAX": "1",
             "OPENBLAS_NUM_THREADS": "1",
             "OMP_NUM_THREADS": "1",
@@ -191,5 +204,38 @@ def test_arrow_stream_memory_is_bounded_by_batches(tmp_path, mode, batch_size):
         text=True,
         timeout=180,
     )
+    _assert_stream_memory_result(completed, mode)
+
+
+def _assert_stream_memory_result(completed, mode):
+    if mode == "copy" and completed.returncode == -signal.SIGABRT:
+        # Exhausting the cap while read_all retains producer batches can fail
+        # in Arrow's C++ NumPyConverter before it can translate bad_alloc into
+        # MemoryError. Never accept an arbitrary crash, a positive-case abort,
+        # or an allocation failure after the deliberate whole-table read.
+        assert "WHOLE_TABLE_READ_START" in completed.stderr
+        assert "WHOLE_TABLE_READ_DONE" not in completed.stderr
+        assert "std::bad_alloc" in completed.stderr
+        return
     assert completed.returncode == 0, completed.stderr[-3000:]
     assert json.loads(completed.stdout.splitlines()[-1]) == {"fits": mode != "copy"}
+
+
+@pytest.mark.parametrize(
+    "mode,returncode,stderr",
+    [
+        ("auto", -signal.SIGABRT, "WHOLE_TABLE_READ_START\nstd::bad_alloc"),
+        ("copy", -signal.SIGABRT, "std::bad_alloc"),
+        ("copy", -signal.SIGABRT, "WHOLE_TABLE_READ_START\nthread creation failed"),
+        (
+            "copy",
+            -signal.SIGABRT,
+            "WHOLE_TABLE_READ_START\nWHOLE_TABLE_READ_DONE\nstd::bad_alloc",
+        ),
+        ("copy", -signal.SIGSEGV, "WHOLE_TABLE_READ_START\nstd::bad_alloc"),
+    ],
+)
+def test_stream_memory_control_rejects_unrelated_failures(mode, returncode, stderr):
+    completed = subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+    with pytest.raises(AssertionError):
+        _assert_stream_memory_result(completed, mode)
