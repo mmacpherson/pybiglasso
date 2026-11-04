@@ -1,5 +1,15 @@
 default: test
 
+# Runs inside manylinux, or after maturin has selected the host toolchain.
+WHEEL_PYTHON = $(if $(filter Windows_NT,$(OS)),python,python3)
+.PHONY: wheel-provenance
+wheel-provenance:
+	$(WHEEL_PYTHON) scripts/wheel_provenance.py --expected-rust-version "$(RUSTUP_TOOLCHAIN)"
+
+.PHONY: check-wheel
+check-wheel:
+	uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py
+
 .PHONY: test
 # across every core (pytest-xdist); the R comparison below stays in one
 # process, which runs R once

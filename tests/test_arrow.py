@@ -473,7 +473,7 @@ def test_paths_are_bit_identical_to_fortran_npy(
 ):
     from pybiglasso.config import Settings
 
-    monkeypatch.setattr("pybiglasso.binomial.settings", Settings(boundscheck=checked))
+    monkeypatch.setattr("pybiglasso.fit.settings", Settings(boundscheck=checked))
     X, reference = designs(tmp_path, kind)
     n = X.shape[0]
     rng = np.random.default_rng(6)
@@ -803,7 +803,7 @@ def test_partition_only_changes_addressing(
         "gather": np.arange(0, nrow, 5),
         "repeated": np.arange(0, nrow, 3).repeat(2),
     }[subset]
-    monkeypatch.setattr("pybiglasso.binomial.settings", Settings(boundscheck=checked))
+    monkeypatch.setattr("pybiglasso.fit.settings", Settings(boundscheck=checked))
     for threads, alpha in ((1, 1.0), (2, 1.0), (1, 0.5), (2, 0.5)):
         options = dict(
             family=family,

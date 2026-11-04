@@ -3,8 +3,8 @@
 This is the algorithm `pybiglasso.biglasso` runs (R biglasso 1.7.2's
 `biglasso(..., family = "binomial", screen = "SSR")`, with pybiglasso's
 documented differences from it), in the same steps as the Rust solver
-(`rust/src/solver.rs`) and the numba one (`src/pybiglasso/binomial.py`); each
-function's docstring names its counterparts in binomial.py and in R. What the
+(`rust/src/solver.rs` and `rust/src/binomial.rs`); each function's docstring
+names its counterparts in the Rust solver and in R. What the
 solvers do for speed or for a fixed summation order (one pass for several sums,
 reading X a column at a time, fixed-order sums) is plain numpy here: the fit rows are copied and standardized outright, and
 sums are `@` and `.sum()`. So results agree with the solvers' to rounding, not
@@ -245,7 +245,7 @@ def fit_path(
     intercept and coefficients on X's scale, one column per lambda. `events`
     lists what stopped or troubled the state, as (kind, lambda index).
 
-    binomial.py: `biglasso` and `fit_path`; R: `biglasso` and
+    Rust: `run` and `run_binomial`; R: `biglasso` and
     `cdfit_binomial_ssr`.
     """
     if family == "gaussian":
@@ -376,7 +376,7 @@ def fit_path(
 def center_scale(X):
     """Each column's mean and population standard deviation.
 
-    binomial.py: `center_scale`; R: `standardize_and_get_residual`.
+    Rust: `center_scale`; R: `standardize_and_get_residual`.
     """
     return X.mean(axis=0), X.std(axis=0)
 
@@ -384,7 +384,7 @@ def center_scale(X):
 def compute_z(X, residual):
     """Each standardized column's score against a residual, x_j'residual / n.
 
-    binomial.py: `compute_z`; R: `standardize_and_get_residual`.
+    Rust: `compute_z`; R: `standardize_and_get_residual`.
     """
     return X.T @ residual / len(residual)
 
@@ -392,7 +392,7 @@ def compute_z(X, residual):
 def largest_lambda(scores, penalty_factor, alpha):
     """The smallest lambda at which every penalized coefficient is zero.
 
-    binomial.py: inline in `fit_path`; R: `standardize_and_get_residual`.
+    Rust: inline in `run_binomial`; R: `standardize_and_get_residual`.
     """
     penalized = penalty_factor > 0
     return (
@@ -404,7 +404,7 @@ def largest_lambda(scores, penalty_factor, alpha):
 def lambda_grid(lambda_max, lambda_min, nlambda, log_scale):
     """The default grid, from lambda_max down to lambda_min * lambda_max.
 
-    binomial.py: inline in `fit_path`; R: in `biglasso`'s setup.
+    Rust: inline in `run_binomial`; R: in `biglasso`'s setup.
     """
     if lambda_max == 0:
         return np.zeros(nlambda)
@@ -419,7 +419,7 @@ def strong_rule(problem, state, lam, lambda_prev):
     |score_j| > alpha * pf_j * (2 lambda - lambda_prev), with each column's
     score as last computed. Returns how many columns it sets aside.
 
-    binomial.py: inline in `fit_path`; R: in `cdfit_binomial_ssr`.
+    Rust: inline in `run_binomial`; R: in `cdfit_binomial_ssr`.
     """
     cutoff = (2 * lam - lambda_prev) * problem.alpha * problem.penalty_factor
     state.strong = np.abs(state.scores) > cutoff
@@ -430,7 +430,7 @@ def update_irls(problem, state):
     """Refresh the quadratic approximation at eta: weights p(1 - p), residual
     y - p, and working residual (y - p) / weights; and the loss at eta.
 
-    binomial.py: `update_irls`; R: the probability and weight update in
+    Rust: `update_irls`; R: the probability and weight update in
     `cdfit_binomial_lambda_core`.
     """
     eta, y = state.eta, problem.y
@@ -452,7 +452,7 @@ def update_irls(problem, state):
 def final_loss(y, eta):
     """The negative log-likelihood at eta, computed stably.
 
-    binomial.py: `final_loss`. Differs from R biglasso, which reports the loss
+    Rust: `final_loss`. Differs from R biglasso, which reports the loss
     from before the last sweep, with clipped probabilities; r_compatible keeps
     R's.
     """
@@ -468,7 +468,7 @@ def move(state, x, step):
 def update_intercept(state):
     """Move the intercept to the weighted mean of the working residual.
 
-    binomial.py: `update_intercept`; R: the intercept update in
+    Rust: `update_intercept`; R: the intercept update in
     `cdfit_binomial_lambda_core`.
     """
     step = (state.weights @ state.working_residual) / state.weights.sum()
@@ -482,7 +482,7 @@ def coordinate_sweep(problem, state, lam):
     Returns the convergence measure: the largest curvature-weighted squared
     change in a coefficient, v * (change in beta_j)^2.
 
-    binomial.py: `coordinate_sweep`; R: the coordinate loop in
+    Rust: `coordinate_sweep`; R: the coordinate loop in
     `cdfit_binomial_lambda_core`, with `wcrossprod_resid`, `wsqsum_bm` and
     `lasso`.
     """
@@ -536,7 +536,7 @@ def check_strong_set(problem, state, lam):
 
     Returns how many violated.
 
-    binomial.py: `check_strong_set`; R: `check_strong_set`.
+    Rust: `check` on the strong set; R: `check_strong_set`.
     """
     bad = kkt_violations(
         problem, state, lam, np.flatnonzero(state.strong & ~state.active)
@@ -551,7 +551,7 @@ def check_rest_set(problem, state, lam):
     An active column outside the strong set is checked too, and counts as a
     violation if its score breaks the conditions. Returns how many violated.
 
-    binomial.py: `check_rest_set`; R: `check_rest_set`.
+    Rust: `check` on the rest; R: `check_rest_set`.
     """
     bad = kkt_violations(problem, state, lam, np.flatnonzero(~state.strong))
     state.active[bad] = state.strong[bad] = True
@@ -563,7 +563,7 @@ def _fit_lambda(problem, state, lam, check_kkt):
 
     With check_kkt=False, only the columns already active are fit.
 
-    binomial.py: `_fit_lambda`; R: `cdfit_binomial_lambda_core`.
+    Rust: `fit_lambda`; R: `cdfit_binomial_lambda_core`.
     """
     unscanned = "both"  # the scans the last iteration didn't run
     while state.iterations < problem.max_iter:

@@ -543,20 +543,26 @@ why). The solver takes the same number of iterations as R's at every lambda; the
 R comparison checks this in every case.
 
 The solver is written twice, in the same steps. The one that runs is Rust
-(`rust/src/solver.rs`): one call from Python fits the whole path. The readable one,
+(`rust/src/`): one call from Python fits the whole path. The readable one,
 [`tests/support/reference.py`](tests/support/reference.py), is plain numpy,
 step by step, and imports nothing from pybiglasso; the tests hold the Rust
 solver to it, and both to R.
 
-| pybiglasso (`rust/src/solver.rs`) | R biglasso (`src/`) |
+The Rust is laid out by family. `solver.rs` holds what the two share: the
+path's parameters, standardization, the scores, and `run`, which hands the fit
+to its family. It reads X through `columns.rs`, a column at a time, and sums
+with the fixed-order kernels in `kernels.rs`. The logistic solver's own steps
+are in `binomial.rs`:
+
+| pybiglasso (`rust/src/`) | R biglasso (`src/`) |
 |---|---|
-| `center_scale`, `compute_z` | `standardize_and_get_residual` (utilities.cpp) |
-| `update_irls` | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
+| `center_scale`, `compute_z` (solver.rs) | `standardize_and_get_residual` (utilities.cpp) |
+| `update_irls` (binomial.rs) | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
 | `update_intercept` | intercept update in `cdfit_binomial_lambda_core` |
 | `coordinate_sweep` (`Pass`) | coordinate loop in `cdfit_binomial_lambda_core`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
 | `check` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
 | `fit_lambda` | `cdfit_binomial_lambda_core` |
-| `run` | `cdfit_binomial_ssr` |
+| `run_binomial` | `cdfit_binomial_ssr` |
 
 The least-squares driver and coordinate sweeps, in `rust/src/gaussian.rs`, port
 R's Gaussian SSR solver the same way. They share column access,
