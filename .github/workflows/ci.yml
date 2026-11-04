@@ -272,10 +272,11 @@ jobs:
         MACOS: ${{ needs.scope.outputs.macos }}
       run: |
         platforms=(ubuntu-latest ubuntu-24.04-arm windows-latest)
-        if [ "$MACOS" = true ]; then platforms+=(macos-latest); fi
+        flags=(--without-macos)
+        if [ "$MACOS" = true ]; then platforms+=(macos-latest); flags=(); fi
         files=()
         for platform in "${platforms[@]}"; do files+=("snapshots/rust-bits-$platform.json"); done
-        python3 scripts/check_arch_bits.py compare "${files[@]}"
+        python3 scripts/check_arch_bits.py compare "${flags[@]}" "${files[@]}"
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
