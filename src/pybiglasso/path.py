@@ -102,8 +102,9 @@ class BiglassoPath:
         if sorted(names) == sorted(fitted):
             raise ValueError(
                 "X has the fitted columns in a different order; select them in "
-                "the fitted order first: X[list(path.feature_names)] for pandas "
-                "or Polars, X.select(list(path.feature_names)) for an Arrow table."
+                "the fitted order first, by their original labels (with string "
+                "labels: X[list(path.feature_names)] for pandas or Polars, "
+                "X.select(list(path.feature_names)) for an Arrow table)."
             )
         raise ValueError("X's column names don't match the fitted feature_names.")
 
@@ -113,8 +114,10 @@ class BiglassoPath:
         Only the columns of X with a nonzero coefficient somewhere among the
         selected lambdas are read, which matters when X is a large memmap.
         With `row_indices`, predict for those rows of X only. If X names its
-        columns (a DataFrame or Arrow table), they must be the fitted
-        `feature_names`, in the same order.
+        columns (a DataFrame or Arrow table) and the path was fit with names,
+        they must be the fitted `feature_names`, in the same order. A path fit
+        on an unnamed array, or unpickled from before names were recorded,
+        checks only the number of columns.
         """
         X = _as_arrow_matrix(X)
         index = self._lambda_index(lambdas)
