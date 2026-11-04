@@ -28,6 +28,8 @@ class BiglassoPath:
       center, scale: (ncol,) column means and standard deviations of X
       penalty_factor: (ncol,) per-column penalty multipliers
       feature_names: (ncol,) column names
+      named_features: whether feature_names came from the user or X's
+        columns, rather than being the defaults x0, x1, ...
       alpha: elastic-net mixing parameter (1 is the lasso)
       family: "binomial" or "gaussian"
     """
@@ -46,6 +48,9 @@ class BiglassoPath:
     # Pickles from before families existed have no instance field, so they
     # fall back here. New fits always record their actual family explicitly.
     family: str = "binomial"
+    # Likewise for pickles from before this was recorded: they keep the
+    # column-count check only.
+    named_features: bool = False
 
     def __len__(self):
         return len(self.lambdas)
@@ -80,21 +85,27 @@ class BiglassoPath:
 
     def _check_column_names(self, X):
         """Reject named columns that aren't the fitted ones in order: a
-        coefficient would otherwise be applied to the wrong feature."""
-        if not hasattr(X, "columns"):
+        coefficient would otherwise be applied to the wrong feature. A path
+        fit without names checks the column count only."""
+        if not self.named_features or not hasattr(X, "columns"):
             return
         names = tuple(str(c) for c in X.columns)
+        if len(set(names)) != len(names):
+            raise ValueError(
+                "X's column names are ambiguous: some repeat, or are equal once "
+                "written as strings (1 and '1', say). Pass X as an array in the "
+                "fitted column order, or rename its columns."
+            )
         fitted = tuple(self.feature_names)
         if names == fitted:
             return
         if sorted(names) == sorted(fitted):
             raise ValueError(
                 "X has the fitted columns in a different order; select them in "
-                "the fitted order first, e.g. X[path.feature_names]."
+                "the fitted order first: X[list(path.feature_names)] for pandas "
+                "or Polars, X.select(list(path.feature_names)) for an Arrow table."
             )
-        # A path fit on an unnamed array has default names; any named X fits it.
-        if fitted != tuple(f"x{j}" for j in range(len(fitted))):
-            raise ValueError("X's column names don't match the fitted feature_names.")
+        raise ValueError("X's column names don't match the fitted feature_names.")
 
     def decision_function(self, X, lambdas=None, row_indices=None):
         """Linear predictor (log-odds for binomial), shape (nrow, nlambda).

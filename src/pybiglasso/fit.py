@@ -251,6 +251,7 @@ def biglasso(
     if dfmax is None:
         dfmax = ncol + 1
 
+    named_features = feature_names is not None
     if feature_names is None:
         feature_names = tuple(f"x{e}" for e in range(ncol))
 
@@ -320,6 +321,7 @@ def biglasso(
         feature_names=feature_names,
         alpha=alpha,
         family=family,
+        named_features=named_features,
     )
 
 

@@ -514,4 +514,45 @@ def test_predict_accepts_named_columns_on_an_unnamed_fit(named_fit):
     frame, _ = named_fit
     rng = np.random.default_rng(12)
     path = bl.biglasso(frame.to_numpy(), rng.normal(size=len(frame)), nlambda=4)
+    assert not path.named_features
     assert_bitwise(path.predict(frame), path.predict(frame.to_numpy()))
+    # even labels that look like the defaults, in any order
+    xs = frame.set_axis(["x2", "x0", "x1"], axis=1)
+    assert_bitwise(path.predict(xs), path.predict(frame.to_numpy()))
+
+
+def test_predict_checks_explicit_default_looking_names(named_fit):
+    frame, _ = named_fit
+    rng = np.random.default_rng(13)
+    y = rng.normal(size=len(frame))
+    path = bl.biglasso(frame.to_numpy(), y, nlambda=4, feature_names=["x0", "x1", "x2"])
+    assert path.named_features
+    with pytest.raises(ValueError, match="don't match"):
+        path.predict(frame)
+    with pytest.raises(ValueError, match="different order"):
+        path.predict(frame.set_axis(["x2", "x1", "x0"], axis=1))
+
+
+@pytest.mark.parametrize(
+    "labels", [["a", "a", "c"], [1, "1", "c"]], ids=["repeated", "collide"]
+)
+def test_predict_rejects_ambiguous_names(labels):
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(14)
+    frame = pd.DataFrame(rng.normal(size=(60, 3)), columns=labels)
+    path = bl.biglasso(frame, rng.normal(size=60), nlambda=4)
+    with pytest.raises(ValueError, match="ambiguous"):
+        path.predict(frame)
+    assert_bitwise(
+        path.predict(frame.to_numpy()), path.decision_function(frame.to_numpy())
+    )
+
+
+def test_reorder_message_remedies_work(named_fit):
+    pa = pytest.importorskip("pyarrow")
+    frame, path = named_fit
+    shuffled = frame[["c", "a", "b"]]
+    expected = path.predict(frame.to_numpy())
+    assert_bitwise(path.predict(shuffled[list(path.feature_names)]), expected)
+    table = pa.Table.from_pandas(shuffled, preserve_index=False)
+    assert_bitwise(path.predict(table.select(list(path.feature_names))), expected)
