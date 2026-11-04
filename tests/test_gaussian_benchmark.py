@@ -22,6 +22,20 @@ def orthogonal():
     return X, 3 + 2 * X[:, 0]
 
 
+def test_compiler_provenance_retains_full_host_version(benchmark, monkeypatch):
+    output = "rustc 1.99.1\nrelease: 1.99.1\nLLVM version: 23.1.1\n"
+    monkeypatch.setattr(benchmark.subprocess, "check_output", lambda *a, **kw: output)
+    assert benchmark.compiler_provenance()["host_rustc_vv"] == output.strip()
+
+
+def test_benchmark_provenance_allows_no_rust_installation(benchmark, monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("rustc")
+
+    monkeypatch.setattr(benchmark.subprocess, "check_output", missing)
+    assert benchmark.compiler_provenance()["host_rustc_vv"] is None
+
+
 def test_gaussian_benchmark_analytic_objective_and_kkt(benchmark, orthogonal):
     X, y = orthogonal
     beta = np.array([1.4, 0.0])
