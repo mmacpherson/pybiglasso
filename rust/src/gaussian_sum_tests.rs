@@ -106,6 +106,10 @@ fn release_simd_arithmetic_has_no_out_of_line_avx_helpers() {
         .expect("native code-generation audit requires binutils nm");
     assert!(output.status.success(), "nm failed: {}", String::from_utf8_lossy(&output.stderr));
     let symbols = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        symbols.contains("_rust::solver::"),
+        "code-generation audit requires demangled symbols from the unstripped native test executable"
+    );
     for width in [256, 512] {
         for operation in ["add", "sub", "mul", "div", "set1"] {
             let name = format!("::_mm{width}_{operation}_pd");
