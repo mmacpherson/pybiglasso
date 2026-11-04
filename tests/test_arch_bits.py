@@ -89,8 +89,12 @@ def snapshots(tmp_path):
     return paths
 
 
+ALL = {"Linux", "Darwin", "Windows"}
+WITHOUT_MACOS = {"Linux", "Windows"}
+
+
 def test_compare_accepts_complete_equal_snapshots(arch_bits, snapshots):
-    arch_bits.compare(snapshots[0], snapshots[1:])
+    arch_bits.compare(snapshots[0], snapshots[1:], ALL)
 
 
 @pytest.mark.parametrize("index", [0, 1])
@@ -103,7 +107,7 @@ def test_compare_rejects_missing_int8_cases(arch_bits, snapshots, index):
     }
     snapshots[index].write_text(json.dumps(snapshot))
     with pytest.raises(AssertionError):
-        arch_bits.compare(snapshots[0], snapshots[1:])
+        arch_bits.compare(snapshots[0], snapshots[1:], ALL)
 
 
 @pytest.mark.parametrize("part", ["inputs", "fit"])
@@ -114,4 +118,29 @@ def test_compare_rejects_changed_int8_bits(arch_bits, snapshots, part):
     snapshot["cases"][key][part][field] = "changed-bits"
     snapshots[1].write_text(json.dumps(snapshot))
     with pytest.raises(AssertionError, match="inputs differ|bits differ"):
-        arch_bits.compare(snapshots[0], snapshots[1:])
+        arch_bits.compare(snapshots[0], snapshots[1:], ALL)
+
+
+def test_compare_without_macos_accepts_the_other_platforms(arch_bits, snapshots):
+    linux_arm, _darwin, windows = snapshots[1:]
+    arch_bits.compare(snapshots[0], [linux_arm, windows], WITHOUT_MACOS)
+
+
+@pytest.mark.parametrize("drop", [1, 3], ids=["missing-linux-arm", "missing-windows"])
+def test_compare_without_macos_still_requires_every_other_platform(
+    arch_bits, snapshots, drop
+):
+    candidates = [snapshots[i] for i in (1, 3) if i != drop]
+    with pytest.raises(AssertionError):
+        arch_bits.compare(snapshots[0], candidates, WITHOUT_MACOS)
+
+
+def test_compare_without_macos_rejects_a_macos_snapshot(arch_bits, snapshots):
+    with pytest.raises(AssertionError):
+        arch_bits.compare(snapshots[0], snapshots[1:], WITHOUT_MACOS)
+
+
+def test_compare_with_macos_requires_it(arch_bits, snapshots):
+    linux_arm, _darwin, windows = snapshots[1:]
+    with pytest.raises(AssertionError):
+        arch_bits.compare(snapshots[0], [linux_arm, windows], ALL)
