@@ -72,6 +72,11 @@ impl Family {
 }
 
 const SCALE_MIN: f64 = 1e-6;
+/// Largest error tolerated in a standardized column's mean, which should be
+/// exactly 0. Above it, binary64 can't hold the column's center precisely
+/// (values near 2^54 that vary by a few units, say), and the error biases the
+/// intercept; the caller warns.
+pub(crate) const CENTER_ERROR_MAX: f64 = 1e-6;
 /// row_indices naming at least this share of X's rows, each once, are fit as
 /// a 0/1 weight on every row, so the kernels read whole columns with vector
 /// loads; fewer rows, or repeated ones, are gathered. Part of the results:
@@ -115,6 +120,8 @@ pub(crate) type OnLambda<'a> = dyn Fn(&Path, usize) -> Result<bool, String> + Sy
 
 /// What the Python side needs to warn about.
 pub(crate) enum Event {
+    /// A column of X (by its index) that couldn't be centered precisely
+    ImpreciseCenter(usize),
     PrefitSaturated,
     Dfmax(usize),
     Saturated(usize),
@@ -133,6 +140,17 @@ pub(crate) struct Path {
     pub(crate) deviance: Vec<f64>,
     pub(crate) n_reject: Vec<i64>,
     pub(crate) events: Vec<Event>,
+}
+
+/// Each column's center and scale, whether the mask can sweep the rows left
+/// out, and the columns that couldn't be centered precisely
+pub(crate) type Standardization = (Vec<f64>, Vec<f64>, bool, Vec<usize>);
+
+impl Path {
+    /// Adds an event for each column center_scale couldn't center precisely.
+    pub(crate) fn note_imprecise(&mut self, columns: Vec<usize>) {
+        self.events.splice(0..0, columns.into_iter().map(Event::ImpreciseCenter));
+    }
 }
 
 pub(crate) struct Fit<'a, D> {
@@ -157,8 +175,10 @@ impl<D: Design> Fit<'_, D> {
     /// Differs from R biglasso: R derives scales from raw sums, which can lose
     /// precision for columns far from zero; this uses two passes. R drops
     /// columns holding NaN or infinity, whereas this rejects nonfinite fit rows.
-    pub(crate) fn center_scale(&self) -> Result<(Vec<f64>, Vec<f64>, bool), String> {
-        let stats: Vec<(f64, f64, bool, bool)> = (0..self.x.ncol())
+    /// Also returns the columns whose standardized mean, measured in the
+    /// second pass, is off by more than CENTER_ERROR_MAX.
+    pub(crate) fn center_scale(&self) -> Result<Standardization, String> {
+        let stats: Vec<(f64, f64, bool, bool, f64)> = (0..self.x.ncol())
             .into_par_iter()
             .map(|j| {
                 let c = self.x.col(j);
@@ -178,11 +198,20 @@ impl<D: Design> Fit<'_, D> {
                     }),
                 }
                 let mean = acc / nf;
-                let mut acc = 0.0;
+                // offset: what the centered values leave over, which binary64
+                // rounding of the center (or of its sum) leaves nonzero
+                let (mut acc, mut offset) = (0.0, 0.0);
                 let mut hint = 0;
                 match self.rows {
-                    Some(rows) => rows.iter().for_each(|&i| acc += (c.at_seq(i, &mut hint) - mean).powi(2)),
-                    None => for_each_value(&c, |v| acc += (v - mean).powi(2)),
+                    Some(rows) => rows.iter().for_each(|&i| {
+                        let d = c.at_seq(i, &mut hint) - mean;
+                        acc += d.powi(2);
+                        offset += d;
+                    }),
+                    None => for_each_value(&c, |v| {
+                        acc += (v - mean).powi(2);
+                        offset += v - mean;
+                    }),
                 }
                 let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
                 let mut hint = 0;
@@ -196,7 +225,7 @@ impl<D: Design> Fit<'_, D> {
                 let out_deviation =
                     if out_lo > out_hi { 0.0 } else { (out_lo - mean).abs().max((out_hi - mean).abs()) };
                 let out_safe = scale <= SCALE_MIN || (out_finite && out_deviation <= LEFT_OUT_Z_MAX * scale);
-                (mean, scale, invalid, out_safe)
+                (mean, scale, invalid, out_safe, offset / nf)
             })
             .collect();
         if stats.iter().any(|s| s.2) {
@@ -205,8 +234,12 @@ impl<D: Design> Fit<'_, D> {
         if stats.iter().any(|s| !s.0.is_finite() || !s.1.is_finite()) {
             return Err("X has values too large to standardize safely.".into());
         }
+        let imprecise = (stats.iter().enumerate())
+            .filter(|(_, s)| s.1 > SCALE_MIN && (s.4 / s.1).abs() > CENTER_ERROR_MAX)
+            .map(|(j, _)| j)
+            .collect();
         let (center, scale) = stats.iter().map(|s| (s.0, s.1)).unzip();
-        Ok((center, scale, stats.iter().all(|s| s.3)))
+        Ok((center, scale, stats.iter().all(|s| s.3), imprecise))
     }
 
     fn compute_z(&self, path: &Path, s: &[f64]) -> Vec<f64> {

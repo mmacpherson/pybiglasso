@@ -73,7 +73,7 @@ fn standardization_and_initial_scores_use_selected_rows_and_raw_column_map() {
     fn check<D: Design>(x: &D, p: &Params, source_rows: &[usize]) {
         let y: Vec<f64> = source_rows.iter().map(|&i| (i % 2) as f64).collect();
         let fit = Fit { x, y: &y, params: p, mask: None, rows: None, n_fit: source_rows.len() };
-        let (center, scale, safe) = fit.center_scale().unwrap();
+        let (center, scale, safe, _) = fit.center_scale().unwrap();
         assert!(safe);
         assert_eq!(center, [7.0, 3.0, -4.0, 2.0]);
         assert_eq!(scale, [0.0, 2.0, 1.0, 4.0]);
@@ -82,6 +82,28 @@ fn standardization_and_initial_scores_use_selected_rows_and_raw_column_map() {
     }
     check(&all, &p, &(0..16).collect::<Vec<_>>());
     check(&gather, &p, &selected);
+}
+
+#[test]
+fn center_scale_flags_columns_binary64_cannot_center() {
+    // Column 0: 2^54 plus multiples of 4 (adjacent binary64 values there are 4
+    // apart), mean 2^54 + 6 exactly; its 16-row sum near 2^58 rounds to a
+    // multiple of 64, so no binary64 center leaves the standardized mean
+    // within CENTER_ERROR_MAX of 0. Column 1 sits 2^30 from zero, the same
+    // spread, and centers exactly.
+    let offsets = [0.0, 4.0, 8.0, 12.0];
+    let a = Array2::<f64>::from_shape_fn((16, 2).f(), |(i, j)| [2f64.powi(54), 2f64.powi(30)][j] + offsets[i % 4]);
+    let pf = [1.0; 2];
+    let p = params(&pf);
+    let x = ContigX::<f64, true> { x: a.view() };
+    let y: Vec<f64> = (0..16).map(|i| (i % 2) as f64).collect();
+    let fit = Fit { x: &x, y: &y, params: &p, mask: None, rows: None, n_fit: 16 };
+    let (center, scale, _, imprecise) = fit.center_scale().unwrap();
+    assert_eq!(imprecise, [0]);
+    assert_eq!(center[1], 2f64.powi(30) + 6.0);
+    let mut path = path(center, scale, vec![0, 1]);
+    path.note_imprecise(imprecise);
+    assert!(matches!(path.events[..], [Event::ImpreciseCenter(0)]));
 }
 
 #[test]

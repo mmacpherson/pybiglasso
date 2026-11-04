@@ -283,6 +283,16 @@ def biglasso(
             return bool(_stop(il, lambdas, cols, beta, intercept))
 
     results = fit_path_rust(X, y, row_indices, params, n_threads, on_lambda, family)
+    if imprecise := results.pop("imprecise_center", []):
+        names = ", ".join(feature_names[j] for j in imprecise[:5])
+        more = f" and {len(imprecise) - 5} more" if len(imprecise) > 5 else ""
+        warnings.warn(
+            f"Column(s) {names}{more} of X are too far from zero, relative to their "
+            "spread, for float64 to center them precisely, which biases the "
+            "intercept. Subtract a reference value, such as each column's minimum, "
+            "before fitting.",
+            stacklevel=2,
+        )
 
     # keep the part of the path that was fit (it stops early on saturation
     # or dfmax), and untransform coefficients back to the scale of X
@@ -362,7 +372,11 @@ def fit_path_rust(
         family=family,
     )
     path.pop("row_path")  # gathered or masked rows; reported for tests
-    for kind, il in path.pop("events"):
+    events = path.pop("events")
+    path["imprecise_center"] = [j for kind, j in events if kind == "imprecise_center"]
+    for kind, il in events:
+        if kind == "imprecise_center":
+            continue
         where = f"λ[{il + 1}/{params.nlambda}]"
         message = {
             "prefit_saturated": "Model saturated by the unpenalized columns alone; no path fit.",
