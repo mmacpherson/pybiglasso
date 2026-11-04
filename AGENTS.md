@@ -92,6 +92,11 @@ to observed output.
 2. `make test`
 3. `make test-r`, for any change to the solver or the R comparison
 
+On pull requests, CI skips macOS, whose runners can queue for an hour, and
+builds only some wheels; main and releases run everything. Add the `full-ci`
+label to a PR that touches native floating-point or platform-specific code,
+so macOS and every wheel run before it merges.
+
 ## Python Style
 
 - Use modern type hints (PEP 604 unions with `|`, generics without `typing` module)
