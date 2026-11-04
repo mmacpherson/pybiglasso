@@ -3,7 +3,6 @@
 import warnings
 
 import numpy as np
-import pytest
 from support.certificates import (
     assert_same_optimum,
     standardize,
@@ -15,8 +14,7 @@ from support.paths import assert_bitwise
 import pybiglasso as bl
 
 
-@pytest.mark.parametrize("backend", ["rust", "numba"])
-def test_default_fits_analytic_log_odds_above_ten(backend):
+def test_default_fits_analytic_log_odds_above_ten():
     # Two equal groups, one wrong label in each. The intercept is zero by
     # symmetry. With unit-variance X in {-1,1}, stationarity for beta > 0
     # gives expit(-beta) = q + lambda, q = 1 / group_size.
@@ -34,10 +32,6 @@ def test_default_fits_analytic_log_odds_above_ten(backend):
     Z = with_ones(Z)
     paths = []
     parallel_threads = 6
-    if backend == "numba":
-        # Numba cannot exceed the pool created at import (four on some CI
-        # runners), even though Rust may explicitly request more workers.
-        parallel_threads = min(6, pytest.importorskip("numba").config.NUMBA_NUM_THREADS)
     for threads in (1, parallel_threads):
         # Any non-convergence warning is a failure, rather than a way to
         # obtain a loose distance bound from a truncated fit.
@@ -47,7 +41,7 @@ def test_default_fits_analytic_log_odds_above_ten(backend):
                 X,
                 y,
                 family="binomial",
-                backend=backend,
+                backend="rust",
                 alpha=1.0,
                 lambdas=[lam],
                 eps=1e-14,

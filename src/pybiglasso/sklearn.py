@@ -10,7 +10,6 @@ These follow scikit-learn's naming, which differs from R biglasso's:
 
 import numbers
 import os
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -18,10 +17,10 @@ import scipy.sparse as sps
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.model_selection import check_cv
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
-from sklearn.utils.validation import check_is_fitted, validate_data
+from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
-from .binomial import biglasso
-from .config import settings
+from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
+from .fit import biglasso
 from .path import METRICS, _expit, linear_predictor, score_logits
 
 __all__ = [
@@ -35,11 +34,13 @@ __all__ = [
 def _as_design(X):
     """X as the kernels read it: numeric dtypes and memmaps pass through uncopied.
 
-    Booleans become a uint8 view, and float16 becomes float32 (numba has no
-    float16 arithmetic); everything else numeric is used as is, so an int8
+    Booleans become a uint8 view, and float16 becomes float32 (the solver
+    accepts float32/64); everything else numeric is used as is, so an int8
     genotype memmap stays an int8 memmap. Finiteness is checked by `biglasso`
     and `linear_predictor` as they read X, not by a separate pass here.
     """
+    if isinstance(X, _ArrowMatrix):
+        return X
     if X.dtype.kind == "b":
         return X.view(np.uint8)
     if X.dtype.kind == "f" and X.dtype.itemsize < 4:
@@ -47,9 +48,45 @@ def _as_design(X):
     return X
 
 
+def _validate_data(estimator, X, y="no_validation", **kwargs):
+    X = _as_arrow_matrix(X)
+    y = _response(y)
+    if not isinstance(X, _ArrowMatrix):
+        return validate_data(estimator, X, y, **kwargs)
+    if y is None:
+        raise ValueError(
+            f"This {type(estimator).__name__} estimator "
+            "requires y to be passed, but the target y is None."
+        )
+    # sklearn's generic check_array calls __array__. Validate metadata here,
+    # and the small response separately; the solver checks selected X values.
+    if kwargs.get("reset", True):
+        estimator.n_features_in_ = X.shape[1]
+        estimator.feature_names_in_ = np.asarray(X.columns, dtype=object)
+    else:
+        if X.shape[1] != estimator.n_features_in_:
+            raise ValueError(
+                "X has a different number of features than the fitted design."
+            )
+        names = getattr(estimator, "feature_names_in_", None)
+        if names is not None and not np.array_equal(names, X.columns):
+            raise ValueError("Arrow feature names must match those used during fit.")
+    if X.shape[0] < kwargs.get("ensure_min_samples", 1):
+        raise ValueError("Not enough samples in X.")
+    if isinstance(y, str) and y == "no_validation":
+        X._check_finite()
+        return X
+    y = check_array(
+        y, ensure_2d=False, dtype="numeric" if kwargs.get("y_numeric") else None
+    )
+    if y.ndim != 1 or len(y) != X.shape[0]:
+        raise ValueError("y must have one entry per row of X.")
+    return X, y
+
+
 class _BiglassoBase(ClassifierMixin, BaseEstimator):
     def _validate_xy(self, X, y):
-        X, y = validate_data(
+        X, y = _validate_data(
             self, X, y, dtype="numeric", order=None, copy=False, ensure_all_finite=False
         )
         X = _as_design(X)
@@ -84,7 +121,7 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
         check_is_fitted(self)
         # unlike fit, check every column for NaN/inf: scikit-learn requires it,
         # and for float X it costs one read (a sum), not a copy
-        X = validate_data(self, X, reset=False, dtype="numeric", order=None)
+        X = _validate_data(self, X, reset=False, dtype="numeric", order=None)
         return linear_predictor(_as_design(X), self.coef_.T, self.intercept_)[:, 0]
 
     def predict(self, X):
@@ -107,7 +144,7 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
 
 class _RegressionBase(RegressorMixin, BaseEstimator):
     def _validate_xy(self, X, y):
-        X, y = validate_data(
+        X, y = _validate_data(
             self,
             X,
             y,
@@ -134,7 +171,7 @@ class _RegressionBase(RegressorMixin, BaseEstimator):
 
     def predict(self, X):
         check_is_fitted(self)
-        X = validate_data(self, X, reset=False, dtype="numeric", order=None)
+        X = _validate_data(self, X, reset=False, dtype="numeric", order=None)
         return linear_predictor(
             _as_design(X), self.coef_[:, None], np.atleast_1d(self.intercept_)
         )[:, 0]
@@ -277,7 +314,7 @@ class BiglassoClassifier(_BiglassoBase):
     penalty_factor : array of shape (n_features,), optional
         Per-feature penalty multipliers; 0 leaves a feature unpenalized.
     tol, max_iter : convergence settings, as R biglasso's `eps` and `max.iter`.
-    backend : "numba" or "rust", optional; as in `biglasso`.
+    backend : "rust", optional; as in `biglasso`.
     """
 
     def __init__(
@@ -347,9 +384,7 @@ class BiglassoClassifierCV(_BiglassoBase):
     n_jobs : int, optional
         Folds to fit at once, in threads that share X (so a memmap is read
         through one page cache). Each fold is single-threaded; results do not
-        depend on n_jobs. None or -1 uses all cores. Needs numba's tbb or omp
-        threading layer; with workqueue, its fallback when neither is
-        installed (as on macOS by default), folds run one at a time.
+        depend on n_jobs. None or -1 uses all cores.
     early_stopping : int, optional
         Stop each fold's path after this many alphas in a row without a better
         held-out score (by `scoring`); None, the default, fits every fold to
@@ -470,18 +505,6 @@ class BiglassoClassifierCV(_BiglassoBase):
         n_jobs = self.n_jobs
         if n_jobs is None or n_jobs < 0:
             n_jobs = os.cpu_count() or 1
-        # numba's workqueue layer aborts the process if parallel kernels
-        # launch from two threads at once; the full fit above has chosen
-        # the layer
-        backend = settings.backend if self.backend is None else self.backend
-        if n_jobs > 1 and backend == "numba" and _numba_layer() == "workqueue":
-            if self.n_jobs is not None and self.n_jobs != 1:
-                warnings.warn(
-                    "numba's workqueue threading layer can't fit folds in "
-                    "parallel, so they run one at a time.",
-                    stacklevel=2,
-                )
-            n_jobs = 1
         with ThreadPoolExecutor(max_workers=min(n_jobs, len(folds))) as pool:
             for k, s in enumerate(pool.map(score_fold, folds)):
                 scores[k, : len(s)] = s
@@ -549,9 +572,3 @@ class _NoImprovement:
         )
         eta = linear_predictor(self.X, coef, np.array([intercept]), self.rows)
         return self.sign * score_logits(self.y, eta, self.metric)[0]
-
-
-def _numba_layer():
-    import numba  # only for backend="numba", an optional extra
-
-    return numba.threading_layer()

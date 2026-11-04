@@ -1,0 +1,35 @@
+{
+  "cpu": "Apple M1 Pro",
+  "performance_cores": 8,
+  "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.7.2\nBuildVersion:\t\t25G332",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.3",
+  "python": "Python 3.13.13",
+  "variants": {
+    "baseline": {
+      "source_commit": "eeff8da3a8da038c32d9af0d96f56a8c59aac0ed",
+      "extension_sha256": "bdb1969ff28d4e0dc04acbb38c788bc9d7bdc79f4a23547dcfc43059dbfab41f",
+      "extension_file_type": "Mach-O 64-bit dynamically linked shared library arm64",
+      "worktree_clean": true
+    },
+    "ungated": {
+      "source_commit": "2b0370297e591c8624de532bf2335e32ae9b8ef2",
+      "extension_sha256": "e717b466a655e0746fb5109a481b246d475b38c89641dfc096158e2f3650a912",
+      "extension_file_type": "Mach-O 64-bit dynamically linked shared library arm64",
+      "worktree_clean": true
+    },
+    "gated": {
+      "source_commit": "352c6ac371d2d87308e42dbad34d3014475b7400",
+      "extension_sha256": "d55d953316f3ea3fed8dc014a5ba7faed832348820d2a4eeb91208bc36e7cf4d",
+      "extension_file_type": "Mach-O 64-bit dynamically linked shared library arm64",
+      "worktree_clean": true
+    }
+  },
+  "harness_sha256": "1fa7cc503af28e6649aeaf96623c88167b1f2e0a93fef6f97e9ef270c46e4ed6",
+  "gate_rule": {
+    "cpu_idle_pct_minimum": 90,
+    "load_1m_strict_upper_bound": 3,
+    "continuous_seconds": 180,
+    "sampling_seconds": 15,
+    "cpu_source": "second sample of top -l 2 -n 0 -s 5"
+  }
+}

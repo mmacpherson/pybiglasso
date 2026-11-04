@@ -130,11 +130,13 @@ impl Dataset {
         n_fit: usize,
     ) -> Result<Option<Path>, String> {
         let fit = Fit { x, y, params, mask: mask.map(|(m, _)| m), rows: mask.map(|(_, rows)| rows), n_fit };
-        let (center, scale, mask_safe) = fit.center_scale()?;
+        let (center, scale, mask_safe, imprecise) = fit.center_scale()?;
         if !mask_safe {
             return Ok(None);
         }
-        fit.run(center, scale).map(Some)
+        let mut path = fit.run(center, scale)?;
+        path.note_imprecise(imprecise);
+        Ok(Some(path))
     }
 
     fn fit_inner(&self, options: JsValue) -> Result<JsValue, String> {
@@ -252,6 +254,10 @@ impl Dataset {
             .events
             .iter()
             .map(|e| match e {
+                Event::ImpreciseCenter(j) => format!(
+                    "Feature {} is too far from zero to center precisely, which can make the fit inaccurate; subtract a reference value from it first.",
+                    j + 1
+                ),
                 Event::PrefitSaturated => "The unpenalized columns saturated the model before the path.".into(),
                 Event::Dfmax(i) => format!("Feature limit reached at lambda {}; the path stopped early.", i + 1),
                 Event::Saturated(i) => format!("Model saturated at lambda {}; the path stopped early.", i + 1),

@@ -13,7 +13,6 @@ import pybiglasso as bl
 
 
 def _fit(*args, **kwargs):
-    # Gaussian remains Rust only, including CI jobs selecting numba globally.
     kwargs.setdefault("backend", "rust")
     return bl.biglasso(*args, **kwargs)
 
@@ -36,15 +35,6 @@ def test_gaussian_is_the_default_family():
     assert restored.family == "gaussian"
     assert_bitwise(restored, implicit)
     np.testing.assert_array_equal(restored.predict(X), implicit.predict(X))
-
-
-def test_numba_default_family_error_explains_migration():
-    X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
-    with pytest.raises(
-        NotImplementedError,
-        match="family now defaults to 'gaussian'.*family='binomial'",
-    ):
-        bl.biglasso(X, [0.0, 0.0, 1.0, 1.0], backend="numba")
 
 
 @pytest.mark.parametrize("compatible", [False, True])
@@ -78,13 +68,14 @@ def test_gaussian_matches_stored_r(case, fixtures, tmp_path):
     assert not (problems := rcompare.compare(got, expected)), "\n".join(problems)
 
 
-@pytest.fixture(scope="module")
-def live_gaussian(tmp_path_factory):
+@pytest.fixture(scope="module", params=[True, False], ids=["compatible", "default"])
+def live_gaussian(tmp_path_factory, request):
     root = tmp_path_factory.mktemp("gaussian-production-r")
     cases = rcompare.gaussian_grid()
     dirs = [root / case.name for case in cases]
     prepared = [
-        rcompare.prepare_case(case, d)[0] for case, d in zip(cases, dirs, strict=True)
+        rcompare.prepare_case(case, d, r_compatible=request.param)[0]
+        for case, d in zip(cases, dirs, strict=True)
     ]
     outputs = rcompare.run_r(dirs)
     return {
@@ -235,7 +226,7 @@ def test_gaussian_reports_actual_rss_after_iteration_limit():
 
 def test_gaussian_validates_family_backend_and_selected_y():
     X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
-    with pytest.raises(NotImplementedError, match="rust"):
+    with pytest.raises(ValueError, match="removed.*0.4.0"):
         _fit(X, np.arange(4), family="gaussian", backend="numba")
     with pytest.raises(ValueError, match="finite"):
         _fit(X, [0, 1, 2, np.nan], family="gaussian")

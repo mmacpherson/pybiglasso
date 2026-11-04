@@ -6,13 +6,6 @@ import os
 
 from hypothesis import settings
 
-from pybiglasso import binomial
-
-# The numba backend's deprecation warning fires once a process, at its first
-# fit. Tests that turn warnings into errors would fail on whichever numba fit
-# came first, so it is spent here; tests/test_backends.py checks it.
-binomial._numba_warned = True
-
 settings.register_profile(
     "ci",
     max_examples=20,

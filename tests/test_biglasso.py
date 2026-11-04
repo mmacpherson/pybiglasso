@@ -1,10 +1,10 @@
+import builtins
 import fractions
 import functools
 import operator
 import pickle
 import warnings
 
-import numba
 import numpy as np
 import pytest
 import scipy.sparse as sps
@@ -82,8 +82,61 @@ def test_feature_names_from_dataframe(data):
     pd = pytest.importorskip("pandas")
     X, y = data
     df = pd.DataFrame(X, columns=[f"snp{j}" for j in range(X.shape[1])])
-    p = bl.biglasso(df, y, nlambda=3, family="binomial")
+    p = bl.biglasso(df, pd.Series(y), nlambda=3, family="binomial")
     assert p.feature_names[0] == "snp0"
+
+
+@pytest.mark.parametrize("family", ["gaussian", "binomial"])
+@pytest.mark.parametrize(
+    ("dtypes", "common"),
+    [
+        (("bool", "int8", "float64"), np.float64),
+        (("bool", "int8"), np.int8),
+        (("bool", "uint16", "float32"), np.float32),
+    ],
+)
+def test_pandas_frame_with_mixed_bool_and_numeric_columns(family, dtypes, common):
+    # pandas makes an object array of such a frame; the fit and predictions
+    # must be those of the same values as an array of their common type
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(7)
+    n = 150
+    columns = {
+        f"{dtype}_{j}": (
+            rng.random(n) < 0.4
+            if dtype == "bool"
+            else rng.integers(0, 5, n)
+            if dtype in ("int8", "uint16")
+            else rng.normal(size=n)
+        ).astype(dtype)
+        for j, dtype in enumerate(dtypes)
+    }
+    frame = pd.DataFrame(columns)
+    values = np.asfortranarray(
+        np.column_stack([v.astype(common) for v in columns.values()])
+    )
+    signal = values.astype(np.float64) @ np.linspace(1, -1, len(dtypes))
+    y = signal + rng.normal(size=n)
+    if family == "binomial":
+        y = (y > np.median(y)).astype(np.float64)
+    fit = bl.biglasso(frame, y, family=family, nlambda=5)
+    reference = bl.biglasso(values, y, family=family, nlambda=5)
+    assert_bitwise(fit, reference)
+    assert fit.feature_names == tuple(columns)
+    assert_bitwise(fit.decision_function(frame), reference.decision_function(values))
+
+
+def test_predict_accepts_a_pandas_frame(data):
+    pd = pytest.importorskip("pandas")
+    X, y = data
+    path = bl.biglasso(X, y, nlambda=4, family="binomial")
+    frame = pd.DataFrame(X)
+    assert_bitwise(path.decision_function(frame), path.decision_function(X))
+    rows = np.array([3, 0, 7])
+    assert_bitwise(
+        path.decision_function(frame, row_indices=rows),
+        path.decision_function(X, row_indices=rows),
+    )
 
 
 def assert_matches_saga(sklm, path, k, X, y, alpha):
@@ -172,6 +225,21 @@ def test_score(path, data):
     np.testing.assert_allclose(path.score(X, y, "accuracy"), acc)
     with pytest.raises(ValueError, match="metric"):
         path.score(X, y, "r2")
+
+
+@pytest.mark.parametrize("package", ["pandas", "polars"])
+def test_dataframe_export_missing_package_names_install(path, monkeypatch, package):
+    original_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == package or name.startswith(package + "."):
+            raise ImportError(f"{package} not installed", name=package)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    with pytest.raises(ImportError, match=f"pip install {package}") as error:
+        getattr(path, f"to_{package}")()
+    assert "pybiglasso[" not in str(error.value)
 
 
 def test_dataframe_exports(path):
@@ -339,10 +407,7 @@ def test_float32_matches_float64(data):
 
 @pytest.mark.parametrize("penalty", [None, "zeros"])
 def test_thread_count_does_not_change_results(penalty):
-    # numba refuses more threads than the machine has (3 on CI's macOS)
-    threads = min(4, numba.config.NUMBA_NUM_THREADS)
-    if threads < 2:
-        pytest.skip("needs at least two cores")
+    threads = 4
     d = bl.common.make_biglasso_dataset(nrow=150, ncol=400, seed=2)
     pf = None
     if penalty == "zeros":
@@ -399,10 +464,8 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
             n_reject=np.zeros(1, dtype=np.int64),
         )
 
-    # the correction runs on either backend's results
-    monkeypatch.setattr(bl.binomial, "fit_path", solver)
     monkeypatch.setattr(
-        bl.binomial,
+        bl.fit,
         "fit_path_rust",
         lambda X, y, rows, params, threads, on_lambda, family: solver(
             X, y, rows, params
@@ -411,3 +474,85 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
     X = np.zeros((4, ncol), order="F")
     fit = bl.biglasso(X, np.array([0, 1, 0, 1]), lambdas=[0.1], family="binomial")
     assert fit.intercept[0] == -exact
+
+
+@pytest.fixture
+def named_fit():
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(11)
+    frame = pd.DataFrame(rng.normal(size=(120, 3)), columns=["a", "b", "c"])
+    y = 2 * frame["a"] - frame["c"] + rng.normal(size=120)
+    return frame, bl.biglasso(frame, y, nlambda=4)
+
+
+def test_predict_matches_the_array_when_columns_match(named_fit):
+    frame, path = named_fit
+    assert_bitwise(path.predict(frame), path.predict(frame.to_numpy()))
+
+
+def test_predict_rejects_reordered_columns(named_fit):
+    frame, path = named_fit
+    with pytest.raises(ValueError, match="different order"):
+        path.predict(frame[["c", "b", "a"]])
+
+
+def test_predict_rejects_reordered_arrow_columns(named_fit):
+    pa = pytest.importorskip("pyarrow")
+    frame, path = named_fit
+    table = pa.Table.from_pandas(frame[["b", "a", "c"]], preserve_index=False)
+    with pytest.raises(ValueError, match="different order"):
+        path.predict(table)
+
+
+def test_predict_rejects_other_column_names(named_fit):
+    frame, path = named_fit
+    with pytest.raises(ValueError, match="don't match"):
+        path.predict(frame.set_axis(["a", "b", "z"], axis=1))
+
+
+def test_predict_accepts_named_columns_on_an_unnamed_fit(named_fit):
+    frame, _ = named_fit
+    rng = np.random.default_rng(12)
+    path = bl.biglasso(frame.to_numpy(), rng.normal(size=len(frame)), nlambda=4)
+    assert not path.named_features
+    assert_bitwise(path.predict(frame), path.predict(frame.to_numpy()))
+    # even labels that look like the defaults, in any order
+    xs = frame.set_axis(["x2", "x0", "x1"], axis=1)
+    assert_bitwise(path.predict(xs), path.predict(frame.to_numpy()))
+
+
+def test_predict_checks_explicit_default_looking_names(named_fit):
+    frame, _ = named_fit
+    rng = np.random.default_rng(13)
+    y = rng.normal(size=len(frame))
+    path = bl.biglasso(frame.to_numpy(), y, nlambda=4, feature_names=["x0", "x1", "x2"])
+    assert path.named_features
+    with pytest.raises(ValueError, match="don't match"):
+        path.predict(frame)
+    with pytest.raises(ValueError, match="different order"):
+        path.predict(frame.set_axis(["x2", "x1", "x0"], axis=1))
+
+
+@pytest.mark.parametrize(
+    "labels", [["a", "a", "c"], [1, "1", "c"]], ids=["repeated", "collide"]
+)
+def test_predict_rejects_ambiguous_names(labels):
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(14)
+    frame = pd.DataFrame(rng.normal(size=(60, 3)), columns=labels)
+    path = bl.biglasso(frame, rng.normal(size=60), nlambda=4)
+    with pytest.raises(ValueError, match="ambiguous"):
+        path.predict(frame)
+    assert_bitwise(
+        path.predict(frame.to_numpy()), path.decision_function(frame.to_numpy())
+    )
+
+
+def test_reorder_message_remedies_work(named_fit):
+    pa = pytest.importorskip("pyarrow")
+    frame, path = named_fit
+    shuffled = frame[["c", "a", "b"]]
+    expected = path.predict(frame.to_numpy())
+    assert_bitwise(path.predict(shuffled[list(path.feature_names)]), expected)
+    table = pa.Table.from_pandas(shuffled, preserve_index=False)
+    assert_bitwise(path.predict(table.select(list(path.feature_names))), expected)

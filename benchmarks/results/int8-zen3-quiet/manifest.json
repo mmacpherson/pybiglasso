@@ -1,0 +1,34 @@
+{
+  "environment.jsonl": {
+    "bytes": 14334,
+    "sha256": "0b6b04bcc4689e61bf86eb7c1d34a078eb50a62802dd7aaf4b0ee427d60b0ace"
+  },
+  "gate-passed.jsonl": {
+    "bytes": 10002,
+    "sha256": "53a0f7a56cc4e1f691b5dc39daf2ee4294c2f871c11915fed7dfc52d5c96e7f7"
+  },
+  "gate-qualified.jsonl": {
+    "bytes": 370471,
+    "sha256": "034f4e1611c5b8bc9d81ac2ddd42582eb95584fe5a2d82eb347d4f3f604f3514"
+  },
+  "provenance.json": {
+    "bytes": 1445,
+    "sha256": "ef7593512eb917d1641ad31e9bc5ce09b853d05b449e847f6c4136af9e2a2a78"
+  },
+  "results.jsonl": {
+    "bytes": 155035,
+    "sha256": "795502928afbd01cb8e7cf8d189b1788630ebd5bb62846b0b10dd000a54d70f6"
+  },
+  "run.py": {
+    "bytes": 11793,
+    "sha256": "38bde80c4e871988c5433b025e5dfd499cb120b27d6acf800e46a7a51d3fc985"
+  },
+  "timing-finished.json": {
+    "bytes": 60,
+    "sha256": "2a9d755d1b0194b5e283ab2855553b05a3712649ea32166a4dc35d6a1786c222"
+  },
+  "timing-started.json": {
+    "bytes": 99,
+    "sha256": "6c4fe5873657200637324e2ec3f30a0e329fc3289b46ee6a9aa893a3a70e191c"
+  }
+}

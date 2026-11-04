@@ -5,6 +5,8 @@ import dataclasses
 import numpy as np
 import scipy.sparse as sps
 
+from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
+
 INTERCEPT = "(Intercept)"
 METRICS = ("deviance", "auc", "accuracy")
 
@@ -26,6 +28,8 @@ class BiglassoPath:
       center, scale: (ncol,) column means and standard deviations of X
       penalty_factor: (ncol,) per-column penalty multipliers
       feature_names: (ncol,) column names
+      named_features: whether feature_names came from the user or X's
+        columns, rather than being the defaults x0, x1, ...
       alpha: elastic-net mixing parameter (1 is the lasso)
       family: "binomial" or "gaussian"
     """
@@ -44,6 +48,9 @@ class BiglassoPath:
     # Pickles from before families existed have no instance field, so they
     # fall back here. New fits always record their actual family explicitly.
     family: str = "binomial"
+    # Likewise for pickles from before this was recorded: they keep the
+    # column-count check only.
+    named_features: bool = False
 
     def __len__(self):
         return len(self.lambdas)
@@ -76,18 +83,49 @@ class BiglassoPath:
             index[k] = hits[0]
         return index
 
+    def _check_column_names(self, X):
+        """Reject named columns that aren't the fitted ones in order: a
+        coefficient would otherwise be applied to the wrong feature. A path
+        fit without names checks the column count only."""
+        if not self.named_features or not hasattr(X, "columns"):
+            return
+        names = tuple(str(c) for c in X.columns)
+        if len(set(names)) != len(names):
+            raise ValueError(
+                "X's column names are ambiguous: some repeat, or are equal once "
+                "written as strings (1 and '1', say). Pass X as an array in the "
+                "fitted column order, or rename its columns."
+            )
+        fitted = tuple(self.feature_names)
+        if names == fitted:
+            return
+        if sorted(names) == sorted(fitted):
+            raise ValueError(
+                "X has the fitted columns in a different order; select them in "
+                "the fitted order first, by their original labels (with string "
+                "labels: X[list(path.feature_names)] for pandas or Polars, "
+                "X.select(list(path.feature_names)) for an Arrow table)."
+            )
+        raise ValueError("X's column names don't match the fitted feature_names.")
+
     def decision_function(self, X, lambdas=None, row_indices=None):
         """Linear predictor (log-odds for binomial), shape (nrow, nlambda).
 
         Only the columns of X with a nonzero coefficient somewhere among the
         selected lambdas are read, which matters when X is a large memmap.
-        With `row_indices`, predict for those rows of X only.
+        With `row_indices`, predict for those rows of X only. If X names its
+        columns (a DataFrame or Arrow table) and the path was fit with names,
+        they must be the fitted `feature_names`, in the same order. A path fit
+        on an unnamed array, or unpickled from before names were recorded,
+        checks only the number of columns.
         """
+        X = _as_arrow_matrix(X)
         index = self._lambda_index(lambdas)
         if X.shape[1] != self.coef.shape[0]:
             raise ValueError(
                 f"X has {X.shape[1]} columns; the model was fit on {self.coef.shape[0]}."
             )
+        self._check_column_names(X)
         return linear_predictor(
             X, self.coef[:, index], self.intercept[index], row_indices
         )
@@ -114,7 +152,7 @@ class BiglassoPath:
         metrics = ("deviance", "mse", "r2") if self.family == "gaussian" else METRICS
         if metric not in metrics:
             raise ValueError(f"metric must be one of {metrics}, not {metric!r}")
-        y = np.asarray(y, dtype=np.float64)
+        y = np.asarray(_response(y), dtype=np.float64)
         if row_indices is not None:
             y = y[row_indices]
         eta = self.decision_function(X, lambdas, row_indices)
@@ -164,10 +202,8 @@ class BiglassoPath:
         """
         try:
             import polars as pl
-        except ImportError as e:  # pragma: no cover
-            raise ImportError(
-                "to_polars() needs polars: pip install 'pybiglasso[polars]'"
-            ) from e
+        except ImportError as e:
+            raise ImportError("to_polars() needs polars: pip install polars") from e
         data = self._frames()[kind]
         return pl.DataFrame(
             {k: (v.tolist() if v.dtype == object else v) for k, v in data.items()}
@@ -177,10 +213,8 @@ class BiglassoPath:
         """Export as a pandas DataFrame; see `to_polars` for `kind`."""
         try:
             import pandas as pd
-        except ImportError as e:  # pragma: no cover
-            raise ImportError(
-                "to_pandas() needs pandas: pip install 'pybiglasso[pandas]'"
-            ) from e
+        except ImportError as e:
+            raise ImportError("to_pandas() needs pandas: pip install pandas") from e
         return pd.DataFrame(self._frames()[kind])
 
 
@@ -204,6 +238,7 @@ def linear_predictor(X, coef, intercept, row_indices=None):
     that bounds the memory used. Raises ValueError if the values read aren't
     all finite.
     """
+    X = _as_array(_as_arrow_matrix(X))
     coef = sps.csc_array(coef)
     used = np.unique(coef.indices)
     nrow = X.shape[0] if row_indices is None else len(row_indices)
@@ -217,7 +252,14 @@ def linear_predictor(X, coef, intercept, row_indices=None):
         beta = sps.csr_array(coef[cols, :])
         for start in range(0, nrow, height):
             stop = min(start + height, nrow)
-            if row_indices is None:
+            if isinstance(X, _ArrowMatrix):
+                rows = (
+                    slice(start, stop)
+                    if row_indices is None
+                    else row_indices[start:stop]
+                )
+                block = X._block(rows, cols)
+            elif row_indices is None:
                 block = X[start:stop][:, cols]
             else:
                 block = X[np.ix_(row_indices[start:stop], cols)]
@@ -241,7 +283,7 @@ def binomial_deviance(y, eta):
 
     `eta` is (nrow,) or (nrow, k); returns a scalar or (k,) array.
     """
-    y = np.asarray(y, dtype=np.float64)
+    y = np.asarray(_response(y), dtype=np.float64)
     if eta.ndim == 2:
         y = y[:, np.newaxis]
     # log(1 + exp(eta)) - y * eta, computed stably

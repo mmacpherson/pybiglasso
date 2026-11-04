@@ -1,6 +1,5 @@
-"""Fit a path from the installed wheel with no extras: the Rust backend fits,
-the numba backend (an optional extra) explains how to get it, and no optional
-extra loaded."""
+"""A bare wheel fits both families, diagnoses the removed numba backend,
+and imports no optional extra."""
 
 import sys
 
@@ -12,9 +11,10 @@ default = bl.biglasso(d["X"], d["X"][:, 0] + 1.25, nlambda=5)
 assert default.family == "gaussian"
 try:
     bl.biglasso(d["X"], d["y"], nlambda=5, backend="numba", family="binomial")
-except ImportError as e:
-    assert "pybiglasso[numba]" in str(e), e
+except ValueError as e:
+    assert "removed" in str(e) and "0.4.0" in str(e), e
+    assert 'backend="rust"' in str(e), e
 else:
-    raise AssertionError('backend="numba" fit without the numba extra')
+    raise AssertionError('backend="numba" fit after removal')
 heavy = {"numba", "pandas", "polars", "sklearn", "seaborn", "matplotlib"}
 assert not heavy & set(sys.modules), heavy & set(sys.modules)

@@ -1,16 +1,38 @@
 default: test
 
+# Runs inside manylinux, or after maturin has selected the host toolchain.
+WHEEL_PYTHON = $(if $(filter Windows_NT,$(OS)),python,python3)
+.PHONY: wheel-provenance
+wheel-provenance:
+	$(WHEEL_PYTHON) scripts/wheel_provenance.py --expected-rust-version "$(RUSTUP_TOOLCHAIN)"
+
+.PHONY: check-wheel
+check-wheel:
+	uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py
+
 .PHONY: test
 # across every core (pytest-xdist); the R comparison below stays in one
 # process, which runs R once
 test:
 	uv run pytest -n auto
 
+# Optional competitor checks use the bench group, whose tabmat wheel needs 3.14.
+BENCH_PYTHON ?= 3.14
+.PHONY: test-bench
+test-bench:
+	uv run -p $(BENCH_PYTHON) --locked --group bench pytest tests/test_gaussian_benchmark.py -m bench
+
 # the newest versions pyproject.toml allows, ignoring uv.lock: what a new
 # install gets
 .PHONY: test-latest
 test-latest:
 	UV_LOCKED=false uv run --upgrade pytest -n auto
+
+# Exercise declared floors on the oldest supported Python, without changing uv.lock.
+MINIMUM_PYTHON ?= 3.11
+.PHONY: test-minimum
+test-minimum:
+	UV_LOCKED=false uv run --isolated --no-project --python $(MINIMUM_PYTHON) --with packaging python scripts/test_minimum_versions.py
 
 .PHONY: lint
 lint:
@@ -19,7 +41,7 @@ lint:
 # its kernels against plain scalar sums, at every SIMD width this CPU runs
 .PHONY: test-rust
 test-rust:
-	cargo test --release --manifest-path rust/Cargo.toml
+	uv run --no-project python scripts/test_rust.py
 
 .PHONY: browser test-browser
 browser:
@@ -35,6 +57,42 @@ update-hooks:
 
 run-hooks-all-files:
 	uv run pre-commit run --all-files
+
+# every snippet in docs/data.md, run verbatim, except those needing a
+# database or external tools (below)
+.PHONY: test-recipes test-recipes-postgres test-recipes-tools
+test-recipes:
+	uv run --group recipes pytest -m 'recipes and not postgres and not genotype_tools'
+
+# the PostgreSQL recipe: against DATABASE_URL if set (as in CI), otherwise a
+# throwaway container
+PG_IMAGE = postgres:17
+test-recipes-postgres:
+	@if [ -n "$$DATABASE_URL" ]; then \
+		uv run --group recipes pytest -m postgres; \
+	else \
+		name=pybiglasso-recipes-pg; \
+		$(CONTAINER) run -d --rm --name $$name -e POSTGRES_PASSWORD=recipes \
+			-p 127.0.0.1::5432 $(PG_IMAGE) >/dev/null || exit 1; \
+		trap "$(CONTAINER) stop $$name >/dev/null" EXIT; \
+		tries=0; \
+		until $(CONTAINER) exec $$name pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; do \
+			tries=$$((tries + 1)); \
+			if [ $$tries -ge 60 ]; then \
+				echo "PostgreSQL not ready after 60 s; its log:" >&2; \
+				$(CONTAINER) logs $$name >&2; exit 1; \
+			fi; \
+			sleep 1; \
+		done; \
+		port=$$($(CONTAINER) port $$name 5432/tcp | head -1 | sed 's/.*://'); \
+		DATABASE_URL=postgresql://postgres:recipes@127.0.0.1:$$port/postgres \
+			uv run --group recipes pytest -m postgres; \
+	fi
+
+# recipes that run external tools (plink2); each skips, with its reason,
+# unless the tool is on PATH
+test-recipes-tools:
+	uv run --group recipes pytest -m genotype_tools
 
 # R comparisons; set CONTAINER=podman to use podman instead
 CONTAINER ?= docker
@@ -80,21 +138,16 @@ fixtures:
 	$(MAKE) r-image R_VERSION=$(FIXTURES_R)
 	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:r$(FIXTURES_R) uv run python scripts/make_r_fixtures.py
 
-# where a fit spends its time, step by step, with Python 3.15's sampling
-# profiler on the numba backend; runs in an isolated environment so the
-# project's .venv keeps its Python
-.PHONY: profile
-profile:
-	uv run --python 3.15 --isolated --with-editable '.[numba]' python -m profiling.sampling \
-	  run --sort tottime -l 15 benchmarks/profile_fit.py
+# the README's benchmark figures and tables, from the committed results
+GAUSSIAN_RESULTS = benchmarks/results/path-gaussian-zen3.jsonl
+LOGISTIC_RESULTS = benchmarks/results/path-zen3.jsonl
 
-# the README's benchmark plot, from the committed results; later files win,
-# and glmnet and skglm-enet come first so they only fill in glmnet and skglm's
-# elastic net; path-v020 is pybiglasso 0.2.0 (Rust)
-RESULTS = $(addprefix benchmarks/results/path,-glmnet.jsonl -skglm-enet.jsonl .jsonl -allthreads.jsonl -r.jsonl -quiet.jsonl -statsmodels.jsonl -final.jsonl -v020.jsonl)
-
-docs/benchmarks.png: benchmarks/plot.py $(RESULTS)
-	uv run --group bench benchmarks/plot.py $(RESULTS) -o $@
+.PHONY: benchmark-figures
+benchmark-figures:
+	uv run benchmarks/plot.py --family gaussian $(GAUSSIAN_RESULTS) -o docs/benchmarks-least-squares
+	uv run benchmarks/plot.py --family binomial $(LOGISTIC_RESULTS) -o docs/benchmarks-logistic
+	uv run benchmarks/table.py $(GAUSSIAN_RESULTS)
+	uv run benchmarks/table.py $(LOGISTIC_RESULTS)
 
 .PHONY: build
 build:

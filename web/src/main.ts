@@ -54,7 +54,21 @@ function setBusy(next: boolean, fitting = false) {
 }
 
 function post(request: Request) { setBusy(true, request.kind === "fit"); hide("error"); worker.postMessage(request); }
-function status(message: string) { text("status", message); }
+function status(message: string) { lambdaText("status", message); }
+
+// λmin and λ1se set as λ with a subscript; the rest stays plain text
+function lambdaText(id: string, message: string) {
+  const parts = message.split(/λ(min|1se)/);
+  $(id).replaceChildren(...parts.map((part, i) => {
+    if (i % 2 === 0) return document.createTextNode(part);
+    const sub = document.createElement("sub"); sub.textContent = part;
+    const span = document.createElement("span"); span.append("λ", sub); return span;
+  }));
+}
+
+// The coefficient table's order: numeric columns by magnitude, features by name
+type SortKey = "feature" | "raw" | "std";
+let tableSort: { key: SortKey; descending: boolean } = { key: "std", descending: true };
 function fail(message: string) { setBusy(false); automatic = false; queued = false; text("error", message); hide("error", false); status("Could not complete that step."); }
 
 function clearModel() {
@@ -158,7 +172,7 @@ function receive(reply: Reply) {
     text("timing", `${model.lambdas.length} models · ${reply.milliseconds < 1000 ? `${Math.round(reply.milliseconds)} ms` : `${(reply.milliseconds / 1000).toFixed(2)} s`}`);
     const slider = $<HTMLInputElement>("lambda"); slider.max = String(model.lambdas.length - 1); slider.value = String(cv ? cv.oneSe : Math.floor((model.lambdas.length - 1) * .6));
     hide("cv-panel", !cv);
-    text("training-note", cv ? `Cross-validated over ${cv.folds} folds: the slider starts at λ1se, the largest penalty whose held-out loss is within one standard error of the lowest.` : "These are training fits, not an estimate of predictive performance. Turn on cross-validation for one.");
+    lambdaText("training-note", cv ? `Cross-validated over ${cv.folds} folds: the slider starts at λ1se, the largest penalty whose held-out loss is within one standard error of the lowest.` : "These are training fits, not an estimate of predictive performance. Turn on cross-validation for one.");
     text("lambda-max", `λ ${format(model.lambdas[0])}`); text("lambda-min", `λ ${format(model.lambdas.at(-1)!)}`);
     text("warnings", model.warnings.join("\n")); hide("warnings", model.warnings.length === 0);
     renderModel(); status(cv ? `Cross-validated over ${cv.folds} folds. Move the λ slider, or jump to λmin or λ1se.` : "Path ready. Move the λ slider to explore a model.");
@@ -184,14 +198,18 @@ function renderModel() {
     body.append(row);
   };
   append("(intercept)", model.intercept[k], undefined);
-  const entries = model.indices[k].map((j, i) => ({ j, b: model!.coefficients[k][i], s: model!.standardized_coefficients[k][i] })).sort((a, b) => Math.abs(b.b) - Math.abs(a.b));
+  const entries = model.indices[k].map((j, i) => ({ j, b: model!.coefficients[k][i], s: model!.standardized_coefficients[k][i] }));
+  const byName = (a: { j: number }, b: { j: number }) => loaded!.features[a.j].localeCompare(loaded!.features[b.j], undefined, { numeric: true });
+  const { key, descending } = tableSort;
+  entries.sort(key === "feature" ? byName : (a, b) => Math.abs(a[key === "raw" ? "b" : "s"]) - Math.abs(b[key === "raw" ? "b" : "s"]) || byName(a, b));
+  if (descending) entries.reverse();
   for (const entry of entries.slice(0, 100)) append(loaded.features[entry.j], entry.b, entry.s, entry.j);
   text("table-note", entries.length === 0 ? "All feature coefficients are zero at this lambda." : entries.length > 100 ? `Showing 100 of ${entries.length.toLocaleString()} active features. Download all coefficients below.` : `${entries.length.toLocaleString()} active features of ${loaded.features.length.toLocaleString()}.`);
   drawPath($<HTMLCanvasElement>("chart"), model, k, cv);
   if (cv) {
     drawCv($<HTMLCanvasElement>("cv-chart"), model, cv, k);
     const loss = model.family === "gaussian" ? "squared error" : "deviance";
-    text("cv-note", (k < cv.mean.length ? `Held-out ${loss} per row at this λ: ${format(cv.mean[k])} ± ${format(cv.se[k])}. ` : "Not every fold reached this λ. ")
+    lambdaText("cv-note", (k < cv.mean.length ? `Held-out ${loss} per row at this λ: ${format(cv.mean[k])} ± ${format(cv.se[k])}. ` : "Not every fold reached this λ. ")
       + `Lowest at λmin = ${format(model.lambdas[cv.best])} (${model.indices[cv.best].length} features); λ1se = ${format(model.lambdas[cv.oneSe])} (${model.indices[cv.oneSe].length} features). Solid orange marks λmin, dashed orange λ1se, and dotted black the λ shown; bars are ±1 standard error across folds.`);
   }
 }
@@ -242,6 +260,17 @@ $("family").addEventListener("change", () => {
 $("import").addEventListener("click", loadSelection);
 $("fit").addEventListener("click", fit);
 $("lambda").addEventListener("input", renderModel);
+for (const th of document.querySelectorAll<HTMLElement>("th[data-sort]")) {
+  th.querySelector("button")!.addEventListener("click", () => {
+    const key = th.dataset.sort as SortKey;
+    // first click on a column: largest magnitudes first, names A to Z
+    tableSort = tableSort.key === key ? { key, descending: !tableSort.descending } : { key, descending: key !== "feature" };
+    for (const other of document.querySelectorAll("th[data-sort]")) other.removeAttribute("aria-sort");
+    th.setAttribute("aria-sort", tableSort.descending ? "descending" : "ascending");
+    if (model) renderModel();
+  });
+}
+
 for (const [id, pick] of [["go-best", (c: CrossValidation) => c.best], ["go-1se", (c: CrossValidation) => c.oneSe]] as const) {
   $(id).addEventListener("click", () => { if (cv) { $<HTMLInputElement>("lambda").value = String(pick(cv)); renderModel(); } });
 }

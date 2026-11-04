@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from scipy.linalg import hadamard
 from scipy.special import expit
-from support import certificates
+from support import certificates, reference_path
 from support.certificates import (
     KKT_TOL,
     _entropy_term_lower,
@@ -249,7 +249,7 @@ def wide_problem(design):
     return np.asfortranarray(X), y, pf
 
 
-def fit_wide(design, alpha, backend):
+def fit_wide(design, alpha):
     X, y, pf = wide_problem(design)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -258,7 +258,7 @@ def fit_wide(design, alpha, backend):
             y,
             alpha=alpha,
             penalty_factor=pf,
-            backend=backend,
+            backend="rust",
             family="binomial",
             **FIT_OPTIONS,
         )
@@ -270,11 +270,10 @@ def fit_wide(design, alpha, backend):
     return path, with_ones(Xs), center, scale, y, pf
 
 
-@pytest.mark.parametrize("backend", ["numba", "rust"])
 @pytest.mark.parametrize("alpha", [1.0, 0.5, 0.9])
 @pytest.mark.parametrize("design", ["walsh", "random"])
-def test_wide_path_has_small_global_gap_and_gap_safe_zeros(design, alpha, backend):
-    path, Z, center, scale, y, pf = fit_wide(design, alpha, backend)
+def test_wide_path_has_small_global_gap_and_gap_safe_zeros(design, alpha):
+    path, Z, center, scale, y, pf = fit_wide(design, alpha)
     assert Z.shape[1] - 1 > len(y)
     assert np.linalg.matrix_rank(Z) < Z.shape[1]
     certified_zeros = 0
@@ -300,9 +299,13 @@ def test_wide_path_has_small_global_gap_and_gap_safe_zeros(design, alpha, backen
 
 @pytest.mark.parametrize("alpha", [0.5, 0.9])
 @pytest.mark.parametrize("design", ["walsh", "random"])
-def test_wide_backend_coefficients_agree_within_ridge_gap_radii(design, alpha):
-    a, Z, center, scale, y, pf = fit_wide(design, alpha, "numba")
-    b, *_ = fit_wide(design, alpha, "rust")
+def test_wide_coefficients_agree_with_reference_within_ridge_gap_radii(design, alpha):
+    # The reference (support/reference.py) sums in another order, with `@`;
+    # each fit's gap is certified on its own, so that order doesn't enter.
+    a, Z, center, scale, y, pf = fit_wide(design, alpha)
+    X, _, _ = wide_problem(design)
+    options = {k: v for k, v in FIT_OPTIONS.items() if k != "n_threads"}
+    b = reference_path.fit(X, y, alpha=alpha, penalty_factor=pf, **options)
     for k, lam in enumerate(a.lambdas):
         ta, tb = (
             standardized_theta(
@@ -318,8 +321,7 @@ def test_wide_backend_coefficients_agree_within_ridge_gap_radii(design, alpha):
         assert np.linalg.norm(ta[1:] - tb[1:]) <= radius
 
 
-@pytest.mark.parametrize("backend", ["numba", "rust"])
-def test_global_gap_rejects_nonconverged_wide_iterate(backend):
+def test_global_gap_rejects_nonconverged_wide_iterate():
     X, y, pf = wide_problem("walsh")
     with pytest.warns(UserWarning, match="Failed to converge"):
         path = bl.biglasso(
@@ -327,7 +329,7 @@ def test_global_gap_rejects_nonconverged_wide_iterate(backend):
             y,
             alpha=0.5,
             penalty_factor=pf,
-            backend=backend,
+            backend="rust",
             family="binomial",
             **dict(FIT_OPTIONS, max_iter=1),
         )
