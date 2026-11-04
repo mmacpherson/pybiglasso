@@ -7,7 +7,8 @@ use super::*;
 
 struct GaussianState {
     residual: Rows,
-    // Exactly seqsum(residual), not an algebraically updated running total.
+    // A fresh reduction of actual residuals, never an analytic running total.
+    // Compatibility mode uses seqsum; default mode uses fixed LANES/CHUNK sums.
     residual_sum: f64,
     beta: Vec<f64>,
     active: Vec<bool>,
@@ -171,6 +172,98 @@ fn cache_mode() -> (bool, bool) {
     }
 }
 
+// Differs from R biglasso: default mode reduces actual updated residuals in
+// fixed LANES/CHUNK order so SIMD can share their additions. Compatibility
+// mode keeps R's serial sum; the per-row update expressions are unchanged.
+pub(super) fn blocked_sum(values: &[f64]) -> f64 {
+    let mut total = 0.;
+    for chunk in values.chunks(CHUNK) {
+        let body = chunk.len() / LANES * LANES;
+        let mut lanes = [0.; LANES];
+        for i in 0..body {
+            lanes[i % LANES] += chunk[i];
+        }
+        let tail = seqsum(&chunk[body..]);
+        total += combine(&lanes) + tail;
+    }
+    total
+}
+
+fn update_blocked<C: Col>(
+    column: &C,
+    residual: &mut [f64],
+    mask: Option<&[f64]>,
+    shift: f64,
+    center: f64,
+    scale: f64,
+) -> f64 {
+    struct Op<'a, C>(&'a C, &'a mut [f64], Option<&'a [f64]>, f64, f64, f64);
+    impl<C: Col> WithSimd for Op<'_, C> {
+        type Output = f64;
+        #[inline(always)]
+        fn with_simd<S: Simd>(self, simd: S) -> f64 {
+            let Op(column, residual, mask, shift, center, scale) = self;
+            let mut total = 0.;
+            for (k, r) in residual.chunks_mut(CHUNK).enumerate() {
+                let offset = k * CHUNK;
+                let c = Span { col: column, i0: offset, n: r.len() };
+                let body = r.len() / LANES * LANES;
+                let mut acc = [V(simd, simd.splat_f64s(0.)); LANES];
+                let mut scalar_lanes = [0.; LANES];
+                if let Some(mask) = mask {
+                    // Never read excluded X: selected-row nonfinite policy and
+                    // masked residual zeros must remain exactly as in stock.
+                    for i in 0..body {
+                        if mask[offset + i] != 0. {
+                            r[i] -= shift * ((c.at(i) - center) / scale);
+                        }
+                        scalar_lanes[i % LANES] += r[i];
+                    }
+                } else {
+                    let mut start = 0;
+                    while start < body {
+                        let (run, end) = c.run(start, body);
+                        // Keep SIMD arithmetic in this target-feature body.
+                        // An outlined visitor makes the mapped-column build
+                        // call individual vector intrinsics through the stack.
+                        let bytes = run.packed_bytes();
+                        let mut hint = 0;
+                        for i in (0..end - start).step_by(LANES) {
+                            let decoded;
+                            let block = if let Some(bytes) = bytes {
+                                &BOOL_BLOCKS[usize::from(bytes[i / LANES])]
+                            } else {
+                                decoded = load(&run, i, &mut hint);
+                                &decoded
+                            };
+                            let x = regs_of::<S>(block);
+                            let (rv, _) = S::as_mut_simd_f64s(&mut r[start + i..start + i + LANES]);
+                            for m in 0..regs::<S>() {
+                                let centered = simd.sub_f64s(x[m], simd.splat_f64s(center));
+                                let standardized = simd.div_f64s(centered, simd.splat_f64s(scale));
+                                let change = simd.mul_f64s(simd.splat_f64s(shift), standardized);
+                                rv[m] = simd.sub_f64s(rv[m], change);
+                                acc[m].1 = simd.add_f64s(acc[m].1, rv[m]);
+                            }
+                        }
+                        start = end;
+                    }
+                }
+                let mut tail = 0.;
+                for i in body..r.len() {
+                    if mask.is_none_or(|m| m[offset + i] != 0.) {
+                        r[i] -= shift * ((c.at(i) - center) / scale);
+                    }
+                    tail += r[i];
+                }
+                total += if mask.is_some() { combine(&scalar_lanes) + tail } else { fold(acc) + tail };
+            }
+            total
+        }
+    }
+    dispatch(Op(column, residual, mask, shift, center, scale))
+}
+
 impl<D: Design> Fit<'_, D> {
     fn gaussian_sweep(&self, path: &Path, st: &mut GaussianState, lam: f64) -> f64 {
         let p = self.params;
@@ -194,6 +287,11 @@ impl<D: Design> Fit<'_, D> {
             if shift != 0.0 {
                 st.version += 1;
                 largest = largest.max(shift * shift);
+                if !p.r_compatible {
+                    st.residual_sum = update_blocked(&column, &mut st.residual, self.mask, shift, center, scale);
+                    st.beta[j] = value;
+                    continue;
+                }
                 // Differs from R biglasso, which groups the update as
                 // (shift * (x - c)) / scale. The two can differ in the low bits;
                 // the R comparison checks agreement to rtol=1e-9.
@@ -537,7 +635,7 @@ impl<D: Design> Fit<'_, D> {
             il: usize::MAX,
             skip: None,
             scores: self.compute_z(&path, &residual),
-            residual_sum: seqsum(&residual),
+            residual_sum: self.score_sum(&residual),
             residual,
             beta: vec![0.0; nc],
             active: vec![false; nc],
@@ -750,7 +848,18 @@ mod tests {
     use ndarray::{Array2, ShapeBuilder};
 
     #[test]
-    fn cached_sum_matches_updated_residual_in_row_order() {
+    fn default_cached_sum_matches_documented_lane_tree() {
+        // Default mode deliberately changed from row-order summation to the
+        // documented SIMD-independent tree; do not adjust numeric tolerances.
+        assert_cached_sum_order(false);
+    }
+
+    #[test]
+    fn compatible_cached_sum_matches_updated_residual_in_row_order() {
+        assert_cached_sum_order(true);
+    }
+
+    fn assert_cached_sum_order(r_compatible: bool) {
         for n in [9, CHUNK + 1] {
             for masked in [false, true] {
                 for offset in [0.0, 1e9] {
@@ -773,7 +882,7 @@ mod tests {
                         dfmax: 3,
                         max_iter: 1000,
                         stop_on_saturation: false,
-                        r_compatible: false,
+                        r_compatible,
                         ybar: 0.0,
                         null_deviance: 1.0,
                         on_lambda: None,
@@ -810,7 +919,7 @@ mod tests {
                         version: 0,
                         il: 0,
                         skip: None,
-                        residual_sum: seqsum(&residual),
+                        residual_sum: fit.score_sum(&residual),
                         residual,
                         beta: vec![0.0; 3],
                         active: vec![true; 3],
@@ -819,7 +928,11 @@ mod tests {
                     };
                     for lambda in [1.0, 0.1, 0.0, 1e20, 1e20] {
                         fit.gaussian_sweep(&path, &mut state, lambda);
-                        let expected = state.residual.iter().fold(0.0, |sum, &value| sum + value);
+                        let expected = if r_compatible {
+                            state.residual.iter().fold(0.0, |sum, &value| sum + value)
+                        } else {
+                            super::sum_tests::reference_sum(&state.residual)
+                        };
                         assert_eq!(state.residual_sum.to_bits(), expected.to_bits());
                         for i in (0..n).filter(|&i| !fit.fits(i)) {
                             assert_eq!(state.residual[i].to_bits(), 0.0f64.to_bits());
@@ -861,3 +974,7 @@ impl Drop for ScoreCache {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "gaussian_sum_tests.rs"]
+mod sum_tests;

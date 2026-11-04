@@ -68,13 +68,14 @@ def test_gaussian_matches_stored_r(case, fixtures, tmp_path):
     assert not (problems := rcompare.compare(got, expected)), "\n".join(problems)
 
 
-@pytest.fixture(scope="module")
-def live_gaussian(tmp_path_factory):
+@pytest.fixture(scope="module", params=[True, False], ids=["compatible", "default"])
+def live_gaussian(tmp_path_factory, request):
     root = tmp_path_factory.mktemp("gaussian-production-r")
     cases = rcompare.gaussian_grid()
     dirs = [root / case.name for case in cases]
     prepared = [
-        rcompare.prepare_case(case, d)[0] for case, d in zip(cases, dirs, strict=True)
+        rcompare.prepare_case(case, d, r_compatible=request.param)[0]
+        for case, d in zip(cases, dirs, strict=True)
     ]
     outputs = rcompare.run_r(dirs)
     return {

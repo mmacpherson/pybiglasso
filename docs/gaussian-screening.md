@@ -3,6 +3,8 @@
 A certificate omits an inactive-column read only when it proves the same
 KKT and next strong-rule decisions as an exact score. A naive squared norm
 can underflow (for example at 1e-200); padding after sqrt does not repair it.
+Here "stock" means the exact-read solver under the selected arithmetic mode,
+with certificates disabled, rather than a frozen previous release.
 
 ## Arithmetic assumptions and supported paths
 
@@ -253,7 +255,7 @@ Its coefficient norm is ||zhat||/n_fit. Coefficient construction is part of the
 fixed coefficient definition, not silently replaced by ideal real z. Nonfinite
 zhat makes the column unsupported and forces an exact read.
 
-## Dot and seqsum errors, with underflow
+## Dot and residual-sum errors, with underflow
 
 For a sum of products or a summation expression with at most m rounded nodes,
 unfold each node's error `delta*t + epsilon`, with |delta|<=u and
@@ -269,8 +271,23 @@ An FMA uses fewer rounded nodes and is covered by the same conservative count.
 
 For stock's eight-lane dot and fixed fold/tail, m=2*n+64 exceeds the number of
 products/additions on every reduction path and the total additive-error nodes.
-For left-to-right seqsum, m=n suffices. The count uses the actual row workspace
-length, including masked zeros and gathered repeats. Counts are checked for
+For both left-to-right compatibility sums and the default fixed residual-sum
+tree, m=n suffices. The default visits logical 2,048-row blocks, accumulates
+complete groups in eight lanes, combines those lanes in a fixed binary tree,
+adds the scalar tail, then adds block totals in order. Storage runs never
+reset an accumulator or realign logical blocks.
+
+To count rounded nodes, prune explicit zero initializers and empty lane/tail
+sums: adding those floating-point zeros is exact. Retain computed zeros with
+their contributing residual leaves. Every remaining node joins disjoint sets
+of residual leaves. With n leaves,
+there are at most n-1 such binary additions in total and on any path. The
+zero initializers, empty lanes and tail addends do not increase that count;
+signed zero does not change an absolute-error enclosure. Thus the existing
+m=n gamma and additive-underflow bounds cover this order too. The argument
+is about adding the actual rounded updated residuals, never an analytic
+recurrence for their sum. The count uses the actual row workspace length,
+including masked zeros and gathered repeats. Counts are checked for
 integer overflow and exact conversion (<=2^53); m*u>=1/4 is rejected.
 `gamma_m` uses an upper numerator and a LOWER `1-m*u` denominator. The
 underflow term is formed with outward arithmetic, not allowed to vanish.
@@ -285,14 +302,14 @@ are too large is deliberately unsupported and evaluated exactly.
 
 ## Raw score: individual operations
 
-Write Mx=M_dot and Mr=M_sum. Let Ed be the dot error above and Es the seqsum
+Write Mx=M_dot and Mr=M_sum. Let Ed be the dot error above and Es the residual-sum
 error. All arithmetic on the right sides below is outward rounded.
 
-1. `vhat=fl(c*shat)` where shat is stock seqsum:
+1. `vhat=fl(c*shat)` where shat is the selected deterministic residual sum:
 
        Ev = |c|*Es + u*|c|*(Mr+Es) + eta
 
-   bounds |vhat-c*sum(r)|. The first term carries seqsum error; the latter
+   bounds |vhat-c*sum(r)|. The first term carries residual-sum error; the latter
    terms bound this multiplication's own rounding/underflow.
 
 2. `that=fl(dhat-vhat)` where dhat is stock dot:
@@ -381,3 +398,26 @@ fall back; stale epochs and threshold identities must fail before use.
 
 The certificate is Gaussian only. It makes no claim for nonlinear updates,
 mutating X or changing the floating-point environment during a fit.
+
+## Residual-sum order and score epochs
+
+Default Gaussian mode fuses each unchanged per-row update with the fixed
+LANES/CHUNK tree above. Compatibility mode keeps the serial sum. The initial
+score scan, scans after prefit, and cached sums after coordinate updates all
+use their mode's same reduction. A score epoch therefore never names two
+floating-point functions. The access-path optimization does not reconstruct
+residuals, change their epoch increments, or write approximate scores.
+
+The retained Fraction audits exercise the actual default tree; native tests
+also compare shadow/enabled metadata and off/enabled numeric outputs, warnings
+and recorded trajectory, across forced widths and threads. Unsupported FP
+environments keep their existing exact-read fallback. No certificate formula,
+range guard or threshold arithmetic changes with this summation order.
+
+The native optimized Linux x86-64 tests also audit the executable's symbols
+with `nm` (from binutils): SIMD arithmetic must not call standalone AVX math
+helpers. Those helpers exposed an outlined mapped-column visitor that spilled
+vectors through the stack. The direct block loop keeps arithmetic inside the
+SIMD dispatch body. Functional width/storage tests run on every native CI
+platform; the symbol audit is specific to optimized ELF x86-64 builds and
+uses no wall-clock threshold.

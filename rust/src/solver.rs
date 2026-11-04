@@ -244,8 +244,15 @@ impl<D: Design> Fit<'_, D> {
         Ok((center, scale, stats.iter().all(|s| s.3), imprecise))
     }
 
+    fn score_sum(&self, values: &[f64]) -> f64 {
+        if self.params.family == Family::Gaussian && !self.params.r_compatible {
+            return gaussian::blocked_sum(values);
+        }
+        seqsum(values)
+    }
+
     fn compute_z(&self, path: &Path, s: &[f64]) -> Vec<f64> {
-        let s_sum = seqsum(s);
+        let s_sum = self.score_sum(s);
         let nf = self.n_fit as f64;
         path.col_map
             .par_iter()
