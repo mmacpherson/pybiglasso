@@ -121,7 +121,8 @@ reason here rather than reporting its partial path as a timing result.
 ## Refreshed comparison proposal
 
 The [two-configuration protocol](bigstatsr-protocol.md) separates package
-defaults from matched work at independently checked accuracy. It is awaiting
-review before recorded runs. The existing `cv.py` controls are functional
+defaults from matched snpnet lasso paths at independently checked accuracy.
+There is no custom Python CMSA panel: CMSA is a different procedure, not a
+solver comparison. The existing `cv.py` controls are functional
 smokes, not either completed timing experiment: matching their path counts
 alone does not match CMSA's grids or its model-selection procedure.
