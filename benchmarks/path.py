@@ -71,6 +71,7 @@ SOLVERS = [
     "sklearn-saga",
     "statsmodels",
 ]
+OPTIONAL_SOLVERS = ["r-snpnet"]
 TIMING_START = "--timing-start--"
 TIMING_STOP = "--timing-stop--"
 
@@ -100,12 +101,12 @@ class FitClock:
 
 
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
-LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
+LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive", "r-snpnet"}
 # pybiglasso with r_compatible=True, which uses R's elastic-net update; for
 # the lasso its coordinate-update formula agrees with the default mode's
 ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
-R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
+R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet", "r-snpnet"}
 # these don't use more than one thread; running them at more is redundant
 SINGLE_THREADED = {
     "skglm",
@@ -538,12 +539,19 @@ def fit_r_glmnet(
     )
 
 
+def fit_r_snpnet(X, Xs, y, lambdas, alpha, threads, *, clock=None):
+    from snpnet import fit_r_snpnet as fit
+
+    return fit(X, Xs, y, lambdas, alpha, threads, clock=clock)
+
+
 FITTERS = {
     "pybiglasso": fit_pybiglasso,
     "pybiglasso-rcompat": fit_pybiglasso_rcompat,
     "r-biglasso-ssr": fit_r_ssr,
     "r-biglasso-adaptive": fit_r_adaptive,
     "r-glmnet": fit_r_glmnet,
+    "r-snpnet": fit_r_snpnet,
     "pybiglasso-tight": fit_pybiglasso_tight,
     "glum": fit_glum,
     "skglm": fit_skglm,
@@ -774,7 +782,7 @@ def main():
     ap.add_argument(
         "--solver",
         action="append",
-        choices=list(dict.fromkeys(SOLVERS + GAUSSIAN_SOLVERS)),
+        choices=list(dict.fromkeys(SOLVERS + GAUSSIAN_SOLVERS + OPTIONAL_SOLVERS)),
     )
     ap.add_argument("--family", choices=["binomial", "gaussian"], default="binomial")
     ap.add_argument("--alpha", type=float, action="append", help="L1/L2 mix (R's)")
@@ -806,7 +814,9 @@ def main():
     solvers = args.solver or (
         GAUSSIAN_SOLVERS if args.family == "gaussian" else SOLVERS
     )
-    supported = GAUSSIAN_SOLVERS if args.family == "gaussian" else SOLVERS
+    supported = (
+        GAUSSIAN_SOLVERS if args.family == "gaussian" else SOLVERS + OPTIONAL_SOLVERS
+    )
     if any(s not in supported for s in solvers):
         ap.error(f"{args.family} benchmarks support {', '.join(supported)}.")
     single_threaded = (
@@ -977,7 +987,9 @@ def main():
                         **versions,
                     )
                     if solver in R_SOLVERS:
-                        record["r_thread_limits"] = r_thread_limits(t)
+                        record["r_thread_limits"] = r_thread_limits(
+                            1 if solver == "r-snpnet" else t
+                        )
                     fp.write(json.dumps(record) + "\n")
 
 

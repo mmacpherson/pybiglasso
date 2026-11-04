@@ -407,6 +407,12 @@ Some solvers fall outside the rule above:
   benchmark fits without an intercept or standardization, which pybiglasso
   doesn't support yet.
 
+### Optional file-backed CV and genotype benchmarks
+
+The [bigstatsr/snpnet harness](benchmarks/bigstatsr.md) uses a separate R image.
+Correctness smoke checks and its comparison protocol are separate from the
+reported timings above.
+
 ## Differences from R biglasso
 
 pybiglasso follows R biglasso 1.7.2 closely, matching it coefficient for
