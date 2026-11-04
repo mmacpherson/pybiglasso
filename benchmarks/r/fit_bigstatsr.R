@@ -15,7 +15,7 @@ fit_case <- function(case_dir) {
   bigparallelr::set_blas_ncores(1)
   set.seed(prm$seed)
   observed <- character()
-  elapsed <- system.time(
+  elapsed <- system.time({
     fit <- withCallingHandlers(
       big_spLogReg(X, y, K = prm$folds, ind.sets = sets,
                    alphas = prm$alpha, ncores = prm$ncores,
@@ -26,8 +26,12 @@ fit_case <- function(case_dir) {
         observed <<- c(observed, conditionMessage(w))
         invokeRestart("muffleWarning")
       })
-  )[["elapsed"]]
-  best <- summary(fit)
+    # summary constructs the usable averaged model, so it belongs in fit time.
+    best <- withCallingHandlers(summary(fit), warning = function(w) {
+      observed <<- c(observed, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    })
+  })[["elapsed"]]
   stopifnot(nrow(best) == 1L)
   out <- list(
     bigstatsr_version = as.character(packageVersion("bigstatsr")),

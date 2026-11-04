@@ -51,7 +51,9 @@ def write_plink1(X, y, prefix):
     )
 
 
-def fit_r_snpnet(X, Xs, y, lambdas, alpha, threads, *, eps=1e-7, timeout=1800):
+def fit_r_snpnet(
+    X, Xs, y, lambdas, alpha, threads, *, eps=1e-7, timeout=1800, clock=None
+):
     if alpha != 1:
         raise ValueError("snpnet's raw-dosage penalty mapping is lasso-only")
     mean, scale = X.mean(axis=0), X.std(axis=0)
@@ -68,6 +70,7 @@ def fit_r_snpnet(X, Xs, y, lambdas, alpha, threads, *, eps=1e-7, timeout=1800):
             sds=list(scale),
             ncores=threads,
             eps=eps,
+            timing_signals=bool(clock and clock.signals),
         )
         (directory / "params.json").write_text(json.dumps(params))
         result = run_r(
@@ -100,6 +103,7 @@ def fit_r_snpnet(X, Xs, y, lambdas, alpha, threads, *, eps=1e-7, timeout=1800):
             warnings=result.get("warnings", []),
             fitted_lambdas=len(intercept),
             eps=eps,
+            timing_signals=bool(clock and clock.signals),
             genotype_conversion="untimed BED to PGEN",
             family="binomial",
         ),

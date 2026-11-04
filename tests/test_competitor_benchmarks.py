@@ -1,9 +1,9 @@
 """Benchmark protocols, serialization and negative controls; no R required."""
 
 import importlib
-import io
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -284,45 +284,38 @@ def test_specific_advisory_does_not_hide_a_convergence_warning(
 
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_path_cap_drains_logs_and_terminates_the_child_group(
-    modules, monkeypatch, interrupted
+    modules, monkeypatch, tmp_path, interrupted
 ):
     cv, _, _ = modules
     bench = cv.bench
+    script = tmp_path / "verbose.py"
+    script.write_text(
+        "import time\nprint('--timing-start--',flush=True)\n"
+        "for i in range(5000): print('fit log ' + str(i),flush=True)\n"
+        "time.sleep(10)\n"
+    )
     signals = []
-    calls = []
+    if bench.os.name == "posix":
+        killpg = bench.os.killpg
 
-    class Child:
-        pid = 999
-        stdout = io.StringIO(bench.TIMING_START + "\n")
+        def terminate(pid, signum):
+            signals.append(signum)
+            killpg(pid, signum)
 
-        def communicate(self, timeout=None):
-            calls.append(timeout)
-            if len(calls) == 1:
-                if interrupted:
-                    raise KeyboardInterrupt
-                raise subprocess.TimeoutExpired("fit", timeout)
-            return "", None
-
-        def terminate(self):
-            signals.append("terminate")
-
-    def spawn(*args, **kwargs):
-        assert kwargs["start_new_session"] == (bench.os.name == "posix")
-        return Child()
-
-    monkeypatch.setattr(bench.subprocess, "Popen", spawn)
-    monkeypatch.setattr(
-        bench.os, "killpg", lambda *args: signals.append(args), raising=False
-    )
+        monkeypatch.setattr(bench.os, "killpg", terminate)
     if interrupted:
+
+        class InterruptedQueue(bench.queue.Queue):
+            def get(self, *args, **kwargs):
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(bench.queue, "Queue", InterruptedQueue)
         with pytest.raises(KeyboardInterrupt):
-            bench.run_capped(["fit"], {}, 0.1)
+            bench.run_capped([sys.executable, str(script)], None, 0.1)
     else:
-        assert bench.run_capped(["fit"], {}, 0.1) is False
-    assert calls == [0.1, 10]
-    assert signals == (
-        [(999, bench.signal.SIGTERM)] if bench.os.name == "posix" else ["terminate"]
-    )
+        assert not bench.run_capped([sys.executable, str(script)], None, 0.1)
+    if bench.os.name == "posix":
+        assert signals == [bench.signal.SIGTERM]
 
 
 def test_snpnet_smoke_kkt_has_an_analytic_positive_twin_and_negative_controls(modules):

@@ -59,8 +59,9 @@ full-data grid and refits on all training rows. Their default inner tolerances
 also differ (`eps=1e-5` versus `1e-7`). Compare test log loss and AUC alongside
 time; do not require their coefficients, selected lambdas or supports to agree.
 
-The clock covers the complete fit/CV call, including standardization. File
-creation, attachment/imports, Python warm-up, coefficient export and test-set
+The existing controls are functional smokes. Recorded comparisons will use
+the model-ready clock in the proposed protocol, including R summary and
+averaging. File creation, attachment/imports, serialization and test-set
 scoring are excluded. R's exported averaged coefficients are checked against
 its own `predict(..., proba=FALSE)` outside the clock. Non-early-stopped folds
 must complete the requested path. The misleadingly named `summary()$all_conv`
@@ -116,3 +117,11 @@ No new large CV, snpnet or memory-capped performance rows have been measured.
 snpnet installed and completed the bounded smoke, so it is not excluded for
 installation failure. If a later bounded run cannot complete, preserve its
 reason here rather than reporting its partial path as a timing result.
+
+## Refreshed comparison proposal
+
+The [two-configuration protocol](bigstatsr-protocol.md) separates package
+defaults from matched work at independently checked accuracy. It is awaiting
+review before recorded runs. The existing `cv.py` controls are functional
+smokes, not either completed timing experiment: matching their path counts
+alone does not match CMSA's grids or its model-selection procedure.

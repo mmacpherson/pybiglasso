@@ -36,6 +36,12 @@ fit_case <- function(case_dir) {
   columns <- paste0(ids, "_A")
 
   observed <- character()
+  timing <- isTRUE(prm$timing_signals)
+  if (timing) {
+    gc()
+    cat("--timing-start--\n")
+    flush(stdout())
+  }
   elapsed <- system.time(
     fit <- withCallingHandlers(snpnet(
       genotype.pfile = pfile,
@@ -59,8 +65,13 @@ fit_case <- function(case_dir) {
     ), warning = function(w) {
       observed <<- c(observed, conditionMessage(w))
       invokeRestart("muffleWarning")
-    })
+    }),
+    gcFirst = FALSE
   )[["elapsed"]]
+  if (timing) {
+    cat("--timing-stop-- ", sprintf("%.17g", elapsed), "\n", sep = "")
+    flush(stdout())
+  }
 
   # one coefficient vector per fitted lambda, of the variants it has added
   beta <- sapply(fit$beta, function(b) {
