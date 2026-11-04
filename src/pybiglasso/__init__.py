@@ -1,7 +1,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from . import common  # noqa: F401
-from .binomial import biglasso  # noqa: F401
+from .fit import biglasso  # noqa: F401
 from .path import BiglassoPath  # noqa: F401
 from .viz import plot_coefficients, plot_deviance  # noqa: F401
 

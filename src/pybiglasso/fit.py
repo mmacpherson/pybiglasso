@@ -9,7 +9,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from ._threads import resolve_threads
-from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
+from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
 from .config import check_backend, settings
 from .path import INTERCEPT, BiglassoPath
 
@@ -76,7 +76,7 @@ def biglasso(
     documented objective, (1/n) * NLL + lambda * (alpha * |b|_1 +
     (1 - alpha) / 2 * |b|_2^2), as glmnet and scikit-learn do. R biglasso's
     logistic update instead divides by v * (1 + l2) rather than v + l2, which
-    solves a different problem; `r_compatible=True` reproduces R exactly.
+    solves a different problem; `r_compatible=True` uses R's update formula.
     The default binomial probability cutoff also differs from R: it uses
     glmnet's pmin=1e-9 boundary with a positive weight floor; compatibility
     mode retains R's |eta| > 10 cutoff and 1e-4 weights.
@@ -110,9 +110,8 @@ def biglasso(
     y = _response(y)
     if feature_names is None and hasattr(X, "columns"):
         feature_names = [str(c) for c in X.columns]
+    X = _as_array(X)
     mapped = isinstance(X, _ArrowMatrix)
-    if not mapped and not isinstance(X, np.ndarray):
-        X = np.asarray(X)
     y = np.asarray(y)
 
     # first, a few checks on data shape and type
@@ -252,6 +251,7 @@ def biglasso(
     if dfmax is None:
         dfmax = ncol + 1
 
+    named_features = feature_names is not None
     if feature_names is None:
         feature_names = tuple(f"x{e}" for e in range(ncol))
 
@@ -284,6 +284,16 @@ def biglasso(
             return bool(_stop(il, lambdas, cols, beta, intercept))
 
     results = fit_path_rust(X, y, row_indices, params, n_threads, on_lambda, family)
+    if imprecise := results.pop("imprecise_center", []):
+        names = ", ".join(feature_names[j] for j in imprecise[:5])
+        more = f" and {len(imprecise) - 5} more" if len(imprecise) > 5 else ""
+        warnings.warn(
+            f"Column(s) {names}{more} of X are too far from zero, relative to their "
+            "spread, for float64 to center them precisely, which can make the fit, "
+            "its intercept especially, inaccurate. Subtract a reference value, such "
+            "as each column's minimum, before fitting.",
+            stacklevel=2,
+        )
 
     # keep the part of the path that was fit (it stops early on saturation
     # or dfmax), and untransform coefficients back to the scale of X
@@ -321,6 +331,7 @@ def biglasso(
         feature_names=feature_names,
         alpha=alpha,
         family=family,
+        named_features=named_features,
     )
 
 
@@ -363,7 +374,11 @@ def fit_path_rust(
         family=family,
     )
     path.pop("row_path")  # gathered or masked rows; reported for tests
-    for kind, il in path.pop("events"):
+    events = path.pop("events")
+    path["imprecise_center"] = [j for kind, j in events if kind == "imprecise_center"]
+    for kind, il in events:
+        if kind == "imprecise_center":
+            continue
         where = f"λ[{il + 1}/{params.nlambda}]"
         message = {
             "prefit_saturated": "Model saturated by the unpenalized columns alone; no path fit.",

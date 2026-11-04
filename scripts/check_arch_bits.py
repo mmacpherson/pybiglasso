@@ -146,7 +146,7 @@ def record(output):
     )
 
 
-def compare(reference, candidates):
+def compare(reference, candidates, systems):
     baseline = json.loads(reference.read_text())
     assert baseline["machine"] == "x86_64" and baseline["system"] == "Linux"
     expected = {
@@ -157,13 +157,13 @@ def compare(reference, candidates):
         for alpha in ALPHAS
     }
     assert set(baseline["cases"]) == expected
-    systems = set()
+    seen = set()
     differences = []
     for path in candidates:
         other = json.loads(path.read_text())
         assert other["system"] in CANDIDATE_MACHINES, path
         assert other["machine"] in CANDIDATE_MACHINES[other["system"]], path
-        systems.add(other["system"])
+        seen.add(other["system"])
         assert set(other["cases"]) == expected, path
         mismatches = []
         for case in sorted(expected):
@@ -182,7 +182,8 @@ def compare(reference, candidates):
             )
         else:
             print(f"{path}: all {len(expected)} fits bit-identical to {reference}")
-    assert len(candidates) == 3 and systems == CANDIDATE_MACHINES.keys()
+    # every expected platform, once each
+    assert len(candidates) == len(systems) and seen == systems, (seen, systems)
     # Report every platform, even when an earlier candidate already differs.
     assert not differences, "\n".join(differences)
 
@@ -195,11 +196,19 @@ def main():
     checker = commands.add_parser("compare")
     checker.add_argument("reference", type=Path)
     checker.add_argument("candidates", type=Path, nargs="+")
+    checker.add_argument(
+        "--without-macos",
+        action="store_true",
+        help="expect no Darwin snapshot (pull requests skip macOS)",
+    )
     args = parser.parse_args()
     if args.command == "record":
         record(args.output)
     else:
-        compare(args.reference, args.candidates)
+        systems = set(CANDIDATE_MACHINES)
+        if args.without_macos:
+            systems.discard("Darwin")
+        compare(args.reference, args.candidates, systems)
 
 
 if __name__ == "__main__":

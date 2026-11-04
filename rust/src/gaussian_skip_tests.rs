@@ -60,6 +60,7 @@ fn path_bytes(path: &Path) -> Vec<u8> {
         .events
         .iter()
         .flat_map(|e| match *e {
+            Event::ImpreciseCenter(j) => [4, j as u64],
             Event::PrefitSaturated => [0, 0],
             Event::Dfmax(i) => [1, i as u64],
             Event::Saturated(i) => [2, i as u64],
@@ -186,7 +187,7 @@ fn isolated_path_child() {
                 }
                 let design = ContigX::<_, true> { x: x.view() };
                 let fit = Fit { x: &design, y: &y, params: &params, mask: None, rows: None, n_fit: 128 };
-                let (center, scale, _) = fit.center_scale().unwrap();
+                let (center, scale, _, _) = fit.center_scale().unwrap();
                 fit.run(center, scale).unwrap()
             };
             let path = if worker_bad.starts_with("worker-") {
@@ -643,7 +644,7 @@ fn add_case<D: Design>(
     rows: Option<&[usize]>,
 ) {
     let fit = Fit { x, y, params, mask, rows, n_fit: rows.map_or(y.len(), |r| r.len()) };
-    let (center, scale, safe) = fit.center_scale().unwrap();
+    let (center, scale, safe, _) = fit.center_scale().unwrap();
     assert!(safe);
     let path = fit.run(center, scale).unwrap();
     out.extend(path_bytes(&path));

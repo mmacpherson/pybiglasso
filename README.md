@@ -212,7 +212,10 @@ grids, `dfmax` truncation, and saturation. The comparison runs pybiglasso with
 `r_compatible=True`; for cases with penalty factors it passes R pybiglasso's
 lambda grid, which sets aside the zero-penalty-factor case under Differences.
 A weekly job reruns the grid live against the current CRAN release, to catch
-upstream changes.
+upstream changes. The two agree to floating-point precision rather than bit
+for bit: R sums serially, while pybiglasso sums in a fixed order across several
+accumulators, so that SIMD and threads don't change its results, and groups a
+few operations differently.
 
 **Independent of R.**
 
@@ -337,8 +340,8 @@ twice the columns, which would need about 12 GB and 76 GB on the wide ones.
 **Accuracy.** Accuracy here is each path's worst relative gap, over its
 lambdas, between its objective and the best any solver reached at that lambda
 (not a certified gap to the optimum). glmnet fits every path about as
-accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. R biglasso matches
-pybiglasso exactly for the lasso; for the elastic net each runs its own update
+accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. For the lasso, R
+biglasso and pybiglasso use the same coordinate update; for the elastic net each runs its own update
 (see [Differences](#differences-from-r-biglasso)), and pybiglasso with
 `r_compatible=True`, which matches R, takes about as long as its default. R's
 adaptive screening rule is no faster than SSR on these problems.
@@ -426,7 +429,18 @@ with a comment beginning "Differs from R biglasso".
   precision in floating point. R's scales, and so its fit, can be affected
   without a warning; in our tests some scales came out as NaN. pybiglasso
   computes these columns' moments from centered values, so a constant shift of
-  X leaves the solution unchanged.
+  X leaves the solution unchanged. A column whose values are huge next to their
+  spread (near 2^54, varying by a few units) can't be centered accurately in
+  float64, which can make the fit, its intercept especially, inaccurate;
+  pybiglasso warns and names such columns. No warning isn't a guarantee: for
+  such data even an intercept on X's own scale can't be stored precisely. For
+  either problem, subtract a reference value, such as each column's minimum,
+  before fitting.
+- **Arithmetic order.** R sums serially; pybiglasso sums in a fixed order
+  across several accumulators, so SIMD and threads don't change its results,
+  and groups some products and quotients differently. Results can differ from
+  R's in the low bits, and agree to floating-point precision (see
+  [Validation](#validation)).
 - **Invalid input.** NaN or infinite values in the rows being fit, and
   non-finite penalty factors or lambdas, raise `ValueError`; R instead drops
   the affected column or returns the null model.
@@ -436,6 +450,12 @@ with a comment beginning "Differs from R biglasso".
   supplied grids remain supported, including in compatibility mode.
 
 **Least squares.**
+
+- **Residual summation.** R sums updated residuals in row order. By default,
+  pybiglasso sums them in a fixed eight-lane tree within 2,048-row blocks,
+  without changing each row's update. This lets SIMD accelerate the sweep;
+  coefficients and the automatic lambda grid can differ in their last bits.
+  `r_compatible=True` keeps the serial order.
 
 - **Constant responses.** R's strict convergence comparison against
   a zero null loss uses the full iteration budget for a constant response.
@@ -454,8 +474,8 @@ with a comment beginning "Differs from R biglasso".
 - **Elastic-net update.** For `alpha < 1`, R's logistic coordinate update divides by
   `v * (1 + l2)`, where the elastic-net objective in its documentation calls
   for `v + l2`, so the two solve somewhat different problems. pybiglasso uses
-  `v + l2`, as glmnet and scikit-learn do; `r_compatible=True` reproduces R
-  exactly for this update.
+  `v + l2`, as glmnet and scikit-learn do; `r_compatible=True` uses R's
+  update.
 - **Probability clipping.** R sets probabilities
   to 0 or 1 beyond `|eta| > 10`, with weights of `1e-4`. Default mode uses
   glmnet's `pmin = 1e-9` boundary, `|eta| > log(1 / pmin - 1)` (about 20.7).
@@ -535,20 +555,26 @@ why). The solver takes the same number of iterations as R's at every lambda; the
 R comparison checks this in every case.
 
 The solver is written twice, in the same steps. The one that runs is Rust
-(`rust/src/solver.rs`): one call from Python fits the whole path. The readable one,
+(`rust/src/`): one call from Python fits the whole path. The readable one,
 [`tests/support/reference.py`](tests/support/reference.py), is plain numpy,
 step by step, and imports nothing from pybiglasso; the tests hold the Rust
 solver to it, and both to R.
 
-| pybiglasso (`rust/src/solver.rs`) | R biglasso (`src/`) |
+The Rust is laid out by family. `solver.rs` holds what the two share: the
+path's parameters, standardization, the scores, and `run`, which hands the fit
+to its family. It reads X through `columns.rs`, a column at a time, and sums
+with the fixed-order kernels in `kernels.rs`. The logistic solver's own steps
+are in `binomial.rs`:
+
+| pybiglasso (`rust/src/`) | R biglasso (`src/`) |
 |---|---|
-| `center_scale`, `compute_z` | `standardize_and_get_residual` (utilities.cpp) |
-| `update_irls` | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
+| `center_scale`, `compute_z` (solver.rs) | `standardize_and_get_residual` (utilities.cpp) |
+| `update_irls` (binomial.rs) | probability and weight update in `cdfit_binomial_lambda_core` (binomial.cpp) |
 | `update_intercept` | intercept update in `cdfit_binomial_lambda_core` |
 | `coordinate_sweep` (`Pass`) | coordinate loop in `cdfit_binomial_lambda_core`; `wcrossprod_resid`, `wsqsum_bm`, `lasso` (utilities.cpp) |
 | `check` | `check_strong_set`, `check_rest_set` (utilities.cpp) |
 | `fit_lambda` | `cdfit_binomial_lambda_core` |
-| `run` | `cdfit_binomial_ssr` |
+| `run_binomial` | `cdfit_binomial_ssr` |
 
 The least-squares driver and coordinate sweeps, in `rust/src/gaussian.rs`, port
 R's Gaussian SSR solver the same way. They share column access,

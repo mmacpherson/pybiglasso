@@ -104,3 +104,138 @@ def test_csv_streams_under_less_than_table_memory(tmp_path, control):
     assert json.loads(completed.stdout.splitlines()[-1]) == {
         "fits": control == "stream"
     }
+
+
+STREAM_CHILD = textwrap.dedent("""
+    import ctypes, gc, json, os, resource, sys
+    import numpy as np
+    import pyarrow as pa
+    from pathlib import Path
+    from pybiglasso.ingest import ingest
+
+    output, mode = Path(sys.argv[1]), sys.argv[2]
+    batch_size = int(sys.argv[3])
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+    pa.set_memory_pool(pa.system_memory_pool())
+    schema = pa.schema([(f'x{i}', pa.float64()) for i in range(8)])
+    def reader(rows):
+        def batches():
+            for start in range(0, rows, batch_size):
+                yield pa.record_batch([
+                    pa.array(np.full(min(batch_size, rows-start), 0.25)) for _ in range(8)
+                ], schema=schema)
+        return pa.RecordBatchReader.from_batches(schema, batches())
+    dtype_option = {"x0": "float64"} if mode == 'mapping' else (
+        'auto' if mode == 'copy' else mode)
+    # Warm both conversion routes and the whole-table control independently.
+    for dtype in ('auto', 'preserve'):
+        warm = ingest(reader(8), output.with_suffix(f'.{dtype}'), dtypes=dtype,
+                      block_size=512)
+        del warm
+    whole = reader(8).read_all()
+    del whole
+    gc.collect()
+    pa.default_memory_pool().release_unused()
+    ctypes.CDLL(None).malloc_trim(0)
+    with open('/proc/self/status') as status:
+        private = next(int(line.split()[1])*1024 for line in status
+                       if line.startswith('VmData:'))
+    # Input has 10,240,000 bytes. The 5,120,000 allowance cannot hold it;
+    # only a producer batch and bounded conversion work fit.
+    resource.setrlimit(resource.RLIMIT_DATA,
+                       (private + 5_120_000, resource.RLIM_INFINITY))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    try:
+        source = reader(160_000)
+        if mode == 'copy':
+            print('WHOLE_TABLE_READ_START', file=sys.stderr, flush=True)
+            source = source.read_all()
+            print('WHOLE_TABLE_READ_DONE', file=sys.stderr, flush=True)
+        result = ingest(source, output, dtypes=dtype_option,
+                        block_size=512)
+        assert result.X.shape == (160_000, 8)
+        assert result.X['x0'][159999].as_py() == 0.25
+        print(json.dumps({'fits': True}))
+    except MemoryError:
+        print(json.dumps({'fits': False}))
+""")
+
+
+@pytest.mark.parametrize(
+    "mode,batch_size,malloc_mmap_threshold",
+    [
+        ("preserve", 512, None),
+        ("auto", 512, None),
+        ("copy", 512, None),
+        ("copy", 512, "4096"),
+        ("preserve", 1, None),
+        ("auto", 1, None),
+        ("mapping", 1, None),
+    ],
+)
+def test_arrow_stream_memory_is_bounded_by_batches(
+    tmp_path, mode, batch_size, malloc_mmap_threshold
+):
+    allocator_env = (
+        {}
+        if malloc_mmap_threshold is None
+        else {"MALLOC_MMAP_THRESHOLD_": malloc_mmap_threshold}
+    )
+    # A small mmap threshold reproduces the C++ bad_alloc path on glibc;
+    # the same unchanged cap can otherwise raise a Python MemoryError.
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            STREAM_CHILD,
+            str(tmp_path / "data.feather"),
+            mode,
+            str(batch_size),
+        ],
+        env={
+            **os.environ,
+            **allocator_env,
+            "MALLOC_ARENA_MAX": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    _assert_stream_memory_result(completed, mode)
+
+
+def _assert_stream_memory_result(completed, mode):
+    if mode == "copy" and completed.returncode == -signal.SIGABRT:
+        # Exhausting the cap while read_all retains producer batches can fail
+        # in Arrow's C++ NumPyConverter before it can translate bad_alloc into
+        # MemoryError. Never accept an arbitrary crash, a positive-case abort,
+        # or an allocation failure after the deliberate whole-table read.
+        assert "WHOLE_TABLE_READ_START" in completed.stderr
+        assert "WHOLE_TABLE_READ_DONE" not in completed.stderr
+        assert "std::bad_alloc" in completed.stderr
+        return
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    assert json.loads(completed.stdout.splitlines()[-1]) == {"fits": mode != "copy"}
+
+
+@pytest.mark.parametrize(
+    "mode,returncode,stderr",
+    [
+        ("auto", -signal.SIGABRT, "WHOLE_TABLE_READ_START\nstd::bad_alloc"),
+        ("copy", -signal.SIGABRT, "std::bad_alloc"),
+        ("copy", -signal.SIGABRT, "WHOLE_TABLE_READ_START\nthread creation failed"),
+        (
+            "copy",
+            -signal.SIGABRT,
+            "WHOLE_TABLE_READ_START\nWHOLE_TABLE_READ_DONE\nstd::bad_alloc",
+        ),
+        ("copy", -signal.SIGSEGV, "WHOLE_TABLE_READ_START\nstd::bad_alloc"),
+    ],
+)
+def test_stream_memory_control_rejects_unrelated_failures(mode, returncode, stderr):
+    completed = subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+    with pytest.raises(AssertionError):
+        _assert_stream_memory_result(completed, mode)

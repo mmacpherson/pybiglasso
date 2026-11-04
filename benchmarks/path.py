@@ -101,7 +101,8 @@ class FitClock:
 
 # lasso-only solvers; R biglasso's Adaptive screening is lasso-only too
 LASSO_ONLY = {"sklearn-liblinear", "statsmodels", "r-biglasso-adaptive"}
-# R's elastic-net update; identical to pybiglasso's for the lasso
+# pybiglasso with r_compatible=True, which uses R's elastic-net update; for
+# the lasso its coordinate-update formula agrees with the default mode's
 ENET_ONLY = {"pybiglasso-rcompat"}
 # these run R in a container; their time is R's own system.time() of the fit
 R_SOLVERS = {"r-biglasso-ssr", "r-biglasso-adaptive", "r-glmnet"}
@@ -398,7 +399,7 @@ def _fit_r(X, Xs, y, lambdas, alpha, threads, screen, family="binomial", *, cloc
         d = pathlib.Path(d)
         np.asfortranarray(X, dtype=np.float64).ravel(order="F").tofile(d / "X.bin")
         np.asarray(y, dtype=np.float64).tofile(d / "y.bin")
-        # R's default grid on unit penalty factors is exactly pybiglasso's
+        # R builds its default grid on unit penalty factors the same way pybiglasso does
         params = dict(
             nrow=nrow,
             ncol=ncol,
@@ -707,6 +708,29 @@ def input_digest(X, y):
     return digest.hexdigest()
 
 
+def compiler_provenance():
+    from importlib.util import find_spec
+
+    try:
+        rustc = subprocess.check_output(
+            ["rustc", "-vV"], text=True, stderr=subprocess.DEVNULL, timeout=5
+        ).strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        rustc = None
+    native_digest = None
+    try:
+        spec = find_spec("pybiglasso._rust")
+        if spec is not None and spec.origin is not None:
+            native_digest = hashlib.sha256(
+                pathlib.Path(spec.origin).read_bytes()
+            ).hexdigest()
+    except (ImportError, OSError, ValueError):
+        pass
+    # A host compiler isn't proof of which compiler built an installed wheel.
+    # The actual extension digest lets a controlled run join its build record.
+    return dict(host_rustc_vv=rustc, pybiglasso_native_sha256=native_digest)
+
+
 def environment():
     import importlib.metadata as md
 
@@ -739,6 +763,7 @@ def environment():
         source_commit=subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=HERE, text=True
         ).strip(),
+        **compiler_provenance(),
         **versions,
     )
 
