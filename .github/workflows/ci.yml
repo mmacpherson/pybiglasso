@@ -24,16 +24,18 @@ env:
   UV_LOCKED: 1
 
 jobs:
-  # Pull requests get every platform's tests but only the Linux x86 wheel; the
-  # other wheels build on main, on release, and on any PR that changes
-  # packaging, bindings, the toolchain, dependencies or CI, or that carries
-  # the full-ci label. (A small inline decision rather than a make recipe: it
-  # is CI plumbing, with nothing to run locally.)
+  # Pull requests get every platform's tests but macOS, and only the Linux x86
+  # wheel. The other wheels build on main, on release, and on any PR that
+  # changes packaging, bindings, the toolchain, dependencies or CI. macOS,
+  # whose runners can queue for an hour, runs on main and on release. The
+  # full-ci label gives a PR both. (A small inline decision rather than a make
+  # recipe: it is CI plumbing, with nothing to run locally.)
   scope:
     name: Choose coverage
     runs-on: ubuntu-latest
     outputs:
       full: ${{ steps.choose.outputs.full }}
+      macos: ${{ steps.choose.outputs.macos }}
       wheels: ${{ steps.choose.outputs.wheels }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
@@ -49,14 +51,16 @@ jobs:
         HEAD: ${{ github.event.pull_request.head.sha }}
       run: |
         full=true
+        macos=true
         if [ "$EVENT" = pull_request ]; then
           full=false
+          macos=false
           builds='^(pyproject\.toml|uv\.lock|Makefile|rust-toolchain(\.toml)?|rust/(Cargo\.(toml|lock)|build\.rs|src/(lib|python)\.rs)|\.github/|scripts/(check_(wheel|dist|arch_bits)|wheel_provenance)\.py)'
           # On its own line so a failed diff stops the step (bash -e) rather
           # than reading as "nothing build-related changed"
           files=$(git diff --name-only "$BASE...$HEAD")
           if jq -e 'any(.[]?; . == "full-ci")' <<<"$LABELS" >/dev/null; then
-            full=true; echo "full coverage: full-ci label"
+            full=true; macos=true; echo "full coverage, with macOS: full-ci label"
           elif changed=$(grep -E "$builds" <<<"$files"); then
             full=true; echo "full coverage: build-related changes:"; echo "$changed"
           fi
@@ -71,7 +75,9 @@ jobs:
           {"platform": "windows-x86_64", "os": "windows-latest", "target": "x64"}
         ]'
         if [ "$full" = false ]; then wheels=$(jq '[.[0]]' <<<"$wheels"); fi
+        if [ "$macos" = false ]; then wheels=$(jq '[.[] | select(.os | startswith("macos") | not)]' <<<"$wheels"); fi
         echo "full=$full" >> "$GITHUB_OUTPUT"
+        echo "macos=$macos" >> "$GITHUB_OUTPUT"
         echo "wheels=$(jq -c . <<<"$wheels")" >> "$GITHUB_OUTPUT"
 
   hooks:
@@ -192,9 +198,11 @@ jobs:
         retention-days: 7
 
   # macOS runners queue longest, so its native kernels, Python tests and
-  # bit snapshot share one runner.
+  # bit snapshot share one runner, and run only where scope says.
   macos:
     name: macOS (Rust kernels, Python 3.14, bit snapshot)
+    needs: scope
+    if: needs.scope.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
@@ -242,7 +250,12 @@ jobs:
 
   rust-cross-architecture:
     name: Rust fits, bit-identical across platforms
-    needs: [test, macos]
+    needs: [scope, test, macos]
+    # without macOS on a pull request, compare the other three platforms
+    if: >-
+      always() && needs.test.result == 'success'
+      && (needs.macos.result == 'success'
+          || (needs.scope.outputs.macos == 'false' && needs.macos.result == 'skipped'))
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
@@ -253,13 +266,16 @@ jobs:
         pattern: rust-bits-*
         path: snapshots
         merge-multiple: true
-    - name: Compare ARM and Windows runners against this run's Linux x86 reference
-      run: >-
-        python3 scripts/check_arch_bits.py compare
-        snapshots/rust-bits-ubuntu-latest.json
-        snapshots/rust-bits-ubuntu-24.04-arm.json
-        snapshots/rust-bits-macos-latest.json
-        snapshots/rust-bits-windows-latest.json
+    - name: Compare the other runners against this run's Linux x86 reference
+      shell: bash
+      env:
+        MACOS: ${{ needs.scope.outputs.macos }}
+      run: |
+        platforms=(ubuntu-latest ubuntu-24.04-arm windows-latest)
+        if [ "$MACOS" = true ]; then platforms+=(macos-latest); fi
+        files=()
+        for platform in "${platforms[@]}"; do files+=("snapshots/rust-bits-$platform.json"); done
+        python3 scripts/check_arch_bits.py compare "${files[@]}"
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
@@ -371,8 +387,9 @@ jobs:
         path: dist/*.whl
         retention-days: 7
 
-  # The one check to require before merging: it fails unless every job above
-  # succeeded, so a failed, cancelled or skipped job blocks the merge.
+  # The one check required before merging: it fails unless every job above
+  # succeeded, so a failed, cancelled or skipped job blocks the merge. The
+  # only exception: macOS may be skipped where scope chose to skip it.
   ci-passed:
     name: CI passed
     if: always()
@@ -383,7 +400,10 @@ jobs:
       env:
         RESULTS: ${{ toJSON(needs) }}
         FULL: ${{ needs.scope.outputs.full }}
+        MACOS: ${{ needs.scope.outputs.macos }}
       run: |
-        echo "full coverage: ${FULL:-unknown}"
+        echo "full coverage: ${FULL:-unknown}; macOS: ${MACOS:-unknown}"
         jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
-        jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null
+        jq -e --arg macos "$MACOS" 'to_entries | all(.[];
+          .value.result == "success"
+          or (.key == "macos" and $macos == "false" and .value.result == "skipped"))' <<<"$RESULTS" >/dev/null
