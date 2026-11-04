@@ -42,6 +42,7 @@ fn to_dict<'py>(py: Python<'py>, path: Path) -> PyResult<Bound<'py, PyDict>> {
     let events = PyList::empty(py);
     for e in path.events {
         let (kind, il): (&str, i64) = match e {
+            Event::ImpreciseCenter(j) => ("imprecise_center", j as i64),
             Event::PrefitSaturated => ("prefit_saturated", -1),
             Event::Dfmax(il) => ("dfmax", il as i64),
             Event::Saturated(il) => ("saturated", il as i64),
@@ -113,13 +114,18 @@ fn run_typed<T: Elem + Element>(
                 ($design:expr, $y:expr, $mask:expr, $n_fit:expr, $rows:expr) => {{
                     let d = $design;
                     let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: $rows.masked_rows(), n_fit: $n_fit };
-                    let (center, scale, mask_safe) = fit.center_scale().map_err(Fail)?;
+                    let (center, scale, mask_safe, imprecise) = fit.center_scale().map_err(Fail)?;
                     if !mask_safe {
                         // a row left out holds something the mask can't sweep
                         // safely: gather the rows instead
                         return Err(Fallback);
                     }
-                    fit.run(center, scale).map(|path| (path, $rows.name())).map_err(Fail)
+                    fit.run(center, scale)
+                        .map(|mut path| {
+                            path.note_imprecise(imprecise);
+                            (path, $rows.name())
+                        })
+                        .map_err(Fail)
                 }};
             }
             macro_rules! by_layout {
@@ -312,11 +318,16 @@ fn run_mapped(
                     ($design:expr, $y:expr, $mask:expr, $n:expr) => {{
                         let d = $design;
                         let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: rows.masked_rows(), n_fit: $n };
-                        let (center, scale, safe) = fit.center_scale().map_err(Fail)?;
+                        let (center, scale, safe, imprecise) = fit.center_scale().map_err(Fail)?;
                         if !safe {
                             return Err(Fallback);
                         }
-                        fit.run(center, scale).map(|p| (p, rows.name())).map_err(Fail)
+                        fit.run(center, scale)
+                            .map(|mut p| {
+                                p.note_imprecise(imprecise);
+                                (p, rows.name())
+                            })
+                            .map_err(Fail)
                     }};
                 }
                 match rows {
