@@ -1,6 +1,6 @@
 # Browser playground
 
-The Python package and this app share `rust/src/solver.rs`. The browser adapter
+The Python package and this app share the Rust solver in `rust/src/`. The browser adapter
 ingests selected columns once into a retained float64 dataset, then borrows it
 for every fit. Parsing, fitting and result export run in one dedicated Web
 Worker. No selected file is sent to a server. The displayed deviance is a
