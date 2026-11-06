@@ -87,7 +87,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         python-version: '3.14'
     - run: make run-hooks-all-files
@@ -105,7 +105,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         python-version: '3.14'
     # The Rust build, from main's last run, when the Rust sources are
@@ -154,7 +154,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         python-version: ${{ matrix.python }}
     # The Rust build, from main's last run, when the Rust sources are
@@ -208,7 +208,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         python-version: '3.14'
     # The Rust builds, as in the jobs above: one cache holds both the kernel
@@ -287,7 +287,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         python-version: '3.15'
     - run: make test-latest
@@ -301,7 +301,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         python-version: '3.11'
     - run: make test-minimum
@@ -323,7 +323,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         python-version: '3.14'
     - run: make test-recipes
@@ -336,7 +336,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         enable-cache: false    # this build is what release.yml publishes
     - name: Build, check the metadata PyPI will render, and fit from the wheel
@@ -375,7 +375,7 @@ jobs:
     - name: Record the host wheel build toolchain
       if: runner.os != 'Linux'
       run: make wheel-provenance
-    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e    # v10.3.2
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         enable-cache: false
         python-version: ${{ matrix.python }}
