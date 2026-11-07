@@ -34,9 +34,10 @@ it's also fast when the data does fit in memory. For logistic regression,
 across four benchmark problems with 1,000 to 50,000 features, a full 100-step
 path runs 2.2–4.9x faster than R's glmnet, 2.4–8.9x faster than R biglasso,
 and 4.9–8.5x faster than skglm, the fastest of the other Python solvers we
-tested. For least squares, the benchmarks report native fit times together
-with the accuracy each solver reaches at its default controls (see
-[Performance](#performance)).
+tested. On the least-squares benchmarks, it is 3.3–6.2x faster than R biglasso
+and 1.7–12x faster than glmnet (the largest glmnet case has one run per penalty).
+Scikit-learn is faster on tall data and slower on wide data; its wide lasso
+fits are less accurate at the default settings (see [Performance](#performance)).
 
 It is an unofficial Python port of the R package
 [biglasso](https://github.com/pbreheny/biglasso), and reproduces its results to
@@ -262,8 +263,7 @@ time. All ran on an AMD Ryzen 5 5600X (6 cores, 12 threads) with 64 GB of RAM,
 Python 3.14, and R 4.6.1, at 1, 6 and 12 threads; each solver is shown at its
 smallest observed time among its declared thread settings. This is descriptive,
 not evidence of an optimal thread count. A time is the median of three fresh
-processes, or a labelled single observation when the prospective slow rule
-ends repetition.
+processes, or a labelled single observation when repetition ends early.
 
 Each time covers the solver's own fitting calls. pybiglasso, R biglasso and
 glmnet standardize raw X themselves, inside that time. The Python solvers,
@@ -284,22 +284,19 @@ stopped run sits beyond 10x in the figures. The scripts and raw results are in [
   <img alt="Least squares: time relative to pybiglasso, by dataset and solver" src="docs/benchmarks-least-squares-light.png">
 </picture>
 
-These are default-control comparisons on prepared inputs, conditional on the
-[memory recording policy](benchmarks/gaussian-records.md#conditional-in-memory-recording-policy).
-Every solver used the same policy. Before each setting attempt, an external
-controller reset clean page cache and required fixed free-memory reserves;
-it rejected declared direct-reclaim, swap-out, allocation-stall and CPU-gate
-failures. This excludes costs that ordinary shared-machine use can incur.
-The controller is external; the repository's runners alone do not reproduce it.
+These timings depend on the [recording policy](benchmarks/gaussian-records.md#conditional-in-memory-recording-policy).
+An external controller reset the page cache and enforced memory reserves for
+every solver. That keeps memory pressure low; a busy machine can behave
+differently. The repository's runners do not include that controller.
 
-Scikit-learn has lower default-control times on the tall problems; pybiglasso
-has lower times on the wide problems. These timings are scoped to the achieved
-accuracy, not equal-accuracy comparisons: wide lasso at scikit-learn's default
-tolerance has materially larger KKT residuals, shown below. Times are seconds,
-lasso / elastic net (α=0.5). **† marks one completed observation**; unmarked
-completed cells are three-run medians. **≥ marks a censored lower bound**,
-rounded down, without a completed-path accuracy claim. The figure uses these
-same selected settings; sample counts and attained accuracy qualify its ratios.
+Scikit-learn took less time on the tall problems; pybiglasso on the wide ones.
+Each uses its default tolerance, so these times are for the accuracy shown,
+not for the same accuracy. Scikit-learn's wide lasso fits have larger optimality
+(KKT) residuals, shown below. Times are seconds, lasso / elastic net (α=0.5).
+**† marks one completed run**; unmarked completed cells are three-run medians.
+**≥ means a fit stopped at its time limit**, with that lower bound rounded
+down; its full-path accuracy is unavailable. The figure uses these same
+settings, with the sample counts and accuracy shown in the tables.
 
 | Solver | 5,000 × 1,000 | 50,000 × 2,000 | 2,000 × 20,000 | 5,000 × 50,000 |
 |---|---|---|---|---|
@@ -320,20 +317,13 @@ For lasso (α=1), native seconds and maximum KKT residual in response units:
 | 2,000 × 20,000 | 0.21; 7.81e-6 | 3.19†; 1.24e-2 |
 | 5,000 × 50,000 | 0.90; 5.43e-6 | 22.62†; 1.22e-2 |
 
-Every completed path reached all 100 lambdas without warnings. KKT residuals
-and relative objective differences against an untimed pinned R glmnet
-reference are [reported for every selected solver](benchmarks/gaussian-records.md#achieved-accuracy),
-with every other thread setting retained in the result records. The reference
-difference is not a certified objective gap. glmnet's response rescaling by sᵧ
-uses α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ), giving the same objective.
-Dropping generated constant columns leaves 973 features on the smallest problem.
+Every completed path reached all 100 lambdas without warnings. The
+[accuracy table](benchmarks/gaussian-records.md#achieved-accuracy) reports KKT
+residuals and objective differences for every solver alongside its time,
+with every other thread setting retained in the result records.
 
-The first valid group was retained, even if slow or censored. There were two
-reviewed admission-only budget restarts on 50,000 × 2,000 and a mixed-window
-restart on 2,000 × 20,000 after a timed R pressure rejection and two admission
-failures. The [methods](benchmarks/gaussian-records.md#conditional-in-memory-recording-policy)
-disclose all exceptions and rejection counts; this is not an unqualified
-three-attempt limit across restarts. No observation was rejected for its speed.
+Some runs were retried under the [policy's limits and disclosed exceptions](benchmarks/gaussian-records.md#conditional-in-memory-recording-policy);
+no run was rejected for its speed.
 
 ### Logistic regression
 
@@ -406,38 +396,28 @@ make benchmark-figures GAUSSIAN_RESULTS=benchmarks/results/path-gaussian-local.j
 #### Least squares
 
 This fits an uncompressed 12 GB float64 matrix (20,000 × 75,000) under a
-3 GiB cgroup cap, including the process and page cache, with child swap zero.
-pybiglasso uses a NumPy memmap; R biglasso 1.7.2 uses a prepared file-backed
-`big.matrix`. Before each fit, its actual feature inode was evicted and
-verified to have no resident pages. Read-only `compsize` confirms both files
-are uncompressed and NOCOW on btrfs, despite a zstd mount option.
+3 GiB memory cap. pybiglasso reads a NumPy memmap; R biglasso 1.7.2 reads a
+prepared file-backed `big.matrix`. The page cache was evicted before each fit.
 
-Three fixed-order rounds ran Py1 → Py6 → R1. Times are native-fit medians,
-**n=3 per setting**, with min–max spread; backing-file preparation and R's
-process setup are outside the native timer. All nine observations are in the
-[record](benchmarks/results/out_of_core-gaussian.json).
+Both fit the same 20-lambda lasso path in three rounds in a fixed order.
+Times are medians, **n=3 per setting**, with min–max spread; input preparation
+and process setup are outside the fit timer. The [record](benchmarks/results/out_of_core-gaussian.json)
+contains all nine observations.
 
-| Solver | Median fit seconds (min–max) | Peak cgroup memory | Median storage reads | Median refault counter |
-|---|---|---|---|---|
-| pybiglasso, 1 thread | 122.3 (120.3–127.9) | 3 GiB | 282.2 GB | 4.57 GB |
-| pybiglasso, 6 threads | 106.2 (101.9–106.8) | 3 GiB | 291.8 GB | 15.52 GB |
-| R biglasso, 1 thread | 116.0 (114.3–117.4) | 3 GiB | 286.4 GB | 6.35 GB |
+| Solver | Median fit seconds (min–max) | Peak memory | Median data read from disk |
+|---|---|---|---|
+| pybiglasso, 1 thread | 122.3 (120.3–127.9) | 3 GiB | 282.2 GB |
+| pybiglasso, 6 threads | 106.2 (101.9–106.8) | 3 GiB | 291.8 GB |
+| R biglasso, 1 thread | 116.0 (114.3–117.4) | 3 GiB | 286.4 GB |
 
-The fits are disk-bound and roughly even; this is not a speed claim. Storage
-reads and the file-workingset refault counter measure different events, not
-exact logical matrix passes or every reread. Round-2 Py6's 137413 major faults
-remain in the record without exclusion or causal attribution. All six Python
-paths are byte-identical across threads and rounds. R agrees within the
-existing 1e-9 relative / 1e-11 absolute tolerances, with identical iterations
-and rejection counts in all three rounds.
+The fits are disk-bound and roughly even, not a speed claim. All six Python
+paths are byte-identical across threads and rounds. R agrees within 1e-9
+relative / 1e-11 absolute tolerances, with identical iterations and rejection
+counts in all three rounds.
 
-The OOC runs used background-service quiet mode; the RAM campaign above ran
-before that mode was deployed. The state audit reported no flags for any of
-the nine process envelopes. Its one-second polls sample a producer refreshed
-about every 30 seconds, not independent one-second checks or proof of
-continuous freezing. The order was fixed, not randomized or order-balanced;
-[methods and protocol limits](benchmarks/gaussian-records.md#out-of-core-recording-policy)
-apply to these descriptive observations.
+Other services on the machine were stopped for these runs, but not for the
+in-memory ones. The [methods](benchmarks/gaussian-records.md#out-of-core-recording-policy)
+cover the fixed order, memory accounting and limits of the environment checks.
 
 #### Logistic regression
 

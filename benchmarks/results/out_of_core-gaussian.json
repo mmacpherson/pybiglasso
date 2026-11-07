@@ -64,18 +64,13 @@
   },
   "timing_scope": "native fit intervals; R process setup excluded",
   "protocol": {
-    "quiet_mode": true,
     "global_cpu_quiet_seconds": 180,
     "global_cpu_quiet_limit": 0.1,
     "cpu_bookend_limit": 0.15,
     "evict_each_feature_inode": true,
     "feature_resident_before_bytes": 0,
-    "state": "frozen",
-    "state_poll_seconds": 1,
-    "state_producer_refresh_seconds_approximately": 30,
-    "state_freshness_limit_seconds": 90,
-    "state_flags": 0,
-    "randomized_order": false
+    "randomized_order": false,
+    "services_stopped": true
   },
   "observations": [
     {

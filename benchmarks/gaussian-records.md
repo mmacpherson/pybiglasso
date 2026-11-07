@@ -93,9 +93,9 @@ count or accuracy ranking. The counts include the six admission-only failures
 and the three mixed-window failures above. All accepted records, including
 valid single-slow and censored outcomes, remain available.
 
-The RAM campaign ran before background-service quiet mode was deployed. The
-out-of-core comparison below ran under quiet mode. Their environmental
-protocols differ and must not be conflated.
+The machine's other services were stopped during the out-of-core comparison,
+but not during the in-memory campaign. Their environmental protocols differ
+and must not be conflated.
 
 ## Achieved accuracy
 
@@ -195,16 +195,16 @@ matrix passes, and refaults do not count every reread. The raw observations
 include both metrics, faults, cgroup anon/current/peak and swap. Round-2 Py6
 major faults are 137413, retained without exclusion or causal inference.
 
-Background-service quiet mode stayed frozen with no reported problems for
-all nine process envelopes. A read-only logger sampled once per second; the
-producer refreshed approximately every 30 seconds. These samples are not
-independent one-second checks or proof of continuous freezing. The prospective
-state audit required exactly the owned lock keeper, only the registered R
-container in `holder_containers` when present, no read/gap/epoch errors, and
-state-file age at most 90 seconds. Maximum observed age was 30.600916936 s;
-all nine envelopes had no flags. Containers were bound by recorded name,
-immutable ID, PID, command and lock label. Cleanup, lock release, blocker
-absence and governor/EPP restoration were verified after the phase.
+The machine's other services were stopped while the benchmark lock was held.
+A read-only environment-status log was sampled once per second and refreshed
+approximately every 30 seconds. These samples are not independent one-second
+checks or proof that services stayed stopped continuously. The audit required
+that no unrelated process held the lock and no unrelated container ran,
+with no missing reads, polling gaps or unexplained status changes. The status
+file could be at most 90 seconds old; its maximum observed age was
+30.600916936 s. All nine fits had no flags. The benchmark's own R containers
+were checked against their recorded name, immutable ID, PID and command.
+Cleanup, lock release and governor/EPP restoration were verified afterward.
 
 All six Python paths are byte-identical across threads and rounds, including
 sparse storage. All three R comparisons pass the existing rtol=1e-9,
