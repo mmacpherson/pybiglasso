@@ -290,7 +290,8 @@ every solver. That keeps memory pressure low; a busy machine can behave
 differently. The repository's runners do not include that controller.
 
 Scikit-learn took less time on the tall problems; pybiglasso on the wide ones.
-Each uses its default tolerance, so these times are for the accuracy shown,
+With many more rows than features, scikit-learn's `enet_path` forms the Gram
+matrix XᵀX once and runs coordinate descent on that smaller matrix. Each uses its default tolerance, so these times are for the accuracy shown,
 not for the same accuracy. Scikit-learn's wide lasso fits have larger optimality
 (KKT) residuals, shown below. Times are seconds, lasso / elastic net (α=0.5).
 **† marks one completed run**; unmarked completed cells are three-run medians.
