@@ -1,0 +1,27 @@
+{
+  "measured_source_commit": "9a5adbdfbe50b03457a378975bcfb4de22995fcf",
+  "landing_harness_commit": "798d6f897d5d9022a22cd07ea26df30bd28c2f0f",
+  "native_source_commit": "cde044dcda282ede29d6213480b0d7e89ca626c6",
+  "harness_git_blobs": {
+    "benchmarks/out_of_core.py": "1a1da8b933a5e4860a0b4a5b22534787aeacc63d",
+    "benchmarks/path.py": "1a3be954a9cab74edc3c0554f62981cc1487b5df",
+    "benchmarks/r/fit_glmnet.R": "74fe59c2fe0b591041997f5feeb17d2331bbd764",
+    "benchmarks/r_filebacked.R": "b0855cc5e284538095717d6cd4a1ec684d676c94",
+    "benchmarks/run-gaussian-out-of-core.sh": "aa9d1395fcff06f7f1fd0e5eaad00de369e8ccdb",
+    "tests/r/fit_biglasso.R": "2f0b5f89c591ca289061111f19868eb2e05a815f",
+    "tests/test_benchmark_recording.py": "6b3d49d95e2ec6bd8cd984724f2e7202595840b3",
+    "tests/test_out_of_core_benchmark.py": "de2fcf7f98ad8567a24b961b7556fc603ef6782e"
+  },
+  "harness_files_tree_equal": true,
+  "accepted_ram_input_sha256": {
+    "tall-5k-1k": "9417c8fbd30163e15a3b8ee285f788948138f59529ba9db1e6f78676bd907ffd",
+    "tall-50k-2k": "46e4463aef186bdc19086a0041884fc2902534d5b6eaa0c95a1ded50729a3e4f",
+    "wide-2k-20k": "1ce25ff7519295636a211926862bb3c6c01ed3a163821499e9c058a15c4e5d2c",
+    "wide-5k-50k": "12f55083637eb1a8b92383515a1764758b60b7f9fa09e1046a9fff679f118ac0"
+  },
+  "public_ram_sha256": "f23209b411b7005cb465cd46818cc81de1429d407bde90f916d88ee6d355eb56",
+  "censored_nonfinite_encoding": "JSON null denotes unavailable elapsed duration or complete-path accuracy; cap and timed_out retain the lower-bound semantics",
+  "recording_controller": "external; conditioning, global page-cache resets and campaign cgroups are not provided by this repository",
+  "measured_tree": "88f84a1a74cf50cc13c61c1317689510d11fb882",
+  "landing_tree": "88f84a1a74cf50cc13c61c1317689510d11fb882"
+}

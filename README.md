@@ -34,8 +34,8 @@ it's also fast when the data does fit in memory. For logistic regression,
 across four benchmark problems with 1,000 to 50,000 features, a full 100-step
 path runs 2.2–4.9x faster than R's glmnet, 2.4–8.9x faster than R biglasso,
 and 4.9–8.5x faster than skglm, the fastest of the other Python solvers we
-tested. For least squares, it is 2.2–2.3x faster than glmnet on wide data and
-level with it or faster on tall data, where scikit-learn is fastest (see
+tested. For least squares, the benchmarks report native fit times together
+with the accuracy each solver reaches at its default controls (see
 [Performance](#performance)).
 
 It is an unofficial Python port of the R package
@@ -260,14 +260,18 @@ memory, every solver is given the same problem and the same 100-value lambda
 path, at its own default tolerance, and its accuracy is reported alongside its
 time. All ran on an AMD Ryzen 5 5600X (6 cores, 12 threads) with 64 GB of RAM,
 Python 3.14, and R 4.6.1, at 1, 6 and 12 threads; each solver is shown at its
-fastest. A time is the median of three runs, each in a fresh process, or a
-single run for a solver slow enough to take over a third of its time limit.
+smallest observed time among its declared thread settings. This is descriptive,
+not evidence of an optimal thread count. A time is the median of three fresh
+processes, or a labelled single observation when the prospective slow rule
+ends repetition.
 
 Each time covers the solver's own fitting calls. pybiglasso, R biglasso and
 glmnet standardize raw X themselves, inside that time. The Python solvers,
 which don't standardize, were given X already standardized; the benchmark's
 own preparation for them (centering the data for scikit-learn's least-squares
-path, and recovering its intercept) is outside it. Python competitors were
+path, and recovering its intercept) is outside it. Scikit-learn's default
+defensive copy (`copy_X=True`) is inside the least-squares timer. Python
+competitors were
 stopped at 10x pybiglasso's single-threaded time, and at no less than 5
 seconds, which would otherwise have stretched the runs to many hours; R gets a
 fixed 900 seconds. Since pybiglasso is shown at its fastest thread count, a
@@ -280,32 +284,56 @@ stopped run sits beyond 10x in the figures. The scripts and raw results are in [
   <img alt="Least squares: time relative to pybiglasso, by dataset and solver" src="docs/benchmarks-least-squares-light.png">
 </picture>
 
-pybiglasso is the fastest on wide data, 2.2–2.3x faster than glmnet. On tall data
-it is level with glmnet on the smaller problem and 1.6x faster on the larger,
-but scikit-learn is faster still, by 3–4x: with many more rows than features,
-its `enet_path` forms the Gram matrix XᵀX once and runs coordinate descent on
-that, so each update costs time in the number of features rather than rows. On
-wide data, scikit-learn is 4–5x slower than pybiglasso. Times are in seconds,
-lasso / elastic net (α=0.5); "≥" marks a run stopped at its time limit:
+These are default-control comparisons on prepared inputs, conditional on the
+[memory recording policy](benchmarks/gaussian-records.md#conditional-in-memory-recording-policy).
+Every solver used the same policy. Before each setting attempt, an external
+controller reset clean page cache and required fixed free-memory reserves;
+it rejected declared direct-reclaim, swap-out, allocation-stall and CPU-gate
+failures. This excludes costs that ordinary shared-machine use can incur.
+The controller is external; the repository's runners alone do not reproduce it.
+
+Scikit-learn has lower default-control times on the tall problems; pybiglasso
+has lower times on the wide problems. These timings are scoped to the achieved
+accuracy, not equal-accuracy comparisons: wide lasso at scikit-learn's default
+tolerance has materially larger KKT residuals, shown below. Times are seconds,
+lasso / elastic net (α=0.5). **† marks one completed observation**; unmarked
+completed cells are three-run medians. **≥ marks a censored lower bound**,
+rounded down, without a completed-path accuracy claim. The figure uses these
+same selected settings; sample counts and attained accuracy qualify its ratios.
 
 | Solver | 5,000 × 1,000 | 50,000 × 2,000 | 2,000 × 20,000 | 5,000 × 50,000 |
 |---|---|---|---|---|
-| pybiglasso | 0.24 / 0.25 | 2.89 / 2.92 | 0.78 / 0.75 | 4.97 / 4.93 |
-| R biglasso | 0.71 / 0.75 | 4.49 / 4.63 | 0.94 / 0.97 | 5.55 / 5.58 |
-| glmnet (R) | 0.26 / 0.26 | 4.78 / 4.74 | 1.71 / 1.72 | 11.1 / 10.9 |
-| skglm | 1.39 / 1.38 | 18.3 / 17.0 | 6.90 / 7.09 | 41.7 / 42.7 |
-| glum | 1.42 / 1.55 | 9.77 / 11.3 | 1.74 / 1.74 | 11.4 / 11.5 |
-| scikit-learn | 0.06 / 0.06 | 0.88 / 0.88 | 3.27 / 3.75 | 22.6 / 25.7 |
-| statsmodels | ≥ 5.00 / ≥ 5.00 | ≥ 33.1 / ≥ 33.6 | ≥ 9.44 / ≥ 9.30 | ≥ 60.7 / ≥ 60.4 |
+| pybiglasso | 0.14 / 0.15 | 1.26 / 1.40 | 0.21 / 0.22 | 0.90 / 0.92 |
+| R biglasso | 0.68 / 0.72 | 4.49 / 4.65 | 0.92 / 0.93 | 5.57 / 5.49 |
+| glmnet (R) | 0.28 / 0.26 | 4.71 / 4.78 | 1.75 / 1.74 | 11.18† / 11.09† |
+| skglm | 1.36 / 1.35 | ≥ 17.51 / 16.80† | 6.82† / 7.09† | ≥ 32.06 / ≥ 32.61 |
+| glum | 1.51 / 1.68† | 9.77† / 10.94† | 1.72 / 1.73 | 12.43† / 12.40† |
+| scikit-learn | 0.06 / 0.07 | 0.84 / 0.85 | 3.19† / 3.72† | 22.62† / 25.68† |
+| statsmodels | ≥ 5.00 / ≥ 5.00 | ≥ 17.51 / ≥ 19.35 | ≥ 8.69 / ≥ 8.76 | ≥ 32.06 / ≥ 32.61 |
 
-Every path that finished reached all 100 lambdas without warnings. The largest
-optimality (KKT) residual, in response units, is about 1e-4 for pybiglasso, R
-biglasso, glmnet and skglm, and 1e-5 for glum; scikit-learn's is 5e-5 on the
-tall datasets and 1.2e-2 for the wide lasso, at its default tolerance. glmnet's
-fast Gaussian path rescales the response by its standard deviation sᵧ, so it
-was given α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ), which solve the same
-standardized objective (for the lasso, α and λ are unchanged). Dropping
-generated constant columns leaves 973 features on the smallest dataset.
+For lasso (α=1), native seconds and maximum KKT residual in response units:
+
+| Rows × features | pybiglasso seconds; max KKT | scikit-learn seconds; max KKT |
+|---|---|---|
+| 5,000 × 1,000 | 0.14; 9.96e-5 | 0.06; 5.00e-5 |
+| 50,000 × 2,000 | 1.26; 1.09e-5 | 0.84; 4.48e-5 |
+| 2,000 × 20,000 | 0.21; 7.81e-6 | 3.19†; 1.24e-2 |
+| 5,000 × 50,000 | 0.90; 5.43e-6 | 22.62†; 1.22e-2 |
+
+Every completed path reached all 100 lambdas without warnings. KKT residuals
+and relative objective differences against an untimed pinned R glmnet
+reference are [reported for every selected solver](benchmarks/gaussian-records.md#achieved-accuracy),
+with every other thread setting retained in the result records. The reference
+difference is not a certified objective gap. glmnet's response rescaling by sᵧ
+uses α′ = α / (α + (1−α)sᵧ) and λ′ = λ(α + (1−α)sᵧ), giving the same objective.
+Dropping generated constant columns leaves 973 features on the smallest problem.
+
+The first valid group was retained, even if slow or censored. There were two
+reviewed admission-only budget restarts on 50,000 × 2,000 and a mixed-window
+restart on 2,000 × 20,000 after a timed R pressure rejection and two admission
+failures. The [methods](benchmarks/gaussian-records.md#conditional-in-memory-recording-policy)
+disclose all exceptions and rejection counts; this is not an unqualified
+three-attempt limit across restarts. No observation was rejected for its speed.
 
 ### Logistic regression
 
@@ -361,20 +389,59 @@ time, up to 900 seconds:
 | scikit-learn saga | 91.0 s (144x) | 93.8 s (150x) | 1e-5 |
 | statsmodels | over 638 s (over 1,000x) | — | — |
 
-To rerun both families and redraw the figures and tables:
+To run both families and redraw the figures and tables (the conditional
+least-squares recording policy needs the external controls described above):
 
 ```bash
 make r-image R_VERSION=4.6.1  # once
 export CONTAINER=docker R_IMAGE=pybiglasso-r:r4.6.1 THREADS="1 6 12"
 DATASETS="tall-5k-1k tall-50k-2k wide-2k-20k wide-5k-50k" \
-  benchmarks/run-gaussian.sh benchmarks/results/path-gaussian-zen3.jsonl
+  benchmarks/run-gaussian.sh benchmarks/results/path-gaussian-local.jsonl
 benchmarks/run-path.sh zen3
-make benchmark-figures
+make benchmark-figures GAUSSIAN_RESULTS=benchmarks/results/path-gaussian-local.jsonl
 ```
 
 ### Out of core
 
-This test fits a 12 GB float64 matrix (20,000 x 75,000) with
+#### Least squares
+
+This fits an uncompressed 12 GB float64 matrix (20,000 × 75,000) under a
+3 GiB cgroup cap, including the process and page cache, with child swap zero.
+pybiglasso uses a NumPy memmap; R biglasso 1.7.2 uses a prepared file-backed
+`big.matrix`. Before each fit, its actual feature inode was evicted and
+verified to have no resident pages. Read-only `compsize` confirms both files
+are uncompressed and NOCOW on btrfs, despite a zstd mount option.
+
+Three fixed-order rounds ran Py1 → Py6 → R1. Times are native-fit medians,
+**n=3 per setting**, with min–max spread; backing-file preparation and R's
+process setup are outside the native timer. All nine observations are in the
+[record](benchmarks/results/out_of_core-gaussian.json).
+
+| Solver | Median fit seconds (min–max) | Peak cgroup memory | Median storage reads | Median refault counter |
+|---|---|---|---|---|
+| pybiglasso, 1 thread | 122.3 (120.3–127.9) | 3 GiB | 282.2 GB | 4.57 GB |
+| pybiglasso, 6 threads | 106.2 (101.9–106.8) | 3 GiB | 291.8 GB | 15.52 GB |
+| R biglasso, 1 thread | 116.0 (114.3–117.4) | 3 GiB | 286.4 GB | 6.35 GB |
+
+The fits are disk-bound and roughly even; this is not a speed claim. Storage
+reads and the file-workingset refault counter measure different events, not
+exact logical matrix passes or every reread. Round-2 Py6's 137413 major faults
+remain in the record without exclusion or causal attribution. All six Python
+paths are byte-identical across threads and rounds. R agrees within the
+existing 1e-9 relative / 1e-11 absolute tolerances, with identical iterations
+and rejection counts in all three rounds.
+
+The OOC runs used background-service quiet mode; the RAM campaign above ran
+before that mode was deployed. The state audit reported no flags for any of
+the nine process envelopes. Its one-second polls sample a producer refreshed
+about every 30 seconds, not independent one-second checks or proof of
+continuous freezing. The order was fixed, not randomized or order-balanced;
+[methods and protocol limits](benchmarks/gaussian-records.md#out-of-core-recording-policy)
+apply to these descriptive observations.
+
+#### Logistic regression
+
+The logistic test fits a 12 GB float64 matrix (20,000 x 75,000) with
 memory capped at 3 GB. pybiglasso read a numpy memmap under a cgroup memory
 limit; R read a file-backed `big.matrix` in a container with the same limit,
 and both were measured from their cgroup's accounting. Before each run, the
