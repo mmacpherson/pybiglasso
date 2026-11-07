@@ -416,9 +416,8 @@ paths are byte-identical across threads and rounds. R agrees within 1e-9
 relative / 1e-11 absolute tolerances, with identical iterations and rejection
 counts in all three rounds.
 
-Other services on the machine were stopped for these runs, but not for the
-in-memory ones. The [methods](benchmarks/gaussian-records.md#out-of-core-recording-policy)
-cover the fixed order, memory accounting and limits of the environment checks.
+The [methods](benchmarks/gaussian-records.md#out-of-core-recording-policy)
+cover the fixed order, memory accounting and environment checks.
 
 #### Logistic regression
 

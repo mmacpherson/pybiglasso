@@ -93,10 +93,6 @@ count or accuracy ranking. The counts include the six admission-only failures
 and the three mixed-window failures above. All accepted records, including
 valid single-slow and censored outcomes, remain available.
 
-The machine's other services were stopped during the out-of-core comparison,
-but not during the in-memory campaign. Their environmental protocols differ
-and must not be conflated.
-
 ## Achieved accuracy
 
 KKT residuals are evaluated independently from the data and returned
