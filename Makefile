@@ -131,7 +131,7 @@ fixtures:
 	CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:r$(FIXTURES_R) uv run python scripts/make_r_fixtures.py
 
 # the README's benchmark figures and tables, from the committed results
-GAUSSIAN_RESULTS = benchmarks/results/path-gaussian-zen3.jsonl
+GAUSSIAN_RESULTS = benchmarks/results/path-gaussian-memory-conditioned.jsonl
 LOGISTIC_RESULTS = benchmarks/results/path-zen3.jsonl
 
 .PHONY: benchmark-figures
