@@ -232,8 +232,9 @@ def standardized_intercept(path):
     """Each lambda's intercept on the standardized scale, b0 + sum_j b_j * center_j.
 
     A BLAS matmul's summation order depends on its thread count, and each run
-    limits BLAS to its own threads; fsum rounds once, so the result is the same
-    at any thread count, as pybiglasso's own output is.
+    limits BLAS to its own threads; fsum's result doesn't depend on summation
+    order or BLAS, so it is the same at any thread count, as pybiglasso's own
+    output is.
     """
     import numpy as np
 
