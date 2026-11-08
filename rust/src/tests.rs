@@ -722,3 +722,46 @@ fn checked_strided_read_checks() {
     let x = Array2::from_shape_vec((5, 3), values(15, 13)).expect("shape");
     Strided::<_, true>(x.column(1)).at(5);
 }
+
+/// A contiguous column that counts will_need calls.
+struct Spy<'a> {
+    x: &'a [f64],
+    calls: std::sync::atomic::AtomicUsize,
+}
+impl Col for Spy<'_> {
+    fn n(&self) -> usize {
+        self.x.len()
+    }
+    fn at(&self, i: usize) -> f64 {
+        self.x[i]
+    }
+    fn will_need(&self) {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn sweep_reads_ahead_exactly_the_columns_of_a_row_split_pass() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let n = PAR_ROWS;
+    let x: Vec<f64> = (0..n).map(|i| ((i * 7) % 13) as f64 - 6.0).collect();
+    let y: Vec<f64> = (0..n).map(|i| ((i * 5) % 11) as f64 - 5.0).collect();
+    let w: Vec<f64> = (0..n).map(|i| 0.25 + (i % 3) as f64 * 0.125).collect();
+    let spy = |x| Spy { x, calls: Default::default() };
+    for (threads, rows, split) in [(2, n, true), (1, n, false), (2, n - 1, false)] {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("pool");
+        let (a, b) = (spy(&x[..rows]), spy(&y[..rows]));
+        let (mut r, mut eta) = (vec![0.5; rows], vec![0.0; rows]);
+        let want = usize::from(split);
+        pool.install(|| Pass::shift(&a, 0.25, 0.5).sweep(rows, &mut r, &mut eta, &w[..rows]));
+        assert_eq!(a.calls.load(Relaxed), want, "shift reads one column, {threads} threads, {rows} rows");
+        pool.install(|| Pass::moments(&b).sweep(rows, &mut r, &mut eta, &w[..rows]));
+        assert_eq!(b.calls.load(Relaxed), want, "moments reads one column, {threads} threads, {rows} rows");
+        pool.install(|| Pass::shift_then_moments(&a, 0.25, 0.5, &b).sweep(rows, &mut r, &mut eta, &w[..rows]));
+        assert_eq!(
+            (a.calls.load(Relaxed), b.calls.load(Relaxed)),
+            (2 * want, 2 * want),
+            "shift then moments reads both, {threads} threads, {rows} rows"
+        );
+    }
+}
