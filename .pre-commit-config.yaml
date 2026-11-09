@@ -27,7 +27,7 @@ repos:
     # Original patch context/recorded sources are checksummed evidence, not code to rewrite.
     exclude: ^benchmarks/results/int8-m1-pro-quiet/
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.17.3
+  rev: v0.17.4
   hooks:
   - id: ruff
     args: [--fix, --exit-non-zero-on-fix]
@@ -38,7 +38,7 @@ repos:
     types_or: [python, pyi, jupyter]
     exclude: ^benchmarks/results/int8-m1-pro-quiet/
 - repo: https://github.com/crate-ci/typos
-  rev: v1.51.1
+  rev: v1.52.0
   hooks:
   - id: typos
     files: \.(md|txt)$
