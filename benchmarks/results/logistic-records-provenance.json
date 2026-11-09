@@ -1,0 +1,80 @@
+{
+  "accepted_primary_settings": 112,
+  "accepted_relaxed_settings": 29,
+  "accuracy_metric_environment": {
+    "blas_threads": 1,
+    "numpy": "2.5.4",
+    "python": "3.14.3 (main, Mar 24 2026, 22:50:36) [Clang 22.1.1 ]",
+    "scipy": "1.18.1",
+    "timing_scope": "untimed accuracy recomputation from accepted model exports"
+  },
+  "accuracy_only_references": 8,
+  "accuracy_overlay": {
+    "all_coefficients_retained_bytes": true,
+    "all_intercepts_changed": true,
+    "benchmark_path_sha256": "2d76fbfce12c39c80f4149859fabf8003b41bf8fefa2f9b7d9b6d58476f3a3ae",
+    "benchmark_source_commit": "6e0dc584a05e1318f73c13f2ad603e9b3065213a",
+    "max_absolute_intercept_change": 8.316264343832813e-15,
+    "metric_recomputation_blas_threads": 1,
+    "model_exports": 60,
+    "regeneration_manifest_sha256": "a60c02ade18e8bf51707928da6351e9670d855d126b196ce6bb59c72f49298b5",
+    "scope": "separate untimed accuracy overlay, not a recreation of measured Python3.14.0 or a universal cross-version fsum guarantee",
+    "thread_repeat_identity_checked": true,
+    "untimed_python": "3.14.3 (main, Mar 24 2026, 22:50:36) [Clang 22.1.1 ]"
+  },
+  "comparison_scope": "default controls on prepared inputs, achieved accuracy rather than equal-accuracy or optimum-gap claims",
+  "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+  "ooc_native_build": {
+    "codegen_units": 1,
+    "image_digest": "sha256:dc58399aca4cfb0de257f92e2de71b4f8421e60cce8542fcd5e28df0c0760942",
+    "llvm": "23.1.1",
+    "lto": "fat",
+    "maturin": "1.16.0",
+    "native_sha256": "f63d5fd6195b7f7c24f707584e193d5e9365392ef0a1e9d3d63f6babccafef4a",
+    "native_source_commit": "9dde400a8a2472eb891d80832bf3bfe8ad392523",
+    "opt_level": 3,
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "rustflags": [],
+    "target": "x86_64-unknown-linux-gnu",
+    "wheel_sha256": "12e86441458fe7d097eec613763867d829104b2f329d3c164892576179a99c70"
+  },
+  "ooc_native_sha256": "f63d5fd6195b7f7c24f707584e193d5e9365392ef0a1e9d3d63f6babccafef4a",
+  "ooc_timing_source_commit": "9dde400a8a2472eb891d80832bf3bfe8ad392523",
+  "public_files_sha256": {
+    "out_of_core-logistic.json": "f613c3b184951be7b50259c46bce29c1e8b079f505325f96351e7fabd904fbd2",
+    "path-binomial-memory-conditioned.jsonl": "fa407565d2810af6b262b0596d8295491b105049bbd18e612c55118c5860d922",
+    "path-binomial-relaxed.jsonl": "1cdc261b4bb4a5942eff55f042e31995bb47c33e297be3b9e7aa6732f598e5be"
+  },
+  "ram_R_packages": {
+    "R": "R version 4.6.1 (2026-06-24)",
+    "biglasso": "1.7.2",
+    "glmnet": "5.1"
+  },
+  "ram_measured_python": "3.14.0",
+  "ram_native_build": {
+    "codegen_units": 1,
+    "image_digest": "sha256:dc58399aca4cfb0de257f92e2de71b4f8421e60cce8542fcd5e28df0c0760942",
+    "llvm": "23.1.1",
+    "lto": "fat",
+    "maturin": "1.16.0",
+    "native_sha256": "c823d131d0aef39883266231833847df43acf6ce9567a6dcfbb2aa02dc79746d",
+    "native_source_commit": "cde044dcda282ede29d6213480b0d7e89ca626c6",
+    "opt_level": 3,
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "rustflags": [],
+    "target": "x86_64-unknown-linux-gnu",
+    "wheel_sha256": "b3f5707d4593137a2c32c1e2e070365d14c028b07cd819bb6bf28418fd18560a"
+  },
+  "ram_native_sha256": "c823d131d0aef39883266231833847df43acf6ce9567a6dcfbb2aa02dc79746d",
+  "ram_packages": {
+    "glum": "3.4.1",
+    "numpy": "2.5.4",
+    "pybiglasso": "0.5.0",
+    "scikit-learn": "1.9.1",
+    "scipy": "1.18.1",
+    "skglm": "0.5",
+    "statsmodels": "0.15.0"
+  },
+  "ram_timing_source_commit": "9b44b7e4c0ca54f45e99169efbc6e4cd85ce4957",
+  "recording_controller": "external; the repository scripts alone do not reproduce conditioning or service-isolation policy"
+}

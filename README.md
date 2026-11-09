@@ -260,7 +260,8 @@ R biglasso and by checks independent of it (see [Validation](#validation)). In
 memory, every solver is given the same problem and the same 100-value lambda
 path, at its own default tolerance, and its accuracy is reported alongside its
 time. All ran on an AMD Ryzen 5 5600X (6 cores, 12 threads) with 64 GB of RAM,
-Python 3.14, and R 4.6.1, at 1, 6 and 12 threads; each solver is shown at its
+Python 3.14, and R 4.6.1, at 1, 6 and 12 threads for least squares and at 1
+and 6 for logistic regression; each solver is shown at its
 smallest observed time among its declared thread settings. This is descriptive,
 not evidence of an optimal thread count. A time is the median of three fresh
 processes, or a labelled single observation when repetition ends early.
@@ -333,52 +334,78 @@ no run was rejected for its speed.
   <img alt="Logistic regression: time relative to pybiglasso, by dataset and solver" src="docs/benchmarks-logistic-light.png">
 </picture>
 
+These timings depend on the [recording policy](benchmarks/logistic-records.md#conditional-in-memory-recording-policy),
+under the same external controller as least squares.
+
 pybiglasso is the fastest on every dataset: 2.2–4.9x faster than glmnet,
-2.4–8.9x faster than R biglasso, and 4.9–8.5x faster than skglm, the fastest of
-the Python solvers. In seconds, lasso / elastic net (α=0.5):
+2.3–8.4x faster than R biglasso, and 4.8–8.6x faster than skglm, the fastest of
+the Python solvers. Each uses its default tolerance, so these times are for the
+accuracy shown, not for the same accuracy. Times are seconds, lasso / elastic
+net (α=0.5). **† marks one completed run**; unmarked completed cells are
+three-run medians. **≥ means a fit stopped at its time limit**, with that lower
+bound rounded down; its full-path accuracy is unavailable.
 
 | Solver | 5,000 × 1,000 | 50,000 × 2,000 | 2,000 × 20,000 | 5,000 × 50,000 |
 |---|---|---|---|---|
-| pybiglasso | 0.61 / 0.64 | 5.93 / 5.97 | 1.02 / 1.08 | 6.32 / 6.38 |
-| R biglasso | 3.95 / 4.08 | 52.9 / 53.2 | 2.89 / 3.00 | 15.5 / 15.8 |
-| glmnet (R) | 1.37 / 1.40 | 29.2 / 29.0 | 2.37 / 2.42 | 15.2 / 15.6 |
-| skglm | 4.06 / 4.40 | 43.4 / 50.6 | 7.19 / 6.72 | 32.5 / 31.2 |
-| glum | ≥ 6.36 / ≥ 6.55 | ≥ 97.3 / ≥ 98.0 | ≥ 12.4 / ≥ 12.7 | 71.7 / ≥ 75.0 |
-| scikit-learn liblinear | ≥ 6.36 / — | ≥ 97.3 / — | ≥ 12.4 / — | ≥ 73.8 / — |
-| scikit-learn saga | ≥ 6.36 / ≥ 6.55 | ≥ 97.3 / ≥ 98.0 | ≥ 12.4 / ≥ 12.7 | ≥ 73.8 / ≥ 75.0 |
-| statsmodels | ≥ 6.36 / — | ≥ 97.3 / — | — / — | — / — |
+| pybiglasso | 0.63 / 0.65 | 6.37 / 6.44 | 1.12 / 1.16 | 6.93 / 7.02 |
+| R biglasso | 4.03† / 4.16† | 53.6† / 53.5† | 3.04 / 3.10 | 16.1 / 16.5 |
+| glmnet (R) | 1.49 / 1.54 | 31.4 / 31.0 | 2.48 / 2.55 | 15.7 / 16.1 |
+| skglm | 4.21† / 4.61† | 47.1† / 55.0† | 7.65† / 7.10† | 34.7† / 33.7† |
+| glum | ≥ 6.78 / ≥ 6.91 | 107† / 110† | ≥ 13.0 / ≥ 13.5 | 74.6† / ≥ 80.3 |
+| scikit-learn liblinear | ≥ 6.78 / — | ≥ 110 / — | ≥ 13.0 / — | ≥ 79.3 / — |
+| scikit-learn saga | ≥ 6.78 / ≥ 6.91 | ≥ 110 / ≥ 110 | ≥ 13.0 / ≥ 13.5 | ≥ 79.3 / ≥ 80.3 |
+| statsmodels | ≥ 6.78 / — | ≥ 110 / — | — / — | — / — |
 
 **Which solvers.** R biglasso, the original; R's glmnet, whose coordinate
 descent biglasso builds on; and every maintained Python package, installable
 with pip, that fits L1 or elastic-net logistic regression on a CPU:
 scikit-learn (its liblinear and saga solvers), glum, skglm, and statsmodels.
-liblinear and statsmodels fit the lasso only. statsmodels ran only on the tall
-datasets: its L1 fit uses a general-purpose optimizer with dense matrices over
-twice the columns, which would need about 12 GB and 76 GB on the wide ones.
+liblinear and statsmodels fit the lasso only. liblinear also penalizes the
+intercept, so its fit is a slightly different problem; it is shown for
+reference. statsmodels ran only on the tall datasets: its L1 fit uses a
+general-purpose optimizer with dense matrices over twice the columns, which
+would need about 12 GB and 76 GB on the wide ones.
 
-**Accuracy.** Accuracy here is each path's worst relative gap, over its
-lambdas, between its objective and the best any solver reached at that lambda
-(not a certified gap to the optimum). glmnet fits every path about as
-accurately as pybiglasso: a worst gap of 3e-6 against pybiglasso's 3e-6. For the lasso, R
-biglasso and pybiglasso use the same coordinate update; for the elastic net each runs its own update
-(see [Differences](#differences-from-r-biglasso)), and pybiglasso with
-`r_compatible=True`, which matches R, takes about as long as its default. R's
-adaptive screening rule is no faster than SSR on these problems.
+**Accuracy.** For lasso (α=1), native seconds and the largest optimality (KKT)
+residual along the path:
 
-**With a relaxed limit.** To show how large the gaps get, the smallest
-problem (5,000 × 1,000) also ran with the limit raised to 1,000x pybiglasso's
-time, up to 900 seconds:
-
-| Solver | Lasso | Elastic net (α=0.5) | Worst relative gap |
+| Rows × features | pybiglasso seconds; max KKT | glmnet seconds; max KKT | skglm seconds; max KKT |
 |---|---|---|---|
-| pybiglasso | 0.63 s | 0.62 s | 1e-6 |
-| pybiglasso, `eps=1e-10` | 1.40 s (2.2x) | 1.42 s (2.3x) | 3e-10 |
-| glmnet 5.1 (R) | 1.38 s (2.2x) | 1.40 s (2.2x) | 2e-6 |
-| skglm | 4.06 s (6.4x) | 4.42 s (7.1x) | 2e-4 |
-| glum | 9.00 s (14x) | 9.19 s (15x) | 6e-9 |
-| scikit-learn liblinear | 20.4 s (32x) | — | 5e-6 |
-| scikit-learn saga | 91.0 s (144x) | 93.8 s (150x) | 1e-5 |
-| statsmodels | over 638 s (over 1,000x) | — | — |
+| 5,000 × 1,000 | 0.63; 4.18e-5 | 1.49; 4.95e-5 | 4.21†; 9.75e-5 |
+| 50,000 × 2,000 | 6.37; 1.25e-5 | 31.4; 1.13e-5 | 47.1†; 9.65e-5 |
+| 2,000 × 20,000 | 1.12; 2.62e-5 | 2.48; 3.13e-5 | 7.65†; 2.48e-5 |
+| 5,000 × 50,000 | 6.93; 1.85e-5 | 15.7; 2.60e-5 | 34.7†; 3.35e-5 |
+
+glmnet fits about as accurately as pybiglasso. Every completed path reached all
+100 lambdas without warnings. For the lasso, R biglasso and pybiglasso use the
+same coordinate update and reach the same residuals. For the elastic net each
+runs its own update (see [Differences](#differences-from-r-biglasso)), so R's
+fits, and pybiglasso's with `r_compatible=True`, which matches R and takes about
+as long as its default, solve a slightly different objective; their residuals
+against the common one aren't comparable. R's adaptive screening rule is about
+as fast as SSR on these problems. The
+[accuracy table](benchmarks/logistic-records.md#achieved-accuracy-beside-the-observed-times)
+lists every solver's residual beside its time, including pybiglasso with
+`eps=1e-10`.
+
+**With a relaxed limit.** To show how long the stopped solvers take, the
+smallest problem (5,000 × 1,000) also ran with the limit raised to 1,000x
+pybiglasso's time, up to 900 seconds. All are three-run medians:
+
+| Solver | Lasso | Elastic net (α=0.5) | Max KKT, lasso |
+|---|---|---|---|
+| pybiglasso | 0.64 s | 0.65 s | 4.2e-5 |
+| pybiglasso, `eps=1e-10` | 1.46 s (2.3x) | 1.38 s (2.1x) | 1.1e-6 |
+| glmnet 5.1 (R) | 1.48 s (2.3x) | 1.37 s (2.1x) | 5.0e-5 |
+| R biglasso 1.7.2 | 4.01 s (6.3x) | 4.03 s (6.2x) | 4.2e-5 |
+| skglm | 4.21 s (6.6x) | 4.41 s (6.8x) | 9.7e-5 |
+| glum | 9.10 s (14x) | 8.94 s (14x) | 2.9e-5 |
+| scikit-learn liblinear | 21.0 s (33x) | — | 1.4e-3 |
+| scikit-learn saga | 91.3 s (144x) | 92.9 s (144x) | 3.1e-3 |
+| statsmodels | over 681 s (over 1,000x) | — | — |
+
+liblinear raised 200 warnings on each of its paths; every other completed path
+ran without warnings.
 
 To run both families and redraw the figures and tables (the conditional
 least-squares recording policy needs the external controls described above):
@@ -388,8 +415,9 @@ make r-image R_VERSION=4.6.1  # once
 export CONTAINER=docker R_IMAGE=pybiglasso-r:r4.6.1 THREADS="1 6 12"
 DATASETS="tall-5k-1k tall-50k-2k wide-2k-20k wide-5k-50k" \
   benchmarks/run-gaussian.sh benchmarks/results/path-gaussian-local.jsonl
-benchmarks/run-path.sh zen3
-make benchmark-figures GAUSSIAN_RESULTS=benchmarks/results/path-gaussian-local.jsonl
+benchmarks/run-path.sh local
+make benchmark-figures GAUSSIAN_RESULTS=benchmarks/results/path-gaussian-local.jsonl \
+  LOGISTIC_RESULTS=benchmarks/results/path-local.jsonl
 ```
 
 ### Out of core
@@ -421,22 +449,31 @@ cover the fixed order, memory accounting and environment checks.
 
 #### Logistic regression
 
-The logistic test fits a 12 GB float64 matrix (20,000 x 75,000) with
-memory capped at 3 GB. pybiglasso read a numpy memmap under a cgroup memory
-limit; R read a file-backed `big.matrix` in a container with the same limit,
-and both were measured from their cgroup's accounting. Before each run, the
-matrix was evicted from the page cache. Both fit the same 20-lambda lasso path
-and agree to 1e-9, with identical iteration counts. pybiglasso ran twice, and
-both runs are shown; R ran once.
+The same 12 GB matrix (20,000 × 75,000), under the same 3 GiB memory cap and
+with the page cache evicted before each fit, here fits a 20-lambda logistic
+lasso path. pybiglasso reads a NumPy memmap; R biglasso 1.7.2 reads a prepared
+file-backed `big.matrix`. Three rounds ran in a fixed order; times are medians,
+**n=3 per setting**, with min–max spread. The
+[record](benchmarks/results/out_of_core-logistic.json) contains all nine
+observations, with each fit's data read and page faults.
 
-| | Fit time | Peak memory | Re-read from disk during the fit |
-|---|---|---|---|
-| pybiglasso, 1 thread | 111 s, 131 s | 3.2 GB (at the cap) | 7.9 GB, 10.9 GB |
-| pybiglasso, 6 threads | 109 s, 151 s | 3.2 GB (at the cap) | 13.3 GB, 15.1 GB |
-| R biglasso 1.7.2 | 148 s, plus 41 s to build the `big.matrix` | 3.2 GB (at the cap) | 10.6 GB |
+| Solver | Median fit seconds (min–max) | Median data read from disk |
+|---|---|---|
+| pybiglasso, 1 thread | 142.5 (137.1–161.8) | 342.8 GB |
+| pybiglasso, 6 threads | 114.6 (113.1–118.2) | 322.0 GB |
+| R biglasso, 1 thread | 162.8 (156.3–184.8) | 347.9 GB |
 
-Here the disk sets the pace, and times vary by a third from run to run. Extra
-threads don't reliably help: they evict pages each other still need.
+This comparison is I/O-intensive: each fit reads the matrix from disk many
+times over, so it measures reading as much as fitting. On the medians,
+pybiglasso was about 1.1x faster than R at one thread and 1.4x faster at six;
+the one-thread ranges overlap, and at six threads it was faster than R in every
+round. Data read and fault counts vary from run to run, and these records don't
+identify why. All six Python paths are byte-identical across threads and rounds.
+R agrees within 1e-9 relative / 1e-11 absolute tolerances, with identical
+iterations and rejection counts in all three rounds.
+
+The [methods](benchmarks/logistic-records.md#memory-capped-out-of-core) cover
+the fixed order, memory accounting and file checks.
 
 ### Not compared
 
