@@ -40,7 +40,8 @@ impl Elem for bool {
 /// One column of X, as the rows being fit (all of them, or row_indices).
 ///
 /// The two reads of X itself, `Contig::at` and `Strided::at`, check their
-/// bounds unless CHECKED is false, the crate's only unsafe code: checking
+/// bounds unless CHECKED is false, the crate's only unsafe code besides
+/// `will_need`'s madvise call: checking
 /// every gathered or strided row costs 11-15% of a fit. Every caller indexes
 /// below n(), and Gather's row_indices are range-checked against X's rows
 /// before the fit, so the check guards against a bug here, not bad input; it
@@ -66,6 +67,10 @@ pub(crate) trait Col: Sync {
     fn at_seq(&self, i: usize, _hint: &mut usize) -> f64 {
         self.at(i)
     }
+    /// Ask for this column's storage to be read ahead, before a pass that
+    /// shares its rows out across threads; see `will_need`.
+    #[inline(always)]
+    fn will_need(&self) {}
     /// Complete byte-aligned bool blocks, excluding any scalar tail.
     #[inline(always)]
     fn packed_bytes(&self) -> Option<&[u8]> {
@@ -89,6 +94,9 @@ impl<T: Elem, const CHECKED: bool> Col for Contig<'_, T, CHECKED> {
     #[inline(always)]
     fn n(&self) -> usize {
         self.0.len()
+    }
+    fn will_need(&self) {
+        will_need(self.0);
     }
     #[inline(always)]
     #[allow(unsafe_code)]
@@ -145,6 +153,9 @@ impl<C: Col> Col for Gather<'_, C> {
     #[inline(always)]
     fn n(&self) -> usize {
         self.idx.len()
+    }
+    fn will_need(&self) {
+        self.col.will_need();
     }
     #[inline(always)]
     fn at(&self, i: usize) -> f64 {
@@ -208,6 +219,83 @@ pub(crate) trait Design: Sync {
     fn nrow(&self) -> usize;
 }
 
+/// Ask the kernel to start reading v's pages in.
+///
+/// Out of core, a memory-mapped column whose rows several threads share is
+/// faulted in a chunk at a time, out of order. Linux keeps a count of mmap
+/// misses in the file's read-ahead state and, when they pile up, stops
+/// reading around later faults, so the scans over the rest of X can slow to
+/// a few pages per fault (measured: 6 threads 4x slower than 1, with 850x the
+/// major faults, on a memory-capped fit). One request for the whole column
+/// ahead of the pass starts it reading ahead of the threads. It is only
+/// advice: it never changes the data, and the kernel may not take it; for
+/// memory that isn't a file mapping, it can at most bring back swapped-out
+/// pages.
+#[allow(unsafe_code)]
+pub(crate) fn will_need<T>(v: &[T]) {
+    #[cfg(unix)]
+    {
+        use std::sync::OnceLock;
+        static PAGE: OnceLock<usize> = OnceLock::new();
+        if v.is_empty() {
+            return;
+        }
+        // SAFETY: sysconf only reads a system setting.
+        let page = *PAGE.get_or_init(|| usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096));
+        let (base, len) = page_range(v.as_ptr() as usize, std::mem::size_of_val(v), page);
+        // SAFETY: MADV_WILLNEED is advisory and never reads or writes through
+        // the pointer; the range is the pages holding v, which is borrowed
+        // and so mapped for the whole call. Its result is ignored: advice
+        // that can't be taken just leaves the reads to happen on demand.
+        unsafe {
+            libc::madvise(base as *mut libc::c_void, len, libc::MADV_WILLNEED);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = v;
+}
+
+/// The page-aligned start of the pages holding `bytes` bytes at `start`, and
+/// the length from there to the last byte; madvise rounds the length up.
+fn page_range(start: usize, bytes: usize, page: usize) -> (usize, usize) {
+    let base = start - start % page;
+    (base, start - base + bytes)
+}
+
+#[cfg(test)]
+mod will_need_tests {
+    use super::*;
+
+    #[test]
+    fn page_range_covers_exactly_the_pages_holding_the_bytes() {
+        for page in [4096, 16384] {
+            for (start, bytes) in [(0, 1), (page, page), (page + 8, 160_000), (3 * page - 1, 2), (5 * page + 100, 0)] {
+                let (base, len) = page_range(start, bytes, page);
+                assert_eq!(base % page, 0, "page {page}, start {start}");
+                assert!(base <= start && start - base < page, "page {page}, start {start}");
+                assert_eq!(base + len, start + bytes, "page {page}, start {start}");
+            }
+        }
+        assert_eq!(page_range(4096 + 8, 160_000, 4096), (4096, 160_008));
+        assert_eq!(page_range(3 * 16384 - 1, 2, 16384), (2 * 16384, 16385));
+    }
+
+    #[test]
+    fn will_need_leaves_every_kind_of_column_unchanged() {
+        let x: Vec<f64> = (0..40_000).map(|i| i as f64 * 0.25).collect();
+        let bytes: Vec<u8> = (0..5_000).map(|i| i as u8).collect();
+        let before = (x.clone(), bytes.clone());
+        will_need::<f64>(&[]);
+        will_need(&x[3..]);
+        Contig::<_, true>(&x[1..]).will_need();
+        MappedCol::F64(&x[..]).slice(7, 20_001).will_need();
+        MappedCol::Bits { bytes: &bytes, offset: 3, len: 39_000 }.slice(5, 30_000).will_need();
+        let chunks = vec![MappedCol::F64(&x[..10_000]), MappedCol::F64(&x[10_000..])];
+        ChunkedColumn::new(chunks, 40_000).unwrap().chunks.iter().for_each(MappedCol::will_need);
+        assert_eq!((x, bytes), before);
+    }
+}
+
 /// Heterogeneous mapped columns: dispatch storage, never the reduction order.
 #[derive(Clone, Copy)]
 pub(crate) enum MappedCol<'a> {
@@ -256,6 +344,21 @@ impl MappedCol<'_> {
 }
 
 impl Col for MappedCol<'_> {
+    fn will_need(&self) {
+        match self {
+            Self::F64(v) => will_need(v),
+            Self::F32(v) => will_need(v),
+            Self::I8(v) => will_need(v),
+            Self::U8(v) => will_need(v),
+            Self::I16(v) => will_need(v),
+            Self::U64(v) => will_need(v),
+            Self::I64(v) => will_need(v),
+            Self::U32(v) => will_need(v),
+            Self::I32(v) => will_need(v),
+            Self::U16(v) => will_need(v),
+            Self::Bits { bytes, .. } => will_need(bytes),
+        }
+    }
     #[inline(always)]
     fn packed_bytes(&self) -> Option<&[u8]> {
         match self {
@@ -414,6 +517,9 @@ impl ChunkedCol<'_> {
 // A one-chunk column (the common case) skips locating rows entirely; the
 // chunk's own indexing checks bounds, since its length is the column's.
 impl Col for ChunkedCol<'_> {
+    fn will_need(&self) {
+        self.chunks.iter().for_each(MappedCol::will_need);
+    }
     #[inline(always)]
     fn run(&self, i0: usize, end: usize) -> (impl Col, usize) {
         assert!(i0 < end && end <= self.n());

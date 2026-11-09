@@ -218,6 +218,12 @@ impl<C: Col, const SHIFT: bool, const MOMENTS: bool> Pass<'_, C, SHIFT, MOMENTS>
     fn sweep(&self, n: usize, r: &mut [f64], eta: &mut [f64], w: &[f64]) -> Sums<f64> {
         let (r, eta, w) = (&mut r[..n], &mut eta[..n], &w[..n]);
         if n >= PAR_ROWS && rayon::current_num_threads() > 1 {
+            // Threads would otherwise fault a memory-mapped column in out of
+            // order, a chunk each; see will_need.
+            self.prev.will_need();
+            if !std::ptr::eq(self.prev, self.next) {
+                self.next.will_need();
+            }
             let chunks = r.par_chunks_mut(CHUNK).zip(eta.par_chunks_mut(CHUNK)).zip(w.par_chunks(CHUNK));
             let parts: Vec<Sums<f64>> = chunks
                 .enumerate()
