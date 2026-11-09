@@ -3,12 +3,14 @@
 
 A row per solver, a column per dataset; each cell is lasso / elastic net in
 seconds, every solver at its best thread count. A run stopped at its time cap
-is shown as at least the cap. Reads the same files as plot.py.
+is shown as at least the cap, rounded down; a time from one completed run,
+rather than a median of three, is marked †. Reads the same files as plot.py.
 
     uv run benchmarks/table.py benchmarks/results/path.jsonl
 """
 
 import argparse
+import math
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
@@ -28,17 +30,20 @@ def best(rows):
         key = r["dataset"], r["alpha"], r["solver"]
         seconds = r["cap"] if r["timed_out"] else r["seconds"]
         if key not in out or seconds < out[key][0]:
-            out[key] = seconds, r["timed_out"]
+            single = not r["timed_out"] and len(r["times"]) == 1
+            out[key] = seconds, r["timed_out"], single
     return out
 
 
 def cell(entry):
     if entry is None:
         return "—"
-    seconds, capped = entry
+    seconds, capped, single = entry
     digits = 2 if seconds < 10 else 1 if seconds < 100 else 0
-    text = f"{seconds:.{digits}f}"
-    return f"≥ {text}" if capped else text
+    if capped:
+        # a lower bound mustn't round up past what was observed
+        return f"≥ {math.floor(seconds * 10**digits) / 10**digits:.{digits}f}"
+    return f"{seconds:.{digits}f}" + ("†" if single else "")
 
 
 def main():

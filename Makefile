@@ -132,7 +132,7 @@ fixtures:
 
 # the README's benchmark figures and tables, from the committed results
 GAUSSIAN_RESULTS = benchmarks/results/path-gaussian-memory-conditioned.jsonl
-LOGISTIC_RESULTS = benchmarks/results/path-zen3.jsonl
+LOGISTIC_RESULTS = benchmarks/results/path-binomial-memory-conditioned.jsonl
 
 .PHONY: benchmark-figures
 benchmark-figures:
