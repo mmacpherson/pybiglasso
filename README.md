@@ -379,12 +379,11 @@ residual along the path:
 glmnet's KKT residuals are about as small as pybiglasso's. Every completed path
 reached all 100 lambdas without warnings. For the lasso, R biglasso and
 pybiglasso use the same coordinate update and reach similarly small residuals on
-these problems. For the elastic net each runs its own update (see
-[Differences](#differences-from-r-biglasso)), so R's fits, and pybiglasso's with
-`r_compatible=True`, which matches R and takes about as long as its default,
-solve a slightly different objective. Their residuals against the common
-objective are still a fair diagnostic, but their times are not for the same
-objective as the other solvers'. R's adaptive screening rule is about
+these problems. For the elastic net, R biglasso and pybiglasso with `r_compatible=True`, which
+matches R and takes about as long as its default, use R's legacy update (see
+[Differences](#differences-from-r-biglasso)), which is not matched to the common
+elastic-net objective. Their KKT residuals against that objective remain useful
+diagnostics, but these timings are not an equal-objective comparison. R's adaptive screening rule is about
 as fast as SSR on these problems. The
 [accuracy table](benchmarks/logistic-records.md#achieved-accuracy-beside-the-observed-times)
 lists every solver's residual beside its time, including pybiglasso with
