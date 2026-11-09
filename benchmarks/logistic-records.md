@@ -139,11 +139,6 @@ bounded scans outside native timing report achieved objective/KKT values.
 Only the accepted recorded comparison supplies these rows; diagnostic,
 failed and earlier observations are excluded and not pooled.
 
-The actual recorded start was 10:05:35 following explicit records authorization.
-A carried-over 03:00 schedule/delay annotation was not a record schedule or fit
-time, and an inherited diagnostic wording label was incorrect: these were
-record-kind observations. The result provenance states those corrections.
-
 <!-- BENCHMARK DATA TABLES -->
 
 ## Achieved accuracy beside the observed times

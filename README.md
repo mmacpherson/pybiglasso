@@ -338,7 +338,7 @@ These timings depend on the [recording policy](benchmarks/logistic-records.md#co
 under the same external controller as least squares.
 
 pybiglasso is the fastest on every dataset: 2.2–4.9x faster than glmnet,
-2.3–8.4x faster than R biglasso, and 4.8–8.6x faster than skglm, the fastest of
+2.3–8.4x faster than R biglasso, and 4.8–8.5x faster than skglm, the fastest of
 the Python solvers. Each uses its default tolerance, so these times are for the
 accuracy shown, not for the same accuracy. Times are seconds, lasso / elastic
 net (α=0.5). **† marks one completed run**; unmarked completed cells are
@@ -376,13 +376,15 @@ residual along the path:
 | 2,000 × 20,000 | 1.12; 2.62e-5 | 2.48; 3.13e-5 | 7.65†; 2.48e-5 |
 | 5,000 × 50,000 | 6.93; 1.85e-5 | 15.7; 2.60e-5 | 34.7†; 3.35e-5 |
 
-glmnet fits about as accurately as pybiglasso. Every completed path reached all
-100 lambdas without warnings. For the lasso, R biglasso and pybiglasso use the
-same coordinate update and reach the same residuals. For the elastic net each
-runs its own update (see [Differences](#differences-from-r-biglasso)), so R's
-fits, and pybiglasso's with `r_compatible=True`, which matches R and takes about
-as long as its default, solve a slightly different objective; their residuals
-against the common one aren't comparable. R's adaptive screening rule is about
+glmnet's KKT residuals are about as small as pybiglasso's. Every completed path
+reached all 100 lambdas without warnings. For the lasso, R biglasso and
+pybiglasso use the same coordinate update and reach similarly small residuals on
+these problems. For the elastic net each runs its own update (see
+[Differences](#differences-from-r-biglasso)), so R's fits, and pybiglasso's with
+`r_compatible=True`, which matches R and takes about as long as its default,
+solve a slightly different objective. Their residuals against the common
+objective are still a fair diagnostic, but their times are not for the same
+objective as the other solvers'. R's adaptive screening rule is about
 as fast as SSR on these problems. The
 [accuracy table](benchmarks/logistic-records.md#achieved-accuracy-beside-the-observed-times)
 lists every solver's residual beside its time, including pybiglasso with
@@ -390,7 +392,8 @@ lists every solver's residual beside its time, including pybiglasso with
 
 **With a relaxed limit.** To show how long the stopped solvers take, the
 smallest problem (5,000 × 1,000) also ran with the limit raised to 1,000x
-pybiglasso's time, up to 900 seconds. All are three-run medians:
+pybiglasso's time, up to 900 seconds. Completed times are three-run medians;
+statsmodels stopped at the limit:
 
 | Solver | Lasso | Elastic net (α=0.5) | Max KKT, lasso |
 |---|---|---|---|
@@ -404,18 +407,20 @@ pybiglasso's time, up to 900 seconds. All are three-run medians:
 | scikit-learn saga | 91.3 s (144x) | 92.9 s (144x) | 3.1e-3 |
 | statsmodels | over 681 s (over 1,000x) | — | — |
 
-liblinear raised 200 warnings on each of its paths; every other completed path
-ran without warnings.
+liblinear raised 200 warnings from scikit-learn on each path, about its
+arguments rather than convergence: 100 that its `penalty` argument is
+deprecated and 100 about parameter consistency. Every other completed path ran
+without warnings.
 
-To run both families and redraw the figures and tables (the conditional
-least-squares recording policy needs the external controls described above):
+To run both families and redraw the figures and tables (both families'
+recording policies need the external controls described above):
 
 ```bash
 make r-image R_VERSION=4.6.1  # once
 export CONTAINER=docker R_IMAGE=pybiglasso-r:r4.6.1 THREADS="1 6 12"
 DATASETS="tall-5k-1k tall-50k-2k wide-2k-20k wide-5k-50k" \
   benchmarks/run-gaussian.sh benchmarks/results/path-gaussian-local.jsonl
-benchmarks/run-path.sh local
+THREADS="1 6" benchmarks/run-path.sh local
 make benchmark-figures GAUSSIAN_RESULTS=benchmarks/results/path-gaussian-local.jsonl \
   LOGISTIC_RESULTS=benchmarks/results/path-local.jsonl
 ```
@@ -463,8 +468,8 @@ observations, with each fit's data read and page faults.
 | pybiglasso, 6 threads | 114.6 (113.1–118.2) | 322.0 GB |
 | R biglasso, 1 thread | 162.8 (156.3–184.8) | 347.9 GB |
 
-This comparison is I/O-intensive: each fit reads the matrix from disk many
-times over, so it measures reading as much as fitting. On the medians,
+This comparison is I/O-intensive: under the cap, each fit read hundreds of GB
+from disk. On the medians,
 pybiglasso was about 1.1x faster than R at one thread and 1.4x faster at six;
 the one-thread ranges overlap, and at six threads it was faster than R in every
 round. Data read and fault counts vary from run to run, and these records don't
