@@ -32,8 +32,8 @@ cross-validate the fit.
 pybiglasso fits least-squares (Gaussian) and logistic (binomial) models, and
 it's also fast when the data does fit in memory. For logistic regression,
 across four benchmark problems with 1,000 to 50,000 features, a full 100-step
-path runs 2.2–4.9x faster than R's glmnet, 2.4–8.9x faster than R biglasso,
-and 4.9–8.5x faster than skglm, the fastest of the other Python solvers we
+path runs 2.2–4.9x faster than R's glmnet, 2.3–8.4x faster than R biglasso,
+and 4.8–8.5x faster than skglm, the fastest of the other Python solvers we
 tested. On the least-squares benchmarks, it is 3.3–6.2x faster than R biglasso
 and 1.7–12x faster than glmnet (the largest glmnet case has one run per penalty).
 Scikit-learn is faster on tall data and slower on wide data; its wide lasso
@@ -685,7 +685,7 @@ any thread count, on any CPU, and on every operating system with a wheel.
 - Gaussian (least-squares) and binomial (logistic) families; Cox is not ported.
 - SSR (sequential strong rule) screening only. R uses its newer Hybrid and
   Adaptive rules only for the plain lasso without penalty factors, and they
-  were no faster than SSR on our benchmarks.
+  were about as fast as SSR on our benchmarks.
 
 ## Citation
 
