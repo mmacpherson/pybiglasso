@@ -77,8 +77,22 @@ const SCALE_MIN: f64 = 1e-6;
 /// that vary by a few units, say, through the sum's rounding or because no
 /// binary64 value is close enough), which can make the fit, its intercept
 /// especially, inaccurate; the caller warns. A practical warning threshold,
-/// not an accuracy certificate.
+/// not an accuracy certificate. Also the material-error eligibility threshold
+/// for the default mode's one residual-mean correction.
 pub(crate) const CENTER_ERROR_MAX: f64 = 1e-6;
+
+fn corrected_center(mean: f64, scale: f64, residual_mean: f64, compatible: bool) -> Option<f64> {
+    if compatible
+        || !mean.is_finite()
+        || !scale.is_finite()
+        || scale <= SCALE_MIN
+        || (residual_mean / scale).abs() <= CENTER_ERROR_MAX
+    {
+        return None;
+    }
+    let corrected = mean + residual_mean;
+    (corrected.is_finite() && corrected != mean).then_some(corrected)
+}
 /// row_indices naming at least this share of X's rows, each once, are fit as
 /// a 0/1 weight on every row, so the kernels read whole columns with vector
 /// loads; fewer rows, or repeated ones, are gathered. Part of the results:
@@ -175,10 +189,10 @@ impl<D: Design> Fit<'_, D> {
     /// mask, whether the rows it leaves out are safe to sweep (see
     /// LEFT_OUT_Z_MAX). X may hold anything in rows that aren't fit.
     /// Differs from R biglasso: R derives scales from raw sums, which can lose
-    /// precision for columns far from zero; this uses two passes. R drops
+    /// precision for columns far from zero; this uses centered moments. R drops
     /// columns holding NaN or infinity, whereas this rejects nonfinite fit rows.
     /// Also returns the columns whose standardized mean, measured in the
-    /// second pass, is off by more than CENTER_ERROR_MAX.
+    /// final moment pass, is off by more than CENTER_ERROR_MAX.
     pub(crate) fn center_scale(&self) -> Result<Standardization, String> {
         let stats: Vec<(f64, f64, bool, bool, f64)> = (0..self.x.ncol())
             .into_par_iter()
@@ -199,7 +213,7 @@ impl<D: Design> Fit<'_, D> {
                         acc += v;
                     }),
                 }
-                let mean = acc / nf;
+                let mut mean = acc / nf;
                 // offset: what the centered values leave over, which binary64
                 // rounding of the center (or of its sum) leaves nonzero
                 let (mut acc, mut offset) = (0.0, 0.0);
@@ -215,6 +229,33 @@ impl<D: Design> Fit<'_, D> {
                         offset += v - mean;
                     }),
                 }
+                let mut scale = (acc / nf).sqrt();
+                if !invalid
+                    && let Some(corrected) = corrected_center(mean, scale, offset / nf, self.params.r_compatible)
+                {
+                    // Differs from R biglasso: R retains the raw-sum mean.
+                    // Default mode partially repairs a material residual mean;
+                    // ordinary columns and compatibility keep their old bits.
+                    // Re-read in fitted-row order: updating the old moments
+                    // algebraically can cancel, and may not describe the actual
+                    // rounded differences about this new, one-float center.
+                    mean = corrected;
+                    (acc, offset) = (0.0, 0.0);
+                    let mut hint = 0;
+                    match self.rows {
+                        Some(rows) => rows.iter().for_each(|&i| {
+                            let d = c.at_seq(i, &mut hint) - mean;
+                            acc += d.powi(2);
+                            offset += d;
+                        }),
+                        None => for_each_value(&c, |v| {
+                            let d = v - mean;
+                            acc += d.powi(2);
+                            offset += d;
+                        }),
+                    }
+                    scale = (acc / nf).sqrt();
+                }
                 let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
                 let mut hint = 0;
                 for i in (0..n).filter(|&i| !self.fits(i)) {
@@ -222,7 +263,6 @@ impl<D: Design> Fit<'_, D> {
                     out_finite &= v.is_finite();
                     (out_lo, out_hi) = (out_lo.min(v), out_hi.max(v));
                 }
-                let scale = (acc / nf).sqrt();
                 // columns too constant to use are never swept
                 let out_deviation =
                     if out_lo > out_hi { 0.0 } else { (out_lo - mean).abs().max((out_hi - mean).abs()) };

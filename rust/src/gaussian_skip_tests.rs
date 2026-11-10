@@ -218,6 +218,7 @@ fn isolated_path_child() {
             }
             if worker_bad.is_empty() && std::env::var("PYBIGLASSO_TEST_FAULT").unwrap_or_default().is_empty() {
                 pool.install(|| storage_cases(&mut cell_bytes, alpha));
+                pool.install(|| recentered_cases(&mut cell_bytes, alpha));
             }
             if worker_bad.is_empty() {
                 if let Some(first) = &first_thread {
@@ -649,6 +650,53 @@ fn add_case<D: Design>(
     let path = fit.run(center, scale).unwrap();
     out.extend(path_bytes(&path));
 }
+
+fn recentered_cases(out: &mut Vec<u8>, alpha: f64) {
+    let n = 4096;
+    let lambdas = [1., 63. / 64., 31. / 32., 61. / 64., 15. / 16.];
+    let penalties = [1.; 7];
+    // Column 1 drives residual updates, so the repaired column 0 can
+    // exercise inactive-score certificates as well as cache initialization.
+    let y: Vec<_> = (0..n).map(|i| if (i >> 1) & 1 == 0 { -2. } else { 2. }).collect();
+    let (ybar, null_deviance) = Family::Gaussian.null_model(&y, None).unwrap();
+    let params = Params {
+        family: Family::Gaussian,
+        alpha,
+        lambdas: Some(&lambdas),
+        nlambda: lambdas.len(),
+        eps: 1e-12,
+        lambda_min: 0.01,
+        lambda_log_scale: true,
+        penalty_factor: &penalties,
+        dfmax: 7,
+        max_iter: 1000,
+        stop_on_saturation: false,
+        r_compatible: false,
+        ybar,
+        null_deviance,
+        on_lambda: None,
+    };
+    for unrepresentable in [false, true] {
+        let a = Array2::from_shape_fn((n, 7).f(), |(i, j)| {
+            if j == 0 {
+                if unrepresentable { 2f64.powi(54) + 4. * (i % 4) as f64 } else { 2f64.powi(50) + 2. * (i % 2) as f64 }
+            } else if (i >> j) & 1 == 0 {
+                -1.
+            } else {
+                1.
+            }
+        });
+        let design = ContigX::<_, true> { x: a.view() };
+        let fit = Fit { x: &design, y: &y, params: &params, mask: None, rows: None, n_fit: n };
+        let (center, scale, _, warnings) = fit.center_scale().unwrap();
+        assert_eq!(!warnings.is_empty(), unrepresentable);
+        if !unrepresentable {
+            assert_eq!((center[0], scale[0]), (2f64.powi(50) + 1.0, 1.0));
+        }
+        out.extend(path_bytes(&fit.run(center, scale).unwrap()));
+    }
+}
+
 fn storage_cases(out: &mut Vec<u8>, alpha: f64) {
     let n = 97;
     let y: Vec<f64> = (0..n).map(|i| ((i * 23) % 29) as f64 / 4. - 3.).collect();
