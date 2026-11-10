@@ -407,4 +407,19 @@ mod rational_tests {
             }
         });
     }
+
+    #[test]
+    fn audit_modules_score_with_different_sum_orders() {
+        // The blocked order cancels ±1e16 within one lane before adding the
+        // ones; the serial order absorbs seven of the ones into 1e16 first.
+        let n = 17;
+        let mut a = vec![1.; n];
+        a[0] = 1e16;
+        a[8] = -1e16;
+        assert_ne!(super::super::gaussian::blocked_sum(&a), super::seqsum(&a));
+        let x: Vec<f64> = (0..n).map(|i| 37. + (i % 5) as f64 / 8.).collect();
+        let default = bound(x.clone(), a.clone(), a.clone(), 37., 0.5, n).unwrap();
+        let compatible = bound_compatible(x, a.clone(), a, 37., 0.5, n).unwrap();
+        assert_ne!(default[0].to_bits(), compatible[0].to_bits());
+    }
 }
