@@ -327,6 +327,31 @@ fn compare_traces(a: &Cell, b: &Cell, metadata: bool) {
         }
     }
 }
+
+fn recentered_column_positive_skips(c: &Cell) -> usize {
+    let word = |a: &[u8], i: usize| u64::from_ne_bytes(a[8 * i..8 * (i + 1)].try_into().unwrap());
+    frames(&fs::read(c.dir.join("trace")).unwrap())
+        .iter()
+        .filter(|f| {
+            // Only post-scan frames of the repaired 4096x7 fixture, and
+            // specifically original column 0: older cases cannot satisfy this.
+            if ![3, 5].contains(&word(&f[0], 0)) || word(&f[0], 2) != 4096 || word(&f[0], 3) != 7 {
+                return false;
+            }
+            if word(&f[6], 0) != (2f64.powi(50) + 1.).to_bits()
+                || word(&f[7], 0) != 1f64.to_bits()
+                || word(&f[8], 0) != 0
+            {
+                return false;
+            }
+            // In enabled mode this plan skips the actual score read. A
+            // positive radius excludes unchanged-residual/epoch shortcuts.
+            let radius = f64::from_bits(word(&f[12], 0));
+            f[11][0] == 1 && radius.is_finite() && radius > 0.
+        })
+        .count()
+}
+
 #[test]
 fn all_widths_threads_shadow_and_enabled_match_exact() {
     let widths = vec!["scalar", "128", "256", "512", "auto"];
@@ -355,6 +380,10 @@ fn all_widths_threads_shadow_and_enabled_match_exact() {
         compare_traces(&shadow, &enabled, true);
         let all = stats(&enabled);
         assert!(all.iter().any(|s| s[0] > s[1] && s[3] > 0 && s[4] > 0), "no positive-radius/next-threshold skips");
+        assert!(
+            recentered_column_positive_skips(&enabled) > 0,
+            "no positive-radius score-read skip on repaired column 0"
+        );
         for s in all {
             assert!(s[0] >= s[1]);
         }
