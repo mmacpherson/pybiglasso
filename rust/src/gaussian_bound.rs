@@ -253,8 +253,18 @@ pub(crate) fn test_norm_paths(values: &[f64]) -> (Option<f64>, Option<f64>, Opti
     }
     (norm_fast(values.len(), |i| values[i]), norm_safe(values.len(), |i| values[i]), test_norm(values))
 }
+/// The scores use the residual sum the solver keeps: `seqsum` order with
+/// `r_compatible`, the default mode's blocked order otherwise.
 #[cfg(test)]
-pub(crate) fn test_bound(x: &[f64], a: &[f64], b: &[f64], center: f64, scale: f64, n_fit: usize) -> Option<Vec<f64>> {
+pub(crate) fn test_bound(
+    x: &[f64],
+    a: &[f64],
+    b: &[f64],
+    center: f64,
+    scale: f64,
+    n_fit: usize,
+    r_compatible: bool,
+) -> Option<Vec<f64>> {
     if x.len() != a.len() || x.len() != b.len() {
         return None;
     }
@@ -263,9 +273,10 @@ pub(crate) fn test_bound(x: &[f64], a: &[f64], b: &[f64], center: f64, scale: f6
     let ra = norm(a.len(), |i| a[i])?;
     let rb = norm(b.len(), |i| b[i])?;
     let d = difference_norm(a, b)?;
+    let sum = if r_compatible { seqsum } else { super::gaussian::blocked_sum };
     Some(vec![
-        standardized_score(&column, a, super::gaussian::blocked_sum(a), center, scale, n_fit as f64),
-        standardized_score(&column, b, super::gaussian::blocked_sum(b), center, scale, n_fit as f64),
+        standardized_score(&column, a, sum(a), center, scale, n_fit as f64),
+        standardized_score(&column, b, sum(b), center, scale, n_fit as f64),
         m.radius(d, ra, rb)?,
         ra,
         rb,
@@ -347,7 +358,18 @@ mod rational_tests {
     }
     #[pyfunction]
     fn bound(x: Vec<f64>, a: Vec<f64>, b: Vec<f64>, center: f64, scale: f64, n_fit: usize) -> Option<Vec<f64>> {
-        test_bound(&x, &a, &b, center, scale, n_fit)
+        test_bound(&x, &a, &b, center, scale, n_fit, false)
+    }
+    #[pyfunction(name = "bound")]
+    fn bound_compatible(
+        x: Vec<f64>,
+        a: Vec<f64>,
+        b: Vec<f64>,
+        center: f64,
+        scale: f64,
+        n_fit: usize,
+    ) -> Option<Vec<f64>> {
+        test_bound(&x, &a, &b, center, scale, n_fit, true)
     }
     #[pyfunction]
     fn decide(score: f64, radius: f64, cutoff: f64) -> Option<bool> {
@@ -360,11 +382,16 @@ mod rational_tests {
         // these wrappers exist only in this unit-test executable, not the wheel.
         Python::initialize();
         Python::attach(|py| {
+            // Each audit runs once per residual-sum order the solver keeps.
             let native = PyModule::new(py, "bound_audit").unwrap();
-            native.add_function(wrap_pyfunction!(norm, &native).unwrap()).unwrap();
-            native.add_function(wrap_pyfunction!(norm_paths, &native).unwrap()).unwrap();
+            let compatible = PyModule::new(py, "bound_audit_compatible").unwrap();
+            for module in [&native, &compatible] {
+                module.add_function(wrap_pyfunction!(norm, module).unwrap()).unwrap();
+                module.add_function(wrap_pyfunction!(norm_paths, module).unwrap()).unwrap();
+                module.add_function(wrap_pyfunction!(decide, module).unwrap()).unwrap();
+            }
             native.add_function(wrap_pyfunction!(bound, &native).unwrap()).unwrap();
-            native.add_function(wrap_pyfunction!(decide, &native).unwrap()).unwrap();
+            compatible.add_function(wrap_pyfunction!(bound_compatible, &compatible).unwrap()).unwrap();
             for (name, code) in [
                 ("guarded_norm", include_str!("../../tests/support/gaussian_screening/guarded_norm.py")),
                 ("bound", include_str!("../../tests/support/gaussian_screening/bound.py")),
@@ -374,8 +401,25 @@ mod rational_tests {
                 let code = std::ffi::CString::new(code).unwrap();
                 let name = std::ffi::CString::new(name).unwrap();
                 let module = PyModule::from_code(py, &code, &name, &name).unwrap();
-                module.getattr("audit").unwrap().call1((&native,)).unwrap();
+                for target in [&native, &compatible] {
+                    module.getattr("audit").unwrap().call1((target,)).unwrap();
+                }
             }
         });
+    }
+
+    #[test]
+    fn audit_modules_score_with_different_sum_orders() {
+        // The blocked order cancels ±1e16 within one lane before adding the
+        // ones; the serial order absorbs seven of the ones into 1e16 first.
+        let n = 17;
+        let mut a = vec![1.; n];
+        a[0] = 1e16;
+        a[8] = -1e16;
+        assert_ne!(super::super::gaussian::blocked_sum(&a), super::seqsum(&a));
+        let x: Vec<f64> = (0..n).map(|i| 37. + (i % 5) as f64 / 8.).collect();
+        let default = bound(x.clone(), a.clone(), a.clone(), 37., 0.5, n).unwrap();
+        let compatible = bound_compatible(x, a.clone(), a, 37., 0.5, n).unwrap();
+        assert_ne!(default[0].to_bits(), compatible[0].to_bits());
     }
 }
