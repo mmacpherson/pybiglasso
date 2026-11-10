@@ -516,14 +516,22 @@ with a comment beginning "Differs from R biglasso".
   (say, values near 1e8 that vary by 1), standardizing from raw sums loses
   precision in floating point. R's scales, and so its fit, can be affected
   without a warning; in our tests some scales came out as NaN. pybiglasso
-  computes these columns' moments from centered values, so a constant shift of
-  X leaves the solution unchanged. A column whose values are huge next to their
-  spread (near 2^54, varying by a few units) can't be centered accurately in
-  float64, which can make the fit, its intercept especially, inaccurate;
-  pybiglasso warns and names such columns. No warning isn't a guarantee: for
-  such data even an intercept on X's own scale can't be stored precisely. For
-  either problem, subtract a reference value, such as each column's minimum,
-  before fitting.
+  computes these columns' moments from centered values. A column whose values
+  are huge next to their spread (near 2^54, varying by a few units) can still
+  have a mean that float64 cannot represent. pybiglasso warns and names usable
+  columns whose measured remaining standardized mean exceeds 1e-6 in magnitude.
+  This can make the fit, its intercept especially, inaccurate. An absent warning
+  doesn't guarantee accurate scaling or an accurate raw intercept: even a
+  well-centered fit can lose precision when its intercept is expressed on X's
+  raw scale. Subtract a reference value, such as each column's minimum, before
+  fitting such data.
+- **Residual centering (default mode).** R uses the column sum divided by its
+  row count as the center. When a usable column's measured standardized mean
+  exceeds 1e-6 in magnitude, pybiglasso's default mode adds the mean of its
+  centered values to that center, then recomputes the moments in another
+  streaming pass if the center changed. This is a partial repair: one float64 center cannot always
+  represent the mean, and the warning above can remain. `r_compatible=True`
+  keeps the column-sum center and two-pass scale.
 - **Arithmetic order.** R sums serially; pybiglasso sums in a fixed order
   across several accumulators, so SIMD and threads don't change its results,
   and groups some products and quotients differently. Results can differ from

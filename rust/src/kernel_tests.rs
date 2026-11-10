@@ -85,6 +85,142 @@ fn standardization_and_initial_scores_use_selected_rows_and_raw_column_map() {
 }
 
 #[test]
+fn material_center_error_is_repaired_only_in_default_mode() {
+    // Exact arithmetic: half B, half B+2 => mean B+1, RMS deviation 1.
+    // The serial binary64 sum instead gives B+0.25 and old RMS 1.25.
+    let base = 2f64.powi(50);
+    let a = Array2::from_shape_fn((4096, 1).f(), |(i, _)| base + 2.0 * (i % 2) as f64);
+    let x = ContigX::<f64, true> { x: a.view() };
+    let y = vec![0.0; 4096];
+    let pf = [1.0];
+    for family in [Family::Binomial, Family::Gaussian] {
+        for compatible in [false, true] {
+            let mut p = params(&pf);
+            p.family = family;
+            p.r_compatible = compatible;
+            let fit = Fit { x: &x, y: &y, params: &p, mask: None, rows: None, n_fit: y.len() };
+            let (center, scale, _, imprecise) = fit.center_scale().unwrap();
+            if compatible {
+                assert_eq!(center, [base + 0.25]);
+                assert_eq!(scale, [1.25]);
+                assert_eq!(imprecise, [0]);
+            } else {
+                assert_eq!(center, [base + 1.0]);
+                assert_eq!(scale, [1.0]);
+                assert!(imprecise.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn residual_center_gate_has_a_strict_material_threshold() {
+    let at = CENTER_ERROR_MAX;
+    let below = f64::from_bits(at.to_bits() - 1);
+    let above = f64::from_bits(at.to_bits() + 1);
+    for residual in [below, at, -below, -at] {
+        assert_eq!(corrected_center(1.0, 1.0, residual, false), None);
+    }
+    for residual in [above, -above] {
+        assert_eq!(corrected_center(1.0, 1.0, residual, false), Some(1.0 + residual));
+        assert_eq!(corrected_center(1.0, 1.0, residual, true), None);
+    }
+    for scale in [0.0, SCALE_MIN, f64::from_bits(SCALE_MIN.to_bits() - 1), f64::INFINITY, f64::NAN] {
+        assert_eq!(corrected_center(1.0, scale, 1.0, false), None);
+    }
+    assert!(corrected_center(1.0, f64::from_bits(SCALE_MIN.to_bits() + 1), 1.0, false).is_some());
+    assert_eq!(corrected_center(2f64.powi(54), 1.0, 1.0, false), None); // unrepresentable correction
+    assert_eq!(corrected_center(f64::INFINITY, 1.0, 1.0, false), None);
+    assert_eq!(corrected_center(f64::MAX, 1.0, f64::MAX, false), None);
+}
+
+#[test]
+fn centering_adds_only_one_streaming_read_to_eligible_columns() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counted {
+        values: Vec<f64>,
+        reads: AtomicUsize,
+    }
+    struct Column<'a>(&'a Counted);
+    impl Col for Column<'_> {
+        fn n(&self) -> usize {
+            self.0.values.len()
+        }
+        fn at(&self, i: usize) -> f64 {
+            self.0.reads.fetch_add(1, Ordering::Relaxed);
+            self.0.values[i]
+        }
+    }
+    impl Design for Counted {
+        type C<'a> = Column<'a>;
+        fn col(&self, _: usize) -> Column<'_> {
+            Column(self)
+        }
+        fn ncol(&self) -> usize {
+            1
+        }
+        fn nrow(&self) -> usize {
+            self.values.len()
+        }
+    }
+    let pf = [1.0];
+    let y = vec![0.0; 4096];
+    for compatible in [false, true] {
+        for base in [0.0, 2f64.powi(50)] {
+            let x = Counted {
+                values: (0..4096).map(|i| base + 2.0 * (i % 2) as f64).collect(),
+                reads: AtomicUsize::new(0),
+            };
+            let mut p = params(&pf);
+            p.r_compatible = compatible;
+            let fit = Fit { x: &x, y: &y, params: &p, mask: None, rows: None, n_fit: 4096 };
+            fit.center_scale().unwrap();
+            let passes = if !compatible && base != 0.0 { 3 } else { 2 };
+            assert_eq!(x.reads.load(Ordering::Relaxed), passes * 4096);
+        }
+    }
+}
+
+#[test]
+fn corrected_moments_control_dropping_and_left_out_safety() {
+    let pf = [1.0];
+    let p = params(&pf);
+    let y = vec![0.0; 4097];
+    let constant = 1e12 + 0.1;
+    let a = Array2::from_elem((4096, 1).f(), constant);
+    let x = ContigX::<_, true> { x: a.view() };
+    let fit = Fit { x: &x, y: &y[..4096], params: &p, mask: None, rows: None, n_fit: 4096 };
+    let (center, scale, _, warnings) = fit.center_scale().unwrap();
+    assert_eq!(center, [constant]);
+    assert_eq!(scale, [0.0]);
+    assert!(warnings.is_empty());
+
+    // True RMS 2^-20 is below SCALE_MIN, although the initial mean error
+    // inflates the old RMS above it. Dropping must use the fresh moment.
+    let base = 2f64.powi(30);
+    let a = Array2::from_shape_fn((4096, 1).f(), |(i, _)| base + 2f64.powi(-19) * (i % 2) as f64);
+    let x = ContigX::<_, true> { x: a.view() };
+    let fit = Fit { x: &x, y: &y[..4096], params: &p, mask: None, rows: None, n_fit: 4096 };
+    let (center, scale, _, warnings) = fit.center_scale().unwrap();
+    assert_eq!(center, [base + 2f64.powi(-20)]);
+    assert_eq!(scale, [2f64.powi(-20)]);
+    assert!(scale[0] < SCALE_MIN);
+    assert!(warnings.is_empty());
+
+    let mut a = Array2::from_shape_fn((4097, 1).f(), |(i, _)| 2f64.powi(50) + 2.0 * (i % 2) as f64);
+    a[(4096, 0)] = LEFT_OUT_Z_MAX * 1.125;
+    let x = ContigX::<_, true> { x: a.view() };
+    let rows: Vec<_> = (0..4096).collect();
+    let mut mask = vec![1.0; 4097];
+    mask[4096] = 0.0;
+    let fit = Fit { x: &x, y: &y, params: &p, mask: Some(&mask), rows: Some(&rows), n_fit: 4096 };
+    let (center, scale, safe, _) = fit.center_scale().unwrap();
+    assert_eq!(center, [2f64.powi(50) + 1.0]);
+    assert_eq!(scale, [1.0]);
+    assert!(!safe); // old RMS 1.25 would have incorrectly marked these rows safe
+}
+
+#[test]
 fn center_scale_flags_columns_binary64_cannot_center() {
     // Column 0: 2^54 plus multiples of 4 (adjacent binary64 values there are 4
     // apart), mean 2^54 + 6 exactly; its 16-row sum near 2^58 rounds to a
