@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import scipy.sparse as sps
-from scipy.special import log_expit
+from scipy.special import expit, log_expit
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.model_selection import check_cv
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
@@ -22,7 +22,7 @@ from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
 from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
 from .fit import biglasso
-from .path import METRICS, _expit, linear_predictor, score_logits
+from .path import METRICS, linear_predictor, score_logits
 
 __all__ = [
     "BiglassoClassifier",
@@ -164,7 +164,7 @@ class _ClassifierBase(ClassifierMixin, BaseEstimator):
 
     def predict_proba(self, X):
         eta = self.decision_function(X)
-        return np.column_stack([_expit(-eta), _expit(eta)])
+        return np.column_stack([expit(-eta), expit(eta)])
 
     def predict_log_proba(self, X):
         eta = self.decision_function(X)

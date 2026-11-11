@@ -106,8 +106,11 @@ def biglasso(
         For binomial fits, stop when training deviance falls below 1% of null
         deviance, as R biglasso does. False attempts every penalty strength.
     r_compatible : bool, default=False
-        Reproduce R biglasso's binomial elastic-net update, probability cutoff,
-        weight floor, and historical pre-sweep loss bookkeeping.
+        Reproduce R biglasso's results for both families. This includes its
+        centering sums, logistic elastic-net update and probability cutoff,
+        Gaussian residual sum, strict constant-response convergence comparison,
+        and loss bookkeeping after an iteration limit. See README.md's
+        "Differences from R biglasso" for the full list.
     n_threads : {"auto", None, int}, default="auto"
         Threads used by parallel native reductions. Auto mode uses one thread
         for Arrow, memory-mapped, or small designs and otherwise uses available
@@ -123,9 +126,12 @@ def biglasso(
 
     Notes
     -----
-    The Gaussian objective is RSS/(2n) plus the standardized elastic-net
-    penalty and an unpenalized intercept; reported deviance is RSS. Binomial
-    fits use negative log likelihood in the corresponding objective.
+    On standardized columns, the binomial objective is ``(1/n) * NLL + lambda
+    * sum_j pf_j * (alpha * |b_j| + (1 - alpha)/2 * b_j^2)``. The Gaussian
+    objective replaces ``(1/n) * NLL`` with ``RSS/(2n)`` and uses the same
+    penalty. The intercept is unpenalized. R biglasso's logistic elastic-net
+    update solves a slightly different problem, reproduced by
+    ``r_compatible=True``.
 
     Automatic grids reject designs without varying penalized features. An
     exactly zero largest penalty produces a finite all-zero grid. Default-mode
