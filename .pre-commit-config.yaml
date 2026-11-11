@@ -49,7 +49,9 @@ repos:
     args: [--autofix, --indent, '2']
     # Pin the formatter: an unpinned one varies with when each machine's hook
     # environment was built (toml-sort 0.24 and 0.25 space inline tables
-    # differently). The weekly update-pre-commit-hooks workflow bumps this pin.
+    # differently). pre-commit.ci bumps hook revs but not
+    # additional_dependencies: bump this pin by hand, to the newest toml-sort,
+    # when updating hooks.
     additional_dependencies: [toml-sort==0.25.0]
     # Lockfiles are machine-written; reformatting them only makes churn.
     exclude: ^(uv\.lock|rust/Cargo\.lock)$
