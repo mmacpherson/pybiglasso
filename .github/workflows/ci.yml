@@ -23,6 +23,14 @@ concurrency:
 env:
   UV_LOCKED: 1
 
+# Jobs that only test build the extension without link-time optimization and
+# in 16 codegen units: about 2.8x faster to compile than the release profile
+# (fat LTO, one unit), and bit-identical, since neither changes the floating-
+# point operations or their order. They set these two variables, and their
+# cache keys say nolto16. The shipped wheels, which the wheels job
+# builds with the release profile, run the stored R comparison and the bit
+# snapshot themselves, and rust-cross-architecture compares the two builds.
+
 jobs:
   # Pull requests get every platform's tests but macOS, and only the Linux x86
   # wheel. The other wheels build on main, on release, and on any PR that
@@ -140,6 +148,9 @@ jobs:
   test:
     name: Python ${{ matrix.python }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:  # the test build (see the top of this file)
+      CARGO_PROFILE_RELEASE_LTO: false
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +183,7 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
       with:
         path: rust/target
-        key: rust-ext-${{ matrix.os }}-py${{ matrix.python }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+        key: rust-ext-nolto16-${{ matrix.os }}-py${{ matrix.python }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
     - name: Date the Rust sources before the restored build
       if: steps.rust-cache.outputs.cache-hit == 'true'
       shell: bash
@@ -223,7 +234,7 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
       with:
         path: rust/target
-        key: rust-macos-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml', 'tests/support/gaussian_screening/**') }}
+        key: rust-macos-nolto16-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml', 'tests/support/gaussian_screening/**') }}
     - name: Date the Rust sources before the restored build
       if: steps.rust-cache.outputs.cache-hit == 'true'
       shell: bash
@@ -231,6 +242,9 @@ jobs:
     - name: Bit for bit at every SIMD width this CPU runs
       run: make test-rust
     - name: Tests (against stored R biglasso 1.7.2 output)
+      env:  # the test build (see the top of this file)
+        CARGO_PROFILE_RELEASE_LTO: false
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
       run: make test
     - name: Save the Rust build for later runs
       if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
@@ -240,6 +254,9 @@ jobs:
         key: ${{ steps.rust-cache.outputs.cache-primary-key }}
     - name: Record fixed Rust fits for the cross-architecture check
       shell: bash
+      env:
+        CARGO_PROFILE_RELEASE_LTO: false
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
       run: uv run python scripts/check_arch_bits.py record rust-bits-macos-latest.json
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
       with:
@@ -283,6 +300,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_LOCKED: false
+      CARGO_PROFILE_RELEASE_LTO: false  # the test build (see the top)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -297,6 +316,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_LOCKED: false
+      CARGO_PROFILE_RELEASE_LTO: false  # the test build (see the top)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -319,6 +340,8 @@ jobs:
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       DATABASE_URL: postgresql://postgres:recipes@localhost:5432/postgres
+      CARGO_PROFILE_RELEASE_LTO: false  # the test build (see the top)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -332,6 +355,11 @@ jobs:
   sdist:
     name: Build the sdist and a wheel from it; fit from that wheel with no extras
     runs-on: ubuntu-latest
+    # the wheel built here only checks that the sdist builds and fits; the
+    # test build (see the top) leaves the sdist, which is what ships, as it is
+    env:
+      CARGO_PROFILE_RELEASE_LTO: false
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:

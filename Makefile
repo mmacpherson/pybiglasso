@@ -51,12 +51,18 @@ test-browser: browser
 	uv run python scripts/check_wasm.py
 	cd web && npm test && npm run test:browser
 
+# No hook imports pybiglasso, so neither builds the extension (about six
+# minutes in CI); cargo clippy compiles the Rust it checks itself. --inexact
+# leaves an extension already installed in the environment in place.
+HOOKS_ENV = uv sync --quiet --inexact --no-install-project
 .PHONY: update-hooks run-hooks-all-files
 update-hooks:
-	uv run pre-commit autoupdate
+	$(HOOKS_ENV)
+	uv run --no-sync pre-commit autoupdate
 
 run-hooks-all-files:
-	uv run pre-commit run --all-files
+	$(HOOKS_ENV)
+	uv run --no-sync pre-commit run --all-files
 
 # every snippet in docs/data.md, run verbatim, except those needing a
 # database or external tools (below)
