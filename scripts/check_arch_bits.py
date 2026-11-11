@@ -203,11 +203,17 @@ def compare(reference, candidates, systems):
 
 def match(reference, candidates):
     baseline = load_reference(reference)
+    # every named snapshot must be there, and complete; a missing or empty one
+    # is a failed check, not one fewer to compare
+    absent = [str(path) for path in candidates if not path.is_file()]
+    assert not absent, f"missing snapshots: {absent}"
+    empty = [str(path) for path in candidates if not path.read_text().strip()]
+    assert not empty, f"empty snapshots: {empty}"
     differences = []
     for path in candidates:
-        differences += mismatches(
-            baseline, reference, path, json.loads(path.read_text())
-        )
+        other = json.loads(path.read_text())
+        assert other.get("cases"), f"{path}: no cases"
+        differences += mismatches(baseline, reference, path, other)
     assert not differences, "\n".join(differences)
 
 

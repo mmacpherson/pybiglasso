@@ -169,3 +169,16 @@ def test_match_rejects_changed_bits_and_missing_cases(arch_bits, snapshots):
     snapshots[2].write_text(json.dumps(missing))
     with pytest.raises(AssertionError):
         arch_bits.match(snapshots[0], snapshots[2:])
+
+
+def test_match_fails_on_a_missing_snapshot(arch_bits, snapshots, tmp_path):
+    with pytest.raises(AssertionError, match="missing snapshots"):
+        arch_bits.match(snapshots[0], [snapshots[1], tmp_path / "absent.json"])
+
+
+@pytest.mark.parametrize("content", ["", "\n", '{"system": "Linux", "cases": {}}'])
+def test_match_fails_on_an_empty_snapshot(arch_bits, snapshots, tmp_path, content):
+    empty = tmp_path / "empty.json"
+    empty.write_text(content)
+    with pytest.raises(AssertionError, match="empty snapshots|no cases"):
+        arch_bits.match(snapshots[0], [snapshots[1], empty])

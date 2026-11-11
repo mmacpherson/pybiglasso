@@ -306,10 +306,20 @@ jobs:
         for platform in "${platforms[@]}"; do files+=("snapshots/rust-bits-$platform.json"); done
         python3 scripts/check_arch_bits.py compare "${flags[@]}" "${files[@]}"
     # every wheel this run built, Intel macOS among them on main and release,
-    # from the release profile, against the test build's Linux x86 snapshot
+    # from the release profile, against the test build's Linux x86 snapshot:
+    # by name, each wheel scope chose on both Pythons, so a missing one fails
     - name: Compare the published wheels against the same reference
       shell: bash
-      run: python3 scripts/check_arch_bits.py match snapshots/rust-bits-ubuntu-latest.json wheel-snapshots/*.json
+      env:
+        WHEELS: ${{ needs.scope.outputs.wheels }}
+      run: |
+        files=()
+        for platform in $(jq -r '.[].platform' <<<"$WHEELS"); do
+          for python in 3.11 3.15; do
+            files+=("wheel-snapshots/wheel-bits-$platform-py$python.json")
+          done
+        done
+        python3 scripts/check_arch_bits.py match snapshots/rust-bits-ubuntu-latest.json "${files[@]}"
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
