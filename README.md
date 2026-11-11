@@ -251,8 +251,8 @@ few operations differently.
 
 ```
 uv run pytest               # against stored R output; no R needed
-make test-r                 # live, in a container (CONTAINER=podman works too)
-make test-r R_VERSION=latest
+make test-r                 # live against the pinned fixture-producing R release
+make test-r R_VERSION=latest  # live against current CRAN
 make soak                   # larger memory-mapped problems; for a big machine
 make soak-hypothesis        # property tests, wide random search (part of soak)
 ```

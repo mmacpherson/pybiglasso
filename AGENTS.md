@@ -76,8 +76,9 @@ to observed output.
 
 - `make test` — fast suite, against stored R output (no R needed)
 - `make test-minimum` — the same suite with every declared dependency floor
-- `make test-r` — the same grid live against R, in a container
-  (`CONTAINER=podman` works too; `R_VERSION=latest` for current CRAN)
+- `make test-r` — the same grid live against the pinned R release that made the
+  fixtures, in a container (`CONTAINER=podman` works too); use
+  `R_VERSION=latest` for current CRAN
 - `make test-recipes` — every snippet in `docs/data.md`, run verbatim;
   `make test-recipes-postgres` adds the PostgreSQL one (in a container unless
   `DATABASE_URL` is set), `make test-recipes-tools` the ones needing `plink2`
