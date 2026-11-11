@@ -1,4 +1,9 @@
-"""The native memory cap covers opening an Arrow file plus its first target fit."""
+"""The native memory cap covers opening an Arrow file plus its first target fit.
+
+The packed-bool target is larger than the int8 target so that one copy of its
+physical value buffers exceeds the allowance too. The copy control retains
+those buffers without expanding them to byte-per-value storage.
+"""
 
 import json
 import os
@@ -15,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 CHILD = textwrap.dedent("""
-    import ctypes, gc, json, os, resource, sys, traceback
+    import ctypes, gc, json, os, resource, sys
     # glibc snapshots RLIMIT_STACK at exec for C++ workers. RUST_MIN_STACK
     # only bounds Rayon stacks; Arrow's lazily started I/O workers otherwise
     # inherit large stacks (typically 8 MiB), depending on task scheduling.
@@ -27,7 +32,7 @@ CHILD = textwrap.dedent("""
     import numpy as np
     import pyarrow as pa
     from pybiglasso import biglasso
-    from pybiglasso.arrow import _ArrowMatrix, _open_mapped
+    from pybiglasso.arrow import _open_mapped
 
     target, warm, case, storage = sys.argv[1:]
     # Fully warm the bounded Arrow pools, rather than racing later worker
@@ -52,22 +57,16 @@ CHILD = textwrap.dedent("""
     gc.collect()
     with open('/proc/self/status') as status:
         private = next(int(s.split()[1]) * 1024 for s in status if s.startswith('VmData:'))
-    resource.setrlimit(resource.RLIMIT_DATA, (private + 20_000_000, resource.RLIM_INFINITY))
+    resource.setrlimit(resource.RLIMIT_DATA, (private + 9_000_000, resource.RLIM_INFINITY))
     stage = 'open'
     try:
         if storage == 'mapped':
             X = _open_mapped(target)
         stage = case
         if case == 'copy':
-            # Smallest primitive matrix copy; for packed bool this is the
-            # byte-per-value expansion that must also fail the same cap.
-            copy = np.empty(X.shape, dtype=np.uint8, order='F')
-            for j, column in enumerate(_ArrowMatrix(X)._columns):
-                start = 0
-                for values, offset, count in column:
-                    copy[start:start+count, j] = (values if offset is None else
-                        np.unpackbits(values, bitorder='little')[offset:offset+count])
-                    start += count
+            # Copy each physical value buffer without expanding packed bools.
+            copy = [bytes(chunk.buffers()[1]) for column in X.itercolumns()
+                    for chunk in column.chunks]
         elif case == 'malloc':
             libc = ctypes.CDLL(None)
             libc.malloc.restype = ctypes.c_void_p
@@ -79,7 +78,6 @@ CHILD = textwrap.dedent("""
                        lambda_min=0.8, row_indices=rows, n_threads=2)
         assert len(fit) == 3
     except MemoryError:
-        traceback.print_exc()
         print(json.dumps({'fits': False, 'stage': stage}))
     else:
         print(json.dumps({'fits': True, 'stage': stage}))
@@ -91,7 +89,8 @@ def files(request, tmp_path_factory):
     directory = tmp_path_factory.mktemp("arrow-memory")
     rng = np.random.default_rng(14)
     paths = []
-    for name, n, p in (("warm", 2000, 20), ("target", 20_000, 2000)):
+    target_rows = 48_000 if request.param == "bool" else 20_000
+    for name, n, p in (("warm", 2000, 20), ("target", target_rows, 2000)):
         columns = [
             pa.array(rng.integers(0, 2, n).astype(request.param)) for _ in range(p)
         ]
