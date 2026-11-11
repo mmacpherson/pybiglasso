@@ -120,11 +120,9 @@ def memmap(tmp_path_factory):
 
 def run_child(memmap, case):
     # one malloc arena, so threads don't each reserve one during the measured fit
-    # and the Rust backend, whatever the environment asks for
     env = {
         "MALLOC_ARENA_MAX": "1",
         "PYTHONWARNINGS": "ignore",
-        "PYBIGLASSO_BACKEND": "rust",
         # Each fit builds its own thread pool. Rust's default 2 MiB thread
         # stacks are private memory the cap counts, and whether the C library
         # reuses the warm-up's stacks varies (CI runners didn't), so keep them

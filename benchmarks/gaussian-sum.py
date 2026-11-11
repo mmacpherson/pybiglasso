@@ -183,7 +183,6 @@ def main():
                     for threads in args.threads:
                         options = dict(
                             family="gaussian",
-                            backend="rust",
                             alpha=alpha,
                             nlambda=args.nlambda,
                             lambda_min=0.05,
