@@ -77,6 +77,7 @@ def test_classifier_extreme_probabilities_are_accurate():
         probability = np.array(
             [float(1 / (1 + (-value).exp())) for value in decimal_eta]
         )
+        complement = np.array([float(1 / (1 + value.exp())) for value in decimal_eta])
         log_probability = np.array(
             [float(-(1 + (-value).exp()).ln()) for value in decimal_eta]
         )
@@ -87,6 +88,7 @@ def test_classifier_extreme_probabilities_are_accurate():
     proba = clf.predict_proba(eta[:, None])
     log_proba = clf.predict_log_proba(eta[:, None])
     np.testing.assert_array_max_ulp(proba[:, 1], probability, maxulp=2)
+    np.testing.assert_array_max_ulp(proba[:, 0], complement, maxulp=2)
     np.testing.assert_array_max_ulp(log_proba[:, 1], log_probability, maxulp=2)
     np.testing.assert_array_max_ulp(log_proba[:, 0], log_complement, maxulp=2)
     assert np.isfinite(log_proba).all()

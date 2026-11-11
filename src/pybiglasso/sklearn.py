@@ -163,8 +163,8 @@ class _ClassifierBase(ClassifierMixin, BaseEstimator):
         return self.classes_[(self.decision_function(X) > 0).astype(np.intp)]
 
     def predict_proba(self, X):
-        p = _expit(self.decision_function(X))
-        return np.column_stack([1 - p, p])
+        eta = self.decision_function(X)
+        return np.column_stack([_expit(-eta), _expit(eta)])
 
     def predict_log_proba(self, X):
         eta = self.decision_function(X)
