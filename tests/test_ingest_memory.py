@@ -93,7 +93,7 @@ def same_size_wide_parquet(tmp_path_factory):
     paths = []
     for name, rows, columns in (
         ("narrow", 32_768, 64),
-        ("wide", 1_024, 2_048),
+        ("wide", 8_192, 256),
     ):
         values = np.arange(rows, dtype=np.float64)
         table = pa.table({f"x{j}": pa.array(values) for j in range(columns)})
@@ -254,11 +254,16 @@ STREAM_CHILD = textwrap.dedent("""
     schema = pa.schema([(f'x{i}', pa.float64()) for i in range(8)])
     def reader(rows):
         def batches():
-            values = pa.record_batch([
-                pa.array(np.full(batch_size, 0.25)) for _ in range(8)
-            ], schema=schema)
             for start in range(0, rows, batch_size):
-                yield values.slice(0, min(batch_size, rows-start))
+                length = min(batch_size, rows-start)
+                # Retain distinct ordinary-sized producer buffers so read_all
+                # must retain the whole stream. Reuse the one-row buffers: that
+                # case isolates retained batch metadata instead.
+                if start == 0 or batch_size != 1:
+                    values = pa.record_batch([
+                        pa.array(np.full(batch_size, 0.25)) for _ in range(8)
+                    ], schema=schema)
+                yield values.slice(0, length)
         return pa.RecordBatchReader.from_batches(schema, batches())
     dtype_option = {"x0": "float64"} if mode == 'mapping' else (
         'auto' if mode == 'copy' else mode)
@@ -284,7 +289,7 @@ STREAM_CHILD = textwrap.dedent("""
         source = reader(40_000)
         if mode == 'copy':
             print('WHOLE_TABLE_READ_START', file=sys.stderr, flush=True)
-            source = source.read_all().combine_chunks()
+            source = source.read_all()
             print('WHOLE_TABLE_READ_DONE', file=sys.stderr, flush=True)
         result = ingest(source, output, dtypes=dtype_option,
                         block_size=512)
