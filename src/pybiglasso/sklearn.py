@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import scipy.sparse as sps
+from scipy.special import log_expit
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.model_selection import check_cv
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
@@ -133,7 +134,8 @@ class _BiglassoBase(ClassifierMixin, BaseEstimator):
         return np.column_stack([1 - p, p])
 
     def predict_log_proba(self, X):
-        return np.log(self.predict_proba(X))
+        eta = self.decision_function(X)
+        return np.column_stack([log_expit(-eta), log_expit(eta)])
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()

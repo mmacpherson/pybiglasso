@@ -1,3 +1,5 @@
+from decimal import Decimal, localcontext
+
 import numpy as np
 import pytest
 
@@ -55,6 +57,35 @@ def test_classifier_string_labels(data):
     np.testing.assert_array_equal(
         clf.predict(X), clf.classes_[(proba[:, 1] > 0.5).astype(int)]
     )
+
+
+def test_classifier_extreme_probabilities_are_accurate():
+    eta = np.array([-700.0, -40.0, -36.0, -30.0, -20.0, 0.0, 20.0, 700.0])
+    clf = BiglassoClassifier()
+    clf.classes_ = np.array([0, 1])
+    clf.n_features_in_ = 1
+    clf.coef_ = np.ones((1, 1))
+    clf.intercept_ = np.zeros(1)
+
+    with localcontext() as context:
+        context.prec = 400
+        decimal_eta = [Decimal.from_float(value) for value in eta]
+        probability = np.array(
+            [float(1 / (1 + (-value).exp())) for value in decimal_eta]
+        )
+        log_probability = np.array(
+            [float(-(1 + (-value).exp()).ln()) for value in decimal_eta]
+        )
+        log_complement = np.array(
+            [float(-(1 + value.exp()).ln()) for value in decimal_eta]
+        )
+
+    proba = clf.predict_proba(eta[:, None])
+    log_proba = clf.predict_log_proba(eta[:, None])
+    np.testing.assert_array_max_ulp(proba[:, 1], probability, maxulp=2)
+    np.testing.assert_array_max_ulp(log_proba[:, 1], log_probability, maxulp=2)
+    np.testing.assert_array_max_ulp(log_proba[:, 0], log_complement, maxulp=2)
+    assert np.isfinite(log_proba).all()
 
 
 @pytest.mark.parametrize("scoring", ["deviance", "auc", "accuracy"])

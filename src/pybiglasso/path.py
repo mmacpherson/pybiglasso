@@ -4,6 +4,7 @@ import dataclasses
 
 import numpy as np
 import scipy.sparse as sps
+from scipy.special import expit as _expit
 
 from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
 
@@ -272,10 +273,6 @@ def linear_predictor(X, coef, intercept, row_indices=None):
 
 # rows x columns of X gathered at once by `linear_predictor` (32 MB as float64)
 CHUNK_ELEMENTS = 1 << 22
-
-
-def _expit(x):
-    return 0.5 * (1.0 + np.tanh(0.5 * x))
 
 
 def binomial_deviance(y, eta):
