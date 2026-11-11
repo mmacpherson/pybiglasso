@@ -119,7 +119,7 @@ nulls, lengths or alignment. Unaligned buffers are rejected with guidance to
 construct aligned buffers explicitly or ingest a file; there is no copying
 fallback and no validation bypass.
 
-Rust retains typed read guards for every chunk across GIL release, worker
+During fitting, Rust retains typed read guards for every chunk across GIL release, worker
 threads and callbacks. Cumulative chunk ends give checked binary lookup, with a
 single-chunk fast path. A block inside a chunk uses the existing reader; a
 crossing assembles exactly the same fixed lanes as contiguous storage. The
@@ -134,11 +134,13 @@ RecordBatches. It does not guess their provenance or locality. Explicit positive
 thread counts override this choice. No Arrow performance warnings or speedup
 claims are made; representative benchmarks are separate work.
 
-Arrow readers always use checked indexing, even under
+Fitting readers always use checked indexing, even under
 `PYBIGLASSO_BOUNDSCHECK=False`. Tests under both settings change only the NumPy
 reference's indexing mode. Prediction/scoring read bounded blocks of used
-columns, normalize signed integer row selections and reject out-of-range rows
-before primitive or bit addressing. No full X matrix is materialized.
+columns with Arrow's native indexed take, which locates chunk offsets without
+building a full-row mask for every chunk. They normalize signed integer row
+selections and reject out-of-range rows before addressing. No full X matrix is
+materialized.
 
 NaN/infinity follow the existing selected-row fitting policy: excluded rows do
 not trigger a new full-X finiteness scan, and unsafe mask arithmetic falls back

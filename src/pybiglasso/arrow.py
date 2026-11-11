@@ -288,17 +288,19 @@ class _ArrowMatrix:
             raise IndexError("row_indices has indices outside the design.")
         indices = np.where(indices < 0, indices + nrow, indices)
         block = np.empty((len(indices), len(columns)), dtype=np.float64)
+        if not len(indices):
+            return block
+        import pyarrow as pa
+
+        arrow_indices = pa.array(indices)
         for k, j in enumerate(columns):
-            start = 0
-            for values, offset, n in self._columns[j]:
-                selected = (indices >= start) & (indices < start + n)
-                local = indices[selected] - start
-                block[selected, k] = (
-                    values[local]
-                    if offset is None
-                    else (values[(local + offset) // 8] >> ((local + offset) % 8)) & 1
-                )
-                start += n
+            # Arrow's indexed take locates chunk offsets in native code. Keep
+            # only one gathered column beside the final dense prediction block.
+            block[:, k] = (
+                self._table.column(int(j))
+                .take(arrow_indices)
+                .to_numpy(zero_copy_only=False)
+            )
         return block
 
     def _check_finite(self):
