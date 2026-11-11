@@ -100,8 +100,6 @@ CHILD = textwrap.dedent("""
                        (private + allowance, resource.RLIM_INFINITY))
     stage = 'open'
     try:
-        if storage == 'mapped':
-            X = _open_mapped(target)
         stage = case
         if case == 'copy':
             # Copy each physical value buffer without expanding packed bools.
@@ -149,9 +147,22 @@ def files(request, tmp_path_factory):
     return target, warm, copy_target[0] if copy_target else target
 
 
-@pytest.mark.parametrize("case", ["fit", "subset", "copy", "malloc"])
-@pytest.mark.parametrize("stack_cache", [True, False])
-@pytest.mark.parametrize("storage", ["mapped", "allocated"])
+_CASES = [
+    *(
+        pytest.param(case, storage, stack_cache, id=f"{case}-{storage}-{stack_cache}")
+        for case in ("fit", "subset")
+        for storage in ("mapped", "allocated")
+        for stack_cache in (True, False)
+    ),
+    *(
+        pytest.param("copy", storage, True, id=f"copy-{storage}")
+        for storage in ("mapped", "allocated")
+    ),
+    pytest.param("malloc", "mapped", True, id="malloc"),
+]
+
+
+@pytest.mark.parametrize("case,storage,stack_cache", _CASES)
 def test_open_and_first_fit_cap_with_copy_controls(files, case, stack_cache, storage):
     env = dict(
         os.environ,

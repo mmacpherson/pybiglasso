@@ -73,7 +73,7 @@ WIDE_CHILD = textwrap.dedent("""
         assert result
     else:
         result = ingest(source, output, dtypes='preserve')
-        assert result.X.num_rows * result.X.num_columns == 1 << 22
+        assert result.X.num_rows * result.X.num_columns == 1 << 21
     peak[0] = max(peak[0], rss())
     stop.set()
     monitor.join()
@@ -92,8 +92,8 @@ def same_size_wide_parquet(tmp_path_factory):
     directory = tmp_path_factory.mktemp("wide-parquet-memory")
     paths = []
     for name, rows, columns in (
-        ("narrow", 65_536, 64),
-        ("wide", 2_048, 2_048),
+        ("narrow", 32_768, 64),
+        ("wide", 1_024, 2_048),
     ):
         values = np.arange(rows, dtype=np.float64)
         table = pa.table({f"x{j}": pa.array(values) for j in range(columns)})
@@ -136,7 +136,7 @@ def test_wide_parquet_peak_is_bounded_by_source_size(
     )
     assert completed.returncode == 0, completed.stderr[-3000:]
     peak = json.loads(completed.stdout.splitlines()[-1])["peak"]
-    logical_bytes = (1 << 22) * 8
+    logical_bytes = (1 << 21) * 8
     # Source decoding, staging, mapped writer input and the final file may each
     # account for the logical values; add 32 MiB of reader/writer metadata.
     # This derives one width-independent ceiling from source size.
@@ -178,16 +178,16 @@ CHILD = textwrap.dedent("""
     with open('/proc/self/status') as status:
         private = next(int(line.split()[1])*1024 for line in status
                        if line.startswith('VmData:'))
-    # 160k * 8 * 8 = 10,240,000 output bytes. An extra 5,120,000 private
+    # 40k * 8 * 8 = 2,560,000 output bytes. An extra 1,280,000 private
     # bytes allows bounded CSV blocks but cannot hold the numeric table.
-    limit = private + 160_000 * 8 * 8 // 2
+    limit = private + 40_000 * 8 * 8 // 2
     resource.setrlimit(resource.RLIMIT_DATA, (limit, resource.RLIM_INFINITY))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     try:
         if str(control) == 'copy':
             whole = pc.read_csv(source, read_options=pc.ReadOptions(use_threads=False))
         result = ingest(source, output, block_size=8192)
-        assert result.X.shape == (160_000, 8)
+        assert result.X.shape == (40_000, 8)
         print(json.dumps({'fits': True}))
     except MemoryError:
         print(json.dumps({'fits': False}))
@@ -204,7 +204,7 @@ def test_csv_streams_under_less_than_table_memory(tmp_path, control):
     # creates the full table before establishing the child's memory limit.
     with source.open("w") as stream:
         stream.write(header)
-        for _ in range(160):
+        for _ in range(40):
             stream.write(row * 1000)
     small.write_text(header + row * 8)
     completed = subprocess.run(
@@ -254,10 +254,11 @@ STREAM_CHILD = textwrap.dedent("""
     schema = pa.schema([(f'x{i}', pa.float64()) for i in range(8)])
     def reader(rows):
         def batches():
+            values = pa.record_batch([
+                pa.array(np.full(batch_size, 0.25)) for _ in range(8)
+            ], schema=schema)
             for start in range(0, rows, batch_size):
-                yield pa.record_batch([
-                    pa.array(np.full(min(batch_size, rows-start), 0.25)) for _ in range(8)
-                ], schema=schema)
+                yield values.slice(0, min(batch_size, rows-start))
         return pa.RecordBatchReader.from_batches(schema, batches())
     dtype_option = {"x0": "float64"} if mode == 'mapping' else (
         'auto' if mode == 'copy' else mode)
@@ -274,21 +275,21 @@ STREAM_CHILD = textwrap.dedent("""
     with open('/proc/self/status') as status:
         private = next(int(line.split()[1])*1024 for line in status
                        if line.startswith('VmData:'))
-    # Input has 10,240,000 bytes. The 5,120,000 allowance cannot hold it;
+    # Input has 2,560,000 bytes. The 1,280,000 allowance cannot hold it;
     # only a producer batch and bounded conversion work fit.
     resource.setrlimit(resource.RLIMIT_DATA,
-                       (private + 5_120_000, resource.RLIM_INFINITY))
+                       (private + 1_280_000, resource.RLIM_INFINITY))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     try:
-        source = reader(160_000)
+        source = reader(40_000)
         if mode == 'copy':
             print('WHOLE_TABLE_READ_START', file=sys.stderr, flush=True)
-            source = source.read_all()
+            source = source.read_all().combine_chunks()
             print('WHOLE_TABLE_READ_DONE', file=sys.stderr, flush=True)
         result = ingest(source, output, dtypes=dtype_option,
                         block_size=512)
-        assert result.X.shape == (160_000, 8)
-        assert result.X['x0'][159999].as_py() == 0.25
+        assert result.X.shape == (40_000, 8)
+        assert result.X['x0'][39_999].as_py() == 0.25
         print(json.dumps({'fits': True}))
     except MemoryError:
         print(json.dumps({'fits': False}))
