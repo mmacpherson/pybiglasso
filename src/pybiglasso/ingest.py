@@ -7,6 +7,7 @@ import fnmatch
 import hashlib
 import json
 import math
+import numbers
 import os
 import re
 import struct
@@ -35,6 +36,7 @@ _INTEGER = re.compile(r"[+-]?\d+\Z")
 _METADATA_KEY = b"pybiglasso.ingest"
 _FORMAT_VERSION = 1
 _RESPONSE_DTYPE = "<f8"
+_MAX_BLOCK_CELLS = 1 << 18
 
 
 @dataclass(frozen=True)
@@ -101,12 +103,14 @@ def _selection(names, response, features, exclude, match):
     return tuple(selected)
 
 
-def _numeric(value, column, row):
+def _numeric(value, column, row, dtype=None):
     """Preserve integer precision before testing any floating representation."""
     if isinstance(value, Decimal):
         if not value.is_finite() or value.adjusted() > 308:
             raise ValueError(f"Column {column!r}, row {row}: nonfinite numeric value.")
-        if value == value.to_integral_value():
+        if dtype is not None and np.dtype(dtype).kind == "f":
+            value = float(value)
+        elif value == value.to_integral_value():
             value = int(value)
         else:
             converted = float(value)
@@ -169,8 +173,13 @@ def _exact(value, dtype):
 def _headers(source, pa, sheet, excel_shared_strings_limit):
     suffix = source.suffix.lower()
     if suffix == ".csv":
-        with source.open(newline="", encoding="utf-8-sig") as stream:
-            return _names(next(csv.reader(stream), ()))
+        previous_limit = csv.field_size_limit()
+        csv.field_size_limit(max(previous_limit, _csv_block_size(source, 65536)))
+        try:
+            with source.open(newline="", encoding="utf-8-sig") as stream:
+                return _names(next(csv.reader(stream), ()))
+        finally:
+            csv.field_size_limit(previous_limit)
     if suffix in (".parquet", ".pq"):
         import pyarrow.parquet as pq
 
@@ -294,6 +303,16 @@ def _workbook(source, excel_shared_strings_limit):
     )
 
 
+def _row_block_size(block_size, columns):
+    return min(block_size, max(1, _MAX_BLOCK_CELLS // len(columns)))
+
+
+def _csv_block_size(source, block_size):
+    with source.open("rb") as stream:
+        longest_line = max((len(line) for line in stream), default=0)
+    return max(block_size, longest_line + 1)
+
+
 def _blocks(
     source, columns, all_names, block_size, sheet, pa, excel_shared_strings_limit
 ):
@@ -307,25 +326,35 @@ def _blocks(
             include_columns=list(columns),
             strings_can_be_null=False,
         )
-        with pc.open_csv(
-            source,
-            read_options=pc.ReadOptions(block_size=block_size),
-            convert_options=options,
-        ) as reader:
-            for batch in reader:
-                yield dict(
-                    zip(
-                        columns,
-                        (column.to_pylist() for column in batch.columns),
-                        strict=True,
+        csv_block_size = _csv_block_size(source, block_size)
+        try:
+            with pc.open_csv(
+                source,
+                read_options=pc.ReadOptions(block_size=csv_block_size),
+                parse_options=pc.ParseOptions(ignore_empty_lines=False),
+                convert_options=options,
+            ) as reader:
+                for batch in reader:
+                    yield dict(
+                        zip(
+                            columns,
+                            (column.to_pylist() for column in batch.columns),
+                            strict=True,
+                        )
                     )
-                )
+        except pa.ArrowInvalid as error:
+            raise ValueError(
+                f"Cannot parse CSV with ingest block_size={csv_block_size} bytes: "
+                f"{error}"
+            ) from error
     elif suffix in (".parquet", ".pq"):
         import pyarrow.parquet as pq
 
         with pq.ParquetFile(source) as reader:
             for batch in reader.iter_batches(
-                batch_size=block_size, columns=list(columns), use_threads=False
+                batch_size=_row_block_size(block_size, columns),
+                columns=list(columns),
+                use_threads=False,
             ):
                 yield {name: batch.column(name).to_pylist() for name in columns}
     elif suffix in (".feather", ".arrow", ".ipc"):
@@ -333,9 +362,12 @@ def _blocks(
             reader = pa.ipc.open_file(mapping)
             for index in range(reader.num_record_batches):
                 batch = reader.get_batch(index)
-                for start in range(0, batch.num_rows, block_size):
+                row_block_size = _row_block_size(block_size, columns)
+                for start in range(0, batch.num_rows, row_block_size):
                     yield {
-                        name: batch.column(name).slice(start, block_size).to_pylist()
+                        name: batch.column(name)
+                        .slice(start, row_block_size)
+                        .to_pylist()
                         for name in columns
                     }
     else:
@@ -346,10 +378,11 @@ def _blocks(
             next(rows, None)
             indices = [all_names.index(name) for name in columns]
             block = {name: [] for name in columns}
+            row_block_size = _row_block_size(block_size, columns)
             for row in rows:
                 for name, index in zip(columns, indices, strict=True):
                     block[name].append(row[index] if index < len(row) else None)
-                if len(block[columns[0]]) == block_size:
+                if len(block[columns[0]]) == row_block_size:
                     yield block
                     block = {name: [] for name in columns}
             if block[columns[0]]:
@@ -378,7 +411,7 @@ def _infer(blocks, columns, overrides):
         length = len(block[columns[0]])
         for name in columns:
             for index, raw in enumerate(block[name], count + 1):
-                value = _numeric(raw, name, index)
+                value = _numeric(raw, name, index, overrides.get(name))
                 # Counts/IDs beyond the supported integer widths use f64,
                 # not f32, even when a particular integer happens to fit f32.
                 wide_integer = isinstance(value, int) and not -32768 <= value <= 32767
@@ -411,7 +444,7 @@ def _stage(blocks, columns, types, directory, count):
     for block in blocks:
         for name in columns:
             values = [
-                _numeric(raw, name, seen + index + 1)
+                _numeric(raw, name, seen + index + 1, types[name])
                 for index, raw in enumerate(block[name])
             ]
             for index, value in enumerate(values, seen + 1):
@@ -623,12 +656,13 @@ def _publish(
 
 def _stream_blocks(reader, columns, block_size, spool=None):
     schema = reader.schema
+    row_block_size = _row_block_size(block_size, columns)
     for batch in reader:
         if not batch.schema.equals(schema, check_metadata=True):
             raise ValueError("Arrow stream schema changed during ingest.")
         # Empty batches carry a schema, not an end-of-stream indication.
-        for start in range(0, batch.num_rows, block_size):
-            selected = batch.select(list(columns)).slice(start, block_size)
+        for start in range(0, batch.num_rows, row_block_size):
+            selected = batch.select(list(columns)).slice(start, row_block_size)
             if spool is not None:
                 spool.write_batch(selected)
             block = {name: selected.column(name).to_pylist() for name in columns}
@@ -761,7 +795,9 @@ def _preserve_reader(source, columns, block_size, pa):
                     metadata=file.schema_arrow.metadata,
                 ),
                 file.iter_batches(
-                    batch_size=block_size, columns=list(columns), use_threads=False
+                    batch_size=_row_block_size(block_size, columns),
+                    columns=list(columns),
+                    use_threads=False,
                 ),
             ) as reader:
                 yield reader
@@ -856,13 +892,13 @@ def ingest(
         raise ValueError("Specify a persistent out or cache_dir for ingest.")
     pa = _arrow()
     if (
-        not isinstance(block_size, int)
+        not isinstance(block_size, numbers.Integral)
         or isinstance(block_size, bool)
         or block_size <= 0
     ):
         raise ValueError("block_size must be a positive integer.")
     if (
-        not isinstance(excel_shared_strings_limit, int)
+        not isinstance(excel_shared_strings_limit, numbers.Integral)
         or isinstance(excel_shared_strings_limit, bool)
         or excel_shared_strings_limit <= 0
     ):

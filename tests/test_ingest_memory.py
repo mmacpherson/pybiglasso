@@ -14,6 +14,32 @@ pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="Linux RLIMIT_DATA accounting"
 )
 
+
+def test_wide_parquet_blocks_bound_converted_cells(tmp_path):
+    import importlib
+
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    module = importlib.import_module("pybiglasso.ingest")
+    nrow, ncol = 300, 2_000
+    source = tmp_path / "wide.parquet"
+    table = pa.table(
+        {
+            f"x{column}": pa.array(np.arange(nrow, dtype=np.int16))
+            for column in range(ncol)
+        }
+    )
+    pq.write_table(table, source, row_group_size=nrow)
+    columns = tuple(table.column_names)
+    largest = max(
+        len(block[columns[0]])
+        for block in module._blocks(source, columns, columns, 65_536, None, pa, 1 << 30)
+    )
+    assert largest <= module._MAX_BLOCK_CELLS // ncol
+
+
 CHILD = textwrap.dedent("""
     import ctypes, gc, json, os, resource, sys
     # glibc snapshots RLIMIT_STACK at exec for C++ worker stacks. Bound those

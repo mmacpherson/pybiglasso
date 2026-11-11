@@ -66,6 +66,43 @@ def test_source_round_trip_and_exact_types(tmp_path, source_table, format):
     assert result.X.shape == (9, 6)
 
 
+def test_default_csv_block_handles_very_wide_rows_and_headers(tmp_path):
+    wide = tmp_path / "wide.csv"
+    names = [f"feature_{index:05d}" for index in range(20_000)]
+    wide.write_text(",".join(names) + "\n" + ",".join(["1"] * len(names)) + "\n")
+    result = ingest(wide, tmp_path / "wide.arrow")
+    assert result.feature_names == tuple(names)
+    assert result.X.shape == (1, 20_000)
+    assert result.X.column(19_999)[0].as_py() == 1
+
+    long_name = "x" * 200_000
+    long_header = tmp_path / "long-header.csv"
+    long_header.write_text(f"{long_name},y\n2,0\n3,1\n")
+    result = ingest(long_header, tmp_path / "long-header.arrow", response="y")
+    assert result.feature_names == (long_name,)
+    assert result.X.column(0).to_pylist() == [2, 3]
+    np.testing.assert_array_equal(result.y, [0.0, 1.0])
+
+
+@pytest.mark.parametrize("header,row", [("x", "1"), ("x,y", "1,0")])
+def test_csv_rejects_blank_data_lines(tmp_path, header, row):
+    source = tmp_path / "blank.csv"
+    source.write_text(f"{header}\n{row}\n\n{row}\n")
+    with pytest.raises(ValueError, match=r"row|line|CSV"):
+        ingest(source, tmp_path / "blank.arrow")
+
+
+@pytest.mark.parametrize(
+    "content", [b"x,y\n1,0\n", b"x,y\r\n1,0\r\n", b"\xef\xbb\xbfx,y\n1,0\n"]
+)
+def test_csv_trailing_newline_crlf_and_bom(tmp_path, content):
+    source = tmp_path / "ordinary.csv"
+    source.write_bytes(content)
+    result = ingest(source, tmp_path / "ordinary.arrow", response="y")
+    assert result.X.column("x").to_pylist() == [1]
+    np.testing.assert_array_equal(result.y, [0.0])
+
+
 def test_selection_order_glob_regex_and_unselected_bad_values(tmp_path):
     source = tmp_path / "source.parquet"
     pq.write_table(
@@ -252,6 +289,8 @@ def test_decimal_source_requires_exact_binary_representation(tmp_path):
     pq.write_table(pa.table({"x": [Decimal("0.1")]}), source)
     with pytest.raises(ValueError, match="Column 'x', row 1: no supported exact dtype"):
         ingest(source, tmp_path / "inexact.arrow")
+    result = ingest(source, tmp_path / "rounded.arrow", dtypes={"x": "float64"})
+    assert result.X.column(0)[0].as_py() == float(Decimal("0.1"))
 
 
 def test_excel_round_trip_against_independent_reader(tmp_path):

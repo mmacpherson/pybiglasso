@@ -123,7 +123,9 @@ CSV are parsed without an intermediate float, including integral
 decimal/exponent spellings. Fractional
 CSV values use float64 parsing. Float32 is used only when conversion preserves
 every parsed value; signed floating zero is retained. A partial dtype mapping
-overrides selected feature columns, with the same exactness requirement:
+overrides selected feature columns. Integer and float32 overrides keep the
+exactness requirement; an explicit float64 override accepts finite Arrow
+decimal values by the usual float64 rounding:
 
 ```python
 data = ingest("data.csv", dtypes={"measurement": "float64"},
@@ -146,7 +148,10 @@ at most seven bits between blocks, and writes packed bits, not byte-per-row
 bool columns. Source size and modification time are checked between passes.
 
 - CSV uses Arrow's incremental reader, with string columns to avoid first-block
-  type inference rounding later integers. `block_size` is bytes for CSV.
+  type inference rounding later integers. `block_size` is bytes for CSV and is
+  automatically raised when a header or physical record is longer, so wide
+  records work at the default. Blank data lines are rejected; an ordinary
+  trailing newline, CRLF and a UTF-8 BOM are accepted.
 - Parquet uses bounded `iter_batches`, respecting column selection.
 - Feather files are read one existing record batch at a time, then sliced into
   blocks. Compressed source batches must be decoded by Arrow; their original
@@ -183,8 +188,11 @@ ceiling; Python string objects and other workbook metadata add overhead.
 Workbooks below the ceiling may still require substantial RAM. Prefer CSV or
 Parquet when a strict blockwise-memory workflow is needed.
 
-For non-CSV readers `block_size` counts rows. Output disk space must cover
-both column staging and the final Feather file during conversion.
+For non-CSV readers `block_size` counts rows, but each consumer block is also
+capped at 262,144 selected cells. Wide inputs therefore use fewer rows per
+block instead of multiplying conversion memory by their column count. Output
+disk space must cover both column staging and the final Feather file during
+conversion.
 
 ## Persistent outputs and reuse
 
