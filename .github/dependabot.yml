@@ -15,6 +15,15 @@ updates:
   groups:
     uv-lock:
       patterns: ['*']
+- package-ecosystem: npm
+  directory: /web
+  schedule:
+    interval: monthly
+  commit-message:
+    prefix: deps
+  groups:
+    web-lock:
+      patterns: ['*']
 - package-ecosystem: cargo
   directory: /rust
   schedule:

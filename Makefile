@@ -175,5 +175,5 @@ build:
 # check the metadata PyPI will render, and fit from the wheel with no extras
 .PHONY: check-dist
 check-dist: build
-	uvx twine check --strict dist/*
+	uvx twine==7.0.0 check --strict dist/*
 	uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py
