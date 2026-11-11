@@ -137,9 +137,10 @@ claims are made; representative benchmarks are separate work.
 Fitting readers always use checked indexing, even under
 `PYBIGLASSO_BOUNDSCHECK=False`. Tests under both settings change only the NumPy
 reference's indexing mode. Prediction/scoring read bounded blocks of used
-columns with Arrow's native indexed take, which locates chunk offsets without
-building a full-row mask for every chunk. They normalize signed integer row
-selections and reject out-of-range rows before addressing. No full X matrix is
+columns. NumPy binary-searches cumulative chunk ends, groups the requested
+positions by chunk, and reads only those primitive or packed-boolean buffer
+positions. They normalize signed integer row selections and reject out-of-range
+rows before addressing. Neither a whole column nor the full X matrix is
 materialized.
 
 NaN/infinity follow the existing selected-row fitting policy: excluded rows do

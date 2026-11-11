@@ -19,6 +19,27 @@ pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="Linux RLIMIT_DATA semantics"
 )
 
+
+def test_prediction_gather_does_not_copy_a_chunked_column():
+    from pybiglasso.arrow import _ArrowMatrix
+
+    chunks = [pa.array(np.arange(200_000, dtype=np.float64)) for _ in range(10)]
+    table = pa.table({"x": pa.chunked_array(chunks)})
+    previous = pa.default_memory_pool()
+    pool = pa.proxy_memory_pool(previous)
+    try:
+        pa.set_memory_pool(pool)
+        baseline = pool.bytes_allocated()
+        actual = _ArrowMatrix(table)._block(np.array([1, 1_999_999]), [0])
+        peak = pool.max_memory() - baseline
+    finally:
+        pa.set_memory_pool(previous)
+    np.testing.assert_array_equal(actual[:, 0], [1.0, 199_999.0])
+    # The result is 16 bytes; allow 1 MiB for Arrow metadata. ChunkedArray.take
+    # allocates all 16,000,000 value bytes here and fails this derived ceiling.
+    assert peak <= 1 << 20
+
+
 CHILD = textwrap.dedent("""
     import ctypes, gc, json, os, resource, sys
     # glibc snapshots RLIMIT_STACK at exec for C++ workers. RUST_MIN_STACK
