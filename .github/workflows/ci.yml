@@ -267,10 +267,10 @@ jobs:
 
   rust-cross-architecture:
     name: Rust fits, bit-identical across platforms
-    needs: [scope, test, macos]
+    needs: [scope, test, macos, wheels]
     # without macOS on a pull request, compare the other three platforms
     if: >-
-      always() && needs.test.result == 'success'
+      always() && needs.test.result == 'success' && needs.wheels.result == 'success'
       && (needs.macos.result == 'success'
           || (needs.scope.outputs.macos == 'false' && needs.macos.result == 'skipped'))
     runs-on: ubuntu-latest
@@ -283,6 +283,11 @@ jobs:
         pattern: rust-bits-*
         path: snapshots
         merge-multiple: true
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333    # v8.0.2
+      with:
+        pattern: wheel-bits-*
+        path: wheel-snapshots
+        merge-multiple: true
     - name: Compare the other runners against this run's Linux x86 reference
       shell: bash
       env:
@@ -294,6 +299,11 @@ jobs:
         files=()
         for platform in "${platforms[@]}"; do files+=("snapshots/rust-bits-$platform.json"); done
         python3 scripts/check_arch_bits.py compare "${flags[@]}" "${files[@]}"
+    # every wheel this run built, Intel macOS among them on main and release,
+    # from the release profile, against the test build's Linux x86 snapshot
+    - name: Compare the published wheels against the same reference
+      shell: bash
+      run: python3 scripts/check_arch_bits.py match snapshots/rust-bits-ubuntu-latest.json wheel-snapshots/*.json
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
@@ -406,10 +416,24 @@ jobs:
     - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         enable-cache: false
-        python-version: ${{ matrix.python }}
-    - name: Fit from the wheel with no extras
+    - name: Check the wheel is cp311-abi3, and fit from it with no extras
       shell: bash
       run: make check-wheel
+    # The binary that ships, on the oldest and newest supported Pythons:
+    # the stored R comparison and the bit snapshot, which
+    # rust-cross-architecture holds to the test build's (about 40 s)
+    - name: Stored R comparison and bit snapshot from the wheel, Python 3.11
+      shell: bash
+      run: make check-wheel-r WHEEL_TEST_PYTHON=3.11 WHEEL_BITS=wheel-bits-${{ matrix.platform }}-py3.11.json
+    - name: Stored R comparison and bit snapshot from the wheel, Python 3.15
+      shell: bash
+      run: make check-wheel-r WHEEL_TEST_PYTHON=3.15 WHEEL_BITS=wheel-bits-${{ matrix.platform }}-py3.15.json
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
+      with:
+        name: wheel-bits-${{ matrix.platform }}
+        path: wheel-bits-*.json
+        if-no-files-found: error
+        retention-days: 7
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
       with:
         name: dist-wheel-${{ matrix.platform }}

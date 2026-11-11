@@ -6,9 +6,22 @@ WHEEL_PYTHON = $(if $(filter Windows_NT,$(OS)),python,python3)
 wheel-provenance:
 	$(WHEEL_PYTHON) scripts/wheel_provenance.py --expected-rust-version "$(RUSTUP_TOOLCHAIN)"
 
+# one abi3 wheel serves every supported Python, from 3.11
 .PHONY: check-wheel
 check-wheel:
+	@ls dist/*.whl | grep -q -- '-cp311-abi3-' || { echo "not a cp311-abi3 wheel: $$(ls dist/*.whl)"; exit 1; }
 	uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py
+
+# The built wheel against the stored R output, and its bit snapshot, from an
+# environment that holds the wheel and not the source
+WHEEL_TEST_PYTHON ?= 3.11
+WHEEL_BITS ?= wheel-bits.json
+WHEEL_ENV = uv run --isolated --no-project --python $(WHEEL_TEST_PYTHON) --with dist/*.whl --with pytest --with hypothesis --with pyarrow
+.PHONY: check-wheel-r
+check-wheel-r:
+	$(WHEEL_ENV) python -c "import pathlib, pybiglasso; assert 'site-packages' in pathlib.Path(pybiglasso.__file__).parts, pybiglasso.__file__"
+	$(WHEEL_ENV) python -m pytest -q -p no:cacheprovider tests/test_vs_r.py tests/test_gaussian.py -k stored_r
+	$(WHEEL_ENV) python scripts/check_arch_bits.py record $(WHEEL_BITS)
 
 .PHONY: test
 # across every core (pytest-xdist); the R comparison below stays in one

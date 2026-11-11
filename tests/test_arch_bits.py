@@ -144,3 +144,28 @@ def test_compare_with_macos_requires_it(arch_bits, snapshots):
     linux_arm, _darwin, windows = snapshots[1:]
     with pytest.raises(AssertionError):
         arch_bits.compare(snapshots[0], [linux_arm, windows], ALL)
+
+
+def test_match_accepts_any_machine_with_equal_bits(arch_bits, snapshots, tmp_path):
+    # wheels: Linux x86 again, and Intel macOS, which compare doesn't take
+    extra = []
+    for system, machine in (("Linux", "x86_64"), ("Darwin", "x86_64")):
+        snapshot = json.loads(snapshots[0].read_text())
+        snapshot.update(system=system, machine=machine)
+        path = tmp_path / f"wheel-{system}-{machine}.json"
+        path.write_text(json.dumps(snapshot))
+        extra.append(path)
+    arch_bits.match(snapshots[0], snapshots[1:] + extra)
+
+
+def test_match_rejects_changed_bits_and_missing_cases(arch_bits, snapshots):
+    changed = json.loads(snapshots[1].read_text())
+    changed["cases"]["tall/dtype=int8/family=binomial/alpha=1.0"]["fit"]["coef"] = "x"
+    snapshots[1].write_text(json.dumps(changed))
+    with pytest.raises(AssertionError, match="bits differ"):
+        arch_bits.match(snapshots[0], snapshots[1:])
+    missing = json.loads(snapshots[2].read_text())
+    missing["cases"].popitem()
+    snapshots[2].write_text(json.dumps(missing))
+    with pytest.raises(AssertionError):
+        arch_bits.match(snapshots[0], snapshots[2:])

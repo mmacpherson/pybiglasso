@@ -6,6 +6,12 @@ there are no solver-generated golden values to bless or regenerate.
 
     uv run python scripts/check_arch_bits.py record x86.json
     python scripts/check_arch_bits.py compare x86.json linux-arm.json mac-arm.json win.json
+
+`match` holds any snapshots, from any machine, to the reference: CI's
+published wheels, each recorded from the installed wheel, against the test
+build's Linux x86 snapshot.
+
+    python scripts/check_arch_bits.py match x86.json wheel-*.json
 """
 
 import argparse
@@ -145,17 +151,42 @@ def record(output):
     )
 
 
-def compare(reference, candidates, systems):
+EXPECTED = {
+    f"{name}/dtype={dtype}/family={family}/alpha={alpha}"
+    for name in PROBLEMS
+    for dtype in DTYPES
+    for family in FAMILIES
+    for alpha in ALPHAS
+}
+
+
+def load_reference(reference):
     baseline = json.loads(reference.read_text())
     assert baseline["machine"] == "x86_64" and baseline["system"] == "Linux"
-    expected = {
-        f"{name}/dtype={dtype}/family={family}/alpha={alpha}"
-        for name in PROBLEMS
-        for dtype in DTYPES
-        for family in FAMILIES
-        for alpha in ALPHAS
-    }
-    assert set(baseline["cases"]) == expected
+    assert set(baseline["cases"]) == EXPECTED
+    return baseline
+
+
+def mismatches(baseline, reference, path, other):
+    """The fields of `other` whose bits differ from the reference's."""
+    assert set(other["cases"]) == EXPECTED, path
+    found = []
+    for case in sorted(EXPECTED):
+        a, b = baseline["cases"][case], other["cases"][case]
+        assert a["inputs"] == b["inputs"], f"{path}: {case} inputs differ"
+        assert a["fit"].keys() == b["fit"].keys(), f"{path}: {case} fields differ"
+        for field in a["fit"]:
+            if a["fit"][field] != b["fit"][field]:
+                found.append(f"{path}: {case} {field} bits differ from {reference}")
+    if found:
+        print(f"{path}: {len(found)} field comparisons differ from {reference}")
+    else:
+        print(f"{path}: all {len(EXPECTED)} fits bit-identical to {reference}")
+    return found
+
+
+def compare(reference, candidates, systems):
+    baseline = load_reference(reference)
     seen = set()
     differences = []
     for path in candidates:
@@ -163,27 +194,20 @@ def compare(reference, candidates, systems):
         assert other["system"] in CANDIDATE_MACHINES, path
         assert other["machine"] in CANDIDATE_MACHINES[other["system"]], path
         seen.add(other["system"])
-        assert set(other["cases"]) == expected, path
-        mismatches = []
-        for case in sorted(expected):
-            a, b = baseline["cases"][case], other["cases"][case]
-            assert a["inputs"] == b["inputs"], f"{path}: {case} inputs differ"
-            assert a["fit"].keys() == b["fit"].keys(), f"{path}: {case} fields differ"
-            for field in a["fit"]:
-                if a["fit"][field] != b["fit"][field]:
-                    mismatches.append(
-                        f"{path}: {case} {field} bits differ from {reference}"
-                    )
-        if mismatches:
-            differences.extend(mismatches)
-            print(
-                f"{path}: {len(mismatches)} field comparisons differ from {reference}"
-            )
-        else:
-            print(f"{path}: all {len(expected)} fits bit-identical to {reference}")
+        differences += mismatches(baseline, reference, path, other)
     # every expected platform, once each
     assert len(candidates) == len(systems) and seen == systems, (seen, systems)
     # Report every platform, even when an earlier candidate already differs.
+    assert not differences, "\n".join(differences)
+
+
+def match(reference, candidates):
+    baseline = load_reference(reference)
+    differences = []
+    for path in candidates:
+        differences += mismatches(
+            baseline, reference, path, json.loads(path.read_text())
+        )
     assert not differences, "\n".join(differences)
 
 
@@ -192,6 +216,9 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     writer = commands.add_parser("record")
     writer.add_argument("output", type=Path)
+    matcher = commands.add_parser("match")
+    matcher.add_argument("reference", type=Path)
+    matcher.add_argument("candidates", type=Path, nargs="+")
     checker = commands.add_parser("compare")
     checker.add_argument("reference", type=Path)
     checker.add_argument("candidates", type=Path, nargs="+")
@@ -203,6 +230,8 @@ def main():
     args = parser.parse_args()
     if args.command == "record":
         record(args.output)
+    elif args.command == "match":
+        match(args.reference, args.candidates)
     else:
         systems = set(CANDIDATE_MACHINES)
         if args.without_macos:
