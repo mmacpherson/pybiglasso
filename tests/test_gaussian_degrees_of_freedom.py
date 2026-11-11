@@ -65,7 +65,6 @@ def test_local_lasso_divergence_is_active_rank_including_intercept(duplicate, la
             X,
             response,
             family="gaussian",
-            backend="rust",
             lambdas=[lam],
             alpha=1.0,
             eps=1e-24,

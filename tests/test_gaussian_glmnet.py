@@ -29,7 +29,6 @@ def assert_matches(case, data, expected):
         X,
         y,
         family="gaussian",
-        backend="rust",
         alpha=case.alpha,
         lambdas=lambdas,
         penalty_factor=pf,

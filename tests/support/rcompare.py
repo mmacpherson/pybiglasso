@@ -372,7 +372,6 @@ def fit_py(case, data, lambdas=None, *, r_compatible=True):
             data["y"],
             alpha=case.alpha,
             family=case.family,
-            backend="rust" if case.family == "gaussian" else None,
             nlambda=case.nlambda,
             lambdas=lambdas,
             eps=EPS,

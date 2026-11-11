@@ -10,7 +10,7 @@ import scipy.sparse as sps
 
 from ._threads import resolve_threads
 from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
-from .config import check_backend, settings
+from .config import settings
 from .path import INTERCEPT, BiglassoPath
 
 logger = logging.getLogger(__name__)
@@ -53,14 +53,13 @@ def biglasso(
     stop_on_saturation=True,
     r_compatible=False,
     n_threads="auto",
-    backend=None,
     _stop=None,
 ):
     """Fit a lasso or elastic-net binomial or Gaussian regression path.
 
     The default family="gaussian" minimizes RSS/(2n) plus the standardized elastic-net
-    penalty, with an unpenalized intercept. It requires the Rust backend and
-    reports RSS as deviance. Gaussian fits do not use a saturation cutoff.
+    penalty, with an unpenalized intercept. It reports RSS as deviance.
+    Gaussian fits do not use a saturation cutoff.
 
     This ports R biglasso's Gaussian and binomial solvers with screen="SSR",
     and uses its parameter names: `alpha` mixes the L1 and L2
@@ -88,9 +87,6 @@ def biglasso(
     Unknown core topology falls back to one.
     Coordinate descent itself is sequential. Results do not depend on the
     thread count. See benchmarks/threads.md for the recorded evidence.
-
-    The solver is implemented in Rust. `backend=None` and `backend="rust"` are
-    accepted for compatibility; `backend="numba"` is no longer supported.
 
     Returns a `BiglassoPath`.
 
@@ -143,8 +139,6 @@ def biglasso(
             )
     if dfmax is not None:
         _integer("dfmax", dfmax, minimum=0)
-    if backend is not None:
-        check_backend(backend)
     if family not in ("binomial", "gaussian"):
         raise NotImplementedError("Supported families are 'binomial' and 'gaussian'.")
     # not np.isfortran, which is False for one column: both C and F order
@@ -346,7 +340,7 @@ def _unstandardize(vals, intercept, center, scale):
 def fit_path_rust(
     X, y, row_indices, params, n_threads, on_lambda=None, family="binomial"
 ):
-    """fit_path, run by the Rust backend in one call."""
+    """Run the native solver for a complete regularization path."""
     from . import _rust
 
     if not isinstance(X, _ArrowMatrix) and not X.flags.aligned:

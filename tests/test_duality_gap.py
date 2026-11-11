@@ -258,7 +258,6 @@ def fit_wide(design, alpha):
             y,
             alpha=alpha,
             penalty_factor=pf,
-            backend="rust",
             family="binomial",
             **FIT_OPTIONS,
         )
@@ -329,7 +328,6 @@ def test_global_gap_rejects_nonconverged_wide_iterate():
             y,
             alpha=0.5,
             penalty_factor=pf,
-            backend="rust",
             family="binomial",
             **dict(FIT_OPTIONS, max_iter=1),
         )

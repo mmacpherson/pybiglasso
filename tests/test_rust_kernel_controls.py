@@ -46,7 +46,6 @@ def test_bounds_setting_is_forwarded_to_rust(monkeypatch, checked, order, select
             X,
             3 + X[:, 0],
             family="gaussian",
-            backend="rust",
             lambdas=[0.25],
             row_indices=rows,
             n_threads=1,

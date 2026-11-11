@@ -20,8 +20,8 @@ from pybiglasso.sklearn import (  # noqa: E402
     [
         BiglassoClassifier(alpha=0.01),
         BiglassoClassifierCV(n_alphas=10, cv=3),
-        bl.BiglassoRegressor(alpha=0.01, backend="rust"),
-        bl.BiglassoRegressorCV(n_alphas=10, cv=3, n_jobs=1, backend="rust"),
+        bl.BiglassoRegressor(alpha=0.01),
+        bl.BiglassoRegressorCV(n_alphas=10, cv=3, n_jobs=1),
     ]
 )
 def test_sklearn_compatible(estimator, check):

@@ -149,7 +149,6 @@ class _ClassifierBase(ClassifierMixin, BaseEstimator):
             penalty_factor=self.penalty_factor,
             eps=self.tol,
             max_iter=self.max_iter,
-            backend=self.backend,
         )
 
     def decision_function(self, X):
@@ -202,7 +201,6 @@ class _RegressionBase(RegressorMixin, BaseEstimator):
             penalty_factor=self.penalty_factor,
             eps=self.tol,
             max_iter=self.max_iter,
-            backend=self.backend,
         )
 
     def predict(self, X):
@@ -217,7 +215,7 @@ class BiglassoRegressor(_RegressionBase):
     """Gaussian elastic net at one penalty strength, on standardized features.
 
     alpha is the penalty strength (R's lambda); l1_ratio is its mixing
-    parameter (R's alpha). Only the Rust backend supports Gaussian fits.
+    parameter (R's alpha).
     score returns R², following sklearn's regression convention.
     """
 
@@ -228,14 +226,12 @@ class BiglassoRegressor(_RegressionBase):
         penalty_factor=None,
         tol=1e-7,
         max_iter=1000,
-        backend=None,
     ):
         self.alpha = alpha
         self.l1_ratio = l1_ratio
         self.penalty_factor = penalty_factor
         self.tol = tol
         self.max_iter = max_iter
-        self.backend = backend
 
     def fit(self, X, y):
         X, y = self._validate_xy(X, y)
@@ -273,7 +269,6 @@ class BiglassoRegressorCV(_RegressionBase):
         tol=1e-7,
         max_iter=1000,
         n_jobs=None,
-        backend=None,
     ):
         self.l1_ratio = l1_ratio
         self.n_alphas = n_alphas
@@ -286,7 +281,6 @@ class BiglassoRegressorCV(_RegressionBase):
         self.tol = tol
         self.max_iter = max_iter
         self.n_jobs = n_jobs
-        self.backend = backend
 
     def fit(self, X, y):
         if self.scoring not in ("mse", "deviance", "r2"):
@@ -342,7 +336,6 @@ class BiglassoClassifier(_ClassifierBase):
     penalty_factor : array of shape (n_features,), optional
         Per-feature penalty multipliers; 0 leaves a feature unpenalized.
     tol, max_iter : convergence settings, as R biglasso's `eps` and `max.iter`.
-    backend : "rust", optional; as in `biglasso`.
     """
 
     def __init__(
@@ -352,14 +345,12 @@ class BiglassoClassifier(_ClassifierBase):
         penalty_factor=None,
         tol=1e-7,
         max_iter=1000,
-        backend=None,
     ):
         self.alpha = alpha
         self.l1_ratio = l1_ratio
         self.penalty_factor = penalty_factor
         self.tol = tol
         self.max_iter = max_iter
-        self.backend = backend
 
     def fit(self, X, y):
         X, y = self._validate_xy(X, y)
@@ -408,7 +399,7 @@ class BiglassoClassifierCV(_ClassifierBase):
     rule : {"min", "1se"}
         Pick the best-scoring alpha, or the largest alpha within one standard
         error of it (glmnet's lambda.1se).
-    penalty_factor, tol, max_iter, backend : as in `BiglassoClassifier`.
+    penalty_factor, tol, max_iter : as in `BiglassoClassifier`.
     n_jobs : int, optional
         Folds to fit at once, in threads that share X (so a memmap is read
         through one page cache). Each fold is single-threaded; results do not
@@ -444,7 +435,6 @@ class BiglassoClassifierCV(_ClassifierBase):
         tol=1e-7,
         max_iter=1000,
         n_jobs=None,
-        backend=None,
         early_stopping=None,
     ):
         self.l1_ratio = l1_ratio
@@ -458,7 +448,6 @@ class BiglassoClassifierCV(_ClassifierBase):
         self.tol = tol
         self.max_iter = max_iter
         self.n_jobs = n_jobs
-        self.backend = backend
         self.early_stopping = early_stopping
 
     def fit(self, X, y):
