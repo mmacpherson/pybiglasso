@@ -158,9 +158,34 @@ pub(crate) struct Path {
     pub(crate) events: Vec<Event>,
 }
 
-/// Each column's center and scale, whether the mask can sweep the rows left
-/// out, and the columns that couldn't be centered precisely
-pub(crate) type Standardization = (Vec<f64>, Vec<f64>, bool, Vec<usize>);
+/// What center_scale finds.
+pub(crate) struct Standardization {
+    pub(crate) center: Vec<f64>,
+    pub(crate) scale: Vec<f64>,
+    /// With a mask, whether the rows it leaves out are safe to sweep (see
+    /// LEFT_OUT_Z_MAX); always true otherwise
+    pub(crate) mask_safe: bool,
+    /// The columns that couldn't be centered precisely
+    pub(crate) imprecise: Vec<usize>,
+}
+
+/// One column's part of a Standardization.
+struct ColumnStandardization {
+    center: f64,
+    scale: f64,
+    /// The rows being fit hold NaN or infinity
+    nonfinite: bool,
+    /// The rows a mask leaves out are safe to sweep
+    left_out_safe: bool,
+    /// The mean of the centered values, which should be exactly 0
+    center_error: f64,
+}
+
+/// A column's sums about a center, over the rows being fit.
+struct CenteredSums {
+    squares: f64,
+    deviations: f64,
+}
 
 impl Path {
     /// Adds an event for each column center_scale couldn't center precisely.
@@ -194,94 +219,92 @@ impl<D: Design> Fit<'_, D> {
     /// Also returns the columns whose standardized mean, measured in the
     /// final moment pass, is off by more than CENTER_ERROR_MAX.
     pub(crate) fn center_scale(&self) -> Result<Standardization, String> {
-        let stats: Vec<(f64, f64, bool, bool, f64)> = (0..self.x.ncol())
-            .into_par_iter()
-            .map(|j| {
-                let c = self.x.col(j);
-                let n = c.n();
-                let nf = self.n_fit as f64;
-                let (mut acc, mut invalid) = (0.0, false);
-                let mut hint = 0;
-                match self.rows {
-                    Some(rows) => rows.iter().for_each(|&i| {
-                        let v = c.at_seq(i, &mut hint);
-                        invalid |= !v.is_finite();
-                        acc += v;
-                    }),
-                    None => for_each_value(&c, |v| {
-                        invalid |= !v.is_finite();
-                        acc += v;
-                    }),
-                }
-                let mut mean = acc / nf;
-                // offset: what the centered values leave over, which binary64
-                // rounding of the center (or of its sum) leaves nonzero
-                let (mut acc, mut offset) = (0.0, 0.0);
-                let mut hint = 0;
-                match self.rows {
-                    Some(rows) => rows.iter().for_each(|&i| {
-                        let d = c.at_seq(i, &mut hint) - mean;
-                        acc += d.powi(2);
-                        offset += d;
-                    }),
-                    None => for_each_value(&c, |v| {
-                        acc += (v - mean).powi(2);
-                        offset += v - mean;
-                    }),
-                }
-                let mut scale = (acc / nf).sqrt();
-                if !invalid
-                    && let Some(corrected) = corrected_center(mean, scale, offset / nf, self.params.r_compatible)
-                {
-                    // Differs from R biglasso: R retains the raw-sum mean.
-                    // Default mode partially repairs a material residual mean;
-                    // ordinary columns and compatibility keep their old bits.
-                    // Re-read in fitted-row order: updating the old moments
-                    // algebraically can cancel, and may not describe the actual
-                    // rounded differences about this new, one-float center.
-                    mean = corrected;
-                    (acc, offset) = (0.0, 0.0);
-                    let mut hint = 0;
-                    match self.rows {
-                        Some(rows) => rows.iter().for_each(|&i| {
-                            let d = c.at_seq(i, &mut hint) - mean;
-                            acc += d.powi(2);
-                            offset += d;
-                        }),
-                        None => for_each_value(&c, |v| {
-                            let d = v - mean;
-                            acc += d.powi(2);
-                            offset += d;
-                        }),
-                    }
-                    scale = (acc / nf).sqrt();
-                }
-                let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
-                let mut hint = 0;
-                for i in (0..n).filter(|&i| !self.fits(i)) {
-                    let v = c.at_seq(i, &mut hint);
-                    out_finite &= v.is_finite();
-                    (out_lo, out_hi) = (out_lo.min(v), out_hi.max(v));
-                }
-                // columns too constant to use are never swept
-                let out_deviation =
-                    if out_lo > out_hi { 0.0 } else { (out_lo - mean).abs().max((out_hi - mean).abs()) };
-                let out_safe = scale <= SCALE_MIN || (out_finite && out_deviation <= LEFT_OUT_Z_MAX * scale);
-                (mean, scale, invalid, out_safe, offset / nf)
-            })
-            .collect();
-        if stats.iter().any(|s| s.2) {
+        let columns: Vec<ColumnStandardization> =
+            (0..self.x.ncol()).into_par_iter().map(|j| self.standardize_column(&self.x.col(j))).collect();
+        if columns.iter().any(|c| c.nonfinite) {
             return Err("X must contain only finite values (no NaN or infinity) in the rows used for fitting.".into());
         }
-        if stats.iter().any(|s| !s.0.is_finite() || !s.1.is_finite()) {
+        if columns.iter().any(|c| !c.center.is_finite() || !c.scale.is_finite()) {
             return Err("X has values too large to standardize safely.".into());
         }
-        let imprecise = (stats.iter().enumerate())
-            .filter(|(_, s)| s.1 > SCALE_MIN && (s.4 / s.1).abs() > CENTER_ERROR_MAX)
+        let imprecise = (columns.iter().enumerate())
+            .filter(|(_, c)| c.scale > SCALE_MIN && (c.center_error / c.scale).abs() > CENTER_ERROR_MAX)
             .map(|(j, _)| j)
             .collect();
-        let (center, scale) = stats.iter().map(|s| (s.0, s.1)).unzip();
-        Ok((center, scale, stats.iter().all(|s| s.3), imprecise))
+        Ok(Standardization {
+            center: columns.iter().map(|c| c.center).collect(),
+            scale: columns.iter().map(|c| c.scale).collect(),
+            mask_safe: columns.iter().all(|c| c.left_out_safe),
+            imprecise,
+        })
+    }
+
+    fn standardize_column<C: Col>(&self, c: &C) -> ColumnStandardization {
+        let nf = self.n_fit as f64;
+        let (mut total, mut nonfinite) = (0.0, false);
+        self.for_each_fitted(c, |v| {
+            nonfinite |= !v.is_finite();
+            total += v;
+        });
+        let mut center = total / nf;
+        // deviations: what the centered values leave over, which binary64
+        // rounding of the center (or of its sum) leaves nonzero
+        let mut sums = self.centered_sums(c, center);
+        let mut scale = (sums.squares / nf).sqrt();
+        if !nonfinite
+            && let Some(corrected) = corrected_center(center, scale, sums.deviations / nf, self.params.r_compatible)
+        {
+            // Differs from R biglasso: R retains the raw-sum mean.
+            // Default mode partially repairs a material residual mean;
+            // ordinary columns and compatibility keep their old bits.
+            // Re-read in fitted-row order: updating the old moments
+            // algebraically can cancel, and may not describe the actual
+            // rounded differences about this new, one-float center.
+            center = corrected;
+            sums = self.centered_sums(c, center);
+            scale = (sums.squares / nf).sqrt();
+        }
+        let (mut out_lo, mut out_hi, mut out_finite) = (f64::INFINITY, f64::NEG_INFINITY, true);
+        let mut hint = 0;
+        for i in (0..c.n()).filter(|&i| !self.fits(i)) {
+            let v = c.at_seq(i, &mut hint);
+            out_finite &= v.is_finite();
+            (out_lo, out_hi) = (out_lo.min(v), out_hi.max(v));
+        }
+        // columns too constant to use are never swept
+        let out_deviation = if out_lo > out_hi { 0.0 } else { (out_lo - center).abs().max((out_hi - center).abs()) };
+        ColumnStandardization {
+            center,
+            scale,
+            nonfinite,
+            left_out_safe: scale <= SCALE_MIN || (out_finite && out_deviation <= LEFT_OUT_Z_MAX * scale),
+            center_error: sums.deviations / nf,
+        }
+    }
+
+    /// The sums of squares and of deviations about `center`, in the order
+    /// for_each_fitted visits the rows.
+    fn centered_sums<C: Col>(&self, c: &C, center: f64) -> CenteredSums {
+        let mut sums = CenteredSums { squares: 0.0, deviations: 0.0 };
+        self.for_each_fitted(c, |v| {
+            let d = v - center;
+            sums.squares += d.powi(2);
+            sums.deviations += d;
+        });
+        sums
+    }
+
+    /// Visits a column's values in the rows being fit: in row_indices' order
+    /// with a mask, as gathering does, otherwise in row order.
+    #[inline(always)]
+    fn for_each_fitted<C: Col>(&self, c: &C, mut visit: impl FnMut(f64)) {
+        match self.rows {
+            Some(rows) => {
+                let mut hint = 0;
+                rows.iter().for_each(|&i| visit(c.at_seq(i, &mut hint)));
+            }
+            None => for_each_value(c, visit),
+        }
     }
 
     fn score_sum(&self, values: &[f64]) -> f64 {

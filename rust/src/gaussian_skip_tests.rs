@@ -187,7 +187,7 @@ fn isolated_path_child() {
                 }
                 let design = ContigX::<_, true> { x: x.view() };
                 let fit = Fit { x: &design, y: &y, params: &params, mask: None, rows: None, n_fit: 128 };
-                let (center, scale, _, _) = fit.center_scale().unwrap();
+                let Standardization { center, scale, .. } = fit.center_scale().unwrap();
                 fit.run(center, scale).unwrap()
             };
             let path = if worker_bad.starts_with("worker-") {
@@ -674,7 +674,7 @@ fn add_case<D: Design>(
     rows: Option<&[usize]>,
 ) {
     let fit = Fit { x, y, params, mask, rows, n_fit: rows.map_or(y.len(), |r| r.len()) };
-    let (center, scale, safe, _) = fit.center_scale().unwrap();
+    let Standardization { center, scale, mask_safe: safe, .. } = fit.center_scale().unwrap();
     assert!(safe);
     let path = fit.run(center, scale).unwrap();
     out.extend(path_bytes(&path));
@@ -717,7 +717,7 @@ fn recentered_cases(out: &mut Vec<u8>, alpha: f64) {
         });
         let design = ContigX::<_, true> { x: a.view() };
         let fit = Fit { x: &design, y: &y, params: &params, mask: None, rows: None, n_fit: n };
-        let (center, scale, _, warnings) = fit.center_scale().unwrap();
+        let Standardization { center, scale, imprecise: warnings, .. } = fit.center_scale().unwrap();
         assert_eq!(!warnings.is_empty(), unrepresentable);
         if !unrepresentable {
             assert_eq!((center[0], scale[0]), (2f64.powi(50) + 1.0, 1.0));

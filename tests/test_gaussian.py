@@ -75,6 +75,11 @@ def live_gaussian(tmp_path_factory, request):
         for case, d in zip(cases, dirs, strict=True)
     ]
     outputs = rcompare.run_r(dirs)
+    if not request.param:
+        outputs = [
+            rcompare.default_mode_expected(case, r)
+            for case, r in zip(cases, outputs, strict=True)
+        ]
     return {
         case.name: (got, want)
         for case, got, want in zip(cases, prepared, outputs, strict=True)

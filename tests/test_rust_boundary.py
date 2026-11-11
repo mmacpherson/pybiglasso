@@ -36,6 +36,7 @@ def arguments(rng):
         stop_on_saturation=True,
         r_compatible=False,
         n_threads=1,
+        family="binomial",
     )
 
 
@@ -73,3 +74,33 @@ def test_direct_call_rejects_a_mask_with_repeated_rows():
     args["row_indices"] = np.r_[args["row_indices"], 0]
     with pytest.raises(ValueError, match="repeats"):
         _rust.fit_path(**args, boundscheck=True, row_path="mask")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(lambdas=None, nlambda=0),
+        dict(lambdas=None, nlambda=1),
+        dict(nlambda=5),
+        dict(lambdas=np.array([0.1, 0.05, 0.01]), nlambda=2),
+        dict(lambdas=np.array([]), nlambda=0),
+        dict(max_iter=0),
+        dict(alpha=0.0),
+        dict(alpha=1.5),
+        dict(alpha=float("nan")),
+    ],
+    ids=repr,
+)
+@pytest.mark.parametrize("family", ["binomial", "gaussian"])
+def test_direct_call_rejects_bad_settings_without_panicking(change, family):
+    # a panic would surface as PanicException, a BaseException, not ValueError
+    args = {**arguments(np.random.default_rng(0)), **change, "family": family}
+    with pytest.raises(ValueError):
+        _rust.fit_path(**args, boundscheck=True)
+
+
+def test_direct_call_requires_family():
+    args = arguments(np.random.default_rng(0))
+    del args["family"]
+    with pytest.raises(TypeError, match="family"):
+        _rust.fit_path(**args, boundscheck=True)

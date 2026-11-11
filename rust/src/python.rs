@@ -114,7 +114,7 @@ fn run_typed<T: Elem + Element>(
                 ($design:expr, $y:expr, $mask:expr, $n_fit:expr, $rows:expr) => {{
                     let d = $design;
                     let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: $rows.masked_rows(), n_fit: $n_fit };
-                    let (center, scale, mask_safe, imprecise) = fit.center_scale().map_err(Fail)?;
+                    let Standardization { center, scale, mask_safe, imprecise } = fit.center_scale().map_err(Fail)?;
                     if !mask_safe {
                         // a row left out holds something the mask can't sweep
                         // safely: gather the rows instead
@@ -318,7 +318,8 @@ fn run_mapped(
                     ($design:expr, $y:expr, $mask:expr, $n:expr) => {{
                         let d = $design;
                         let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: rows.masked_rows(), n_fit: $n };
-                        let (center, scale, safe, imprecise) = fit.center_scale().map_err(Fail)?;
+                        let Standardization { center, scale, mask_safe: safe, imprecise } =
+                            fit.center_scale().map_err(Fail)?;
                         if !safe {
                             return Err(Fallback);
                         }
@@ -357,10 +358,11 @@ fn run_mapped(
     })
 }
 
-/// Fit a binomial path; arguments and result as the numba backend's
-/// fit_path. Null-model statistics use the same portable math as the fit.
+/// Fit a binomial or Gaussian path, for biglasso(), which validates the
+/// arguments first; the result is a dict of the path's arrays and events.
+/// Null-model statistics use the same portable math as the fit.
 #[pyfunction]
-#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, n_threads, boundscheck, row_path = "auto", on_lambda = None, family = "binomial"))]
+#[pyo3(signature = (x, y, row_indices, alpha, lambdas, nlambda, eps, lambda_min, lambda_log_scale, penalty_factor, dfmax, max_iter, stop_on_saturation, r_compatible, n_threads, boundscheck, row_path = "auto", on_lambda = None, *, family))]
 #[allow(clippy::too_many_arguments)]
 fn fit_path<'py>(
     py: Python<'py>,
@@ -386,6 +388,21 @@ fn fit_path<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     if !["auto", "gather", "mask"].contains(&row_path) {
         return Err(PyValueError::new_err("row_path must be 'auto', 'gather' or 'mask'."));
+    }
+    if !(alpha > 0.0 && alpha <= 1.0) {
+        return Err(PyValueError::new_err("alpha must be in (0, 1]."));
+    }
+    if max_iter < 1 {
+        return Err(PyValueError::new_err("max_iter must be at least 1."));
+    }
+    match &lambdas {
+        None if nlambda < 2 => {
+            return Err(PyValueError::new_err("nlambda must be at least 2 for an automatic grid."));
+        }
+        Some(l) if l.len() != nlambda || nlambda == 0 => {
+            return Err(PyValueError::new_err("lambdas must be non-empty, with nlambda entries."));
+        }
+        _ => {}
     }
     // biglasso() checks all of this; checked again here so a direct call
     // gets an error rather than a panic
@@ -474,9 +491,9 @@ fn fit_path<'py>(
         return Err(PyValueError::new_err("row_path='mask' needs row_indices without repeats."));
     }
     let lambdas_vec = lambdas.as_ref().map(|l| l.as_slice().map(|s| s.to_vec())).transpose()?;
-    // on_lambda(il, lambdas, cols, vals, intercept, center, scale), as the
-    // numba backend calls it; its exception is kept, and raised once the fit
-    // has stopped
+    // on_lambda(il, lambdas, cols, vals, intercept, center, scale), after
+    // each lambda; its exception is kept, and raised once the fit has
+    // stopped
     let on_lambda = on_lambda.map(Bound::unbind);
     let raised: Mutex<Option<PyErr>> = Mutex::new(None);
     let call = |path: &Path, il: usize| -> Result<bool, String> {

@@ -1,9 +1,21 @@
 //! R biglasso's Gaussian SSR path, sharing column access and fixed-order scores
 //! with the logistic solver. Only row/state/path buffers are allocated; X is
 //! always borrowed and read one column at a time.
+//!
+//! Each lambda chooses a strong set (`choose_strong`), then alternates
+//! coordinate sweeps over the active set (`gaussian_sweep`) with KKT scans of
+//! the columns outside it (`gaussian_scan`) until a scan finds no violation.
+//! In both modes a score cache lets a scan skip reading an inactive column
+//! whose KKT and next strong-rule decisions a certificate already proves; see
+//! docs/gaussian-screening.md. Native-test instrumentation is in
+//! gaussian_probe.rs.
 
 use super::gaussian_bound as bound;
 use super::*;
+
+#[path = "gaussian_probe.rs"]
+mod probe;
+use probe::{Point, Probe, ScanMode, trace};
 
 struct GaussianState {
     residual: Rows,
@@ -13,162 +25,139 @@ struct GaussianState {
     beta: Vec<f64>,
     active: Vec<bool>,
     strong: Vec<bool>,
+    /// Each column's last exact score. With the cache, a skipped column keeps
+    /// its earlier value here; it is never replaced by an approximation.
     scores: Vec<f64>,
+    /// The residual's epoch: incremented whenever a coefficient changes
     version: u64,
+    /// The lambda being fit; usize::MAX during the unpenalized prefit
     il: usize,
-    skip: Option<ScoreCache>,
 }
 
+/// A skipped column's strong-rule decision for the next lambda, certified by
+/// the same scan that skipped it. It is valid only at that lambda, with that
+/// threshold, for the score at that epoch; the strong rule asserts all three.
 #[derive(Clone, Copy)]
 struct NextStrong {
+    /// Whether the column is in the next lambda's strong set
     decision: bool,
+    /// The residual epoch the certificate describes
     epoch: u64,
     il: usize,
     lambda_bits: u64,
+    /// The strong rule's threshold, (2 * next - lambda) * alpha * factor
     cutoff_bits: u64,
 }
+
+/// A column's last exact score, and what is needed to bound how far its
+/// score can have moved since.
 #[derive(Clone, Copy)]
 struct Anchor {
     score: f64,
+    /// The epoch at which `score` was read
     epoch: u64,
+    /// The latest epoch at which the column's KKT condition was settled: by
+    /// reading its score (then equal to `epoch`) or by a certified skip (then
+    /// later). A skip never moves `score`, `epoch`, `prefix_lo` or `rnorm`.
     represented_epoch: u64,
+    /// ScoreCache::lo when `score` was read
     prefix_lo: f64,
+    /// ScoreCache::rnorm when `score` was read
     rnorm: f64,
+    /// Written only by a skip, and only for an inactive column; taken by the
+    /// next lambda's strong rule. Its epoch is always `represented_epoch`.
     next: Option<NextStrong>,
 }
+
+/// The score cache, in both modes. It tracks a bound on how far the
+/// residual has moved since each column's anchor, through a running sum of
+/// upper bounds on the residual's step norms: `hi` and `lo` enclose that sum
+/// from above and below, so `hi - anchor.prefix_lo` bounds the distance from
+/// the anchor's residual to the current one.
 struct ScoreCache {
-    #[cfg(test)]
-    shadow: bool,
+    /// Each column's bound coefficients; None where its scores can't be bounded
     meta: Vec<Option<bound::Meta>>,
     anchors: Vec<Anchor>,
+    /// The residual at `version`
     previous: Vec<f64>,
+    /// The epoch `previous`, `hi`, `lo` and `rnorm` describe. Left behind once
+    /// the cache is invalid.
     version: u64,
     hi: f64,
     lo: f64,
+    /// The residual's norm at `version`
     rnorm: f64,
+    /// False once the arithmetic is unsupported or a bound is not finite;
+    /// every scan then reads every column it considers.
     valid: bool,
-    #[cfg(test)]
-    baseline_reads: usize,
-    #[cfg(test)]
-    actual_reads: usize,
-    #[cfg(test)]
-    candidate_skips: usize,
-    #[cfg(test)]
-    next_certificates_used: usize,
-    #[cfg(test)]
-    last_skips: Vec<u8>,
-    #[cfg(test)]
-    last_radius: Vec<f64>,
-    #[cfg(test)]
-    positive_skips: usize,
-    #[cfg(test)]
-    fault_applied: bool,
+    probe: Probe,
 }
+
+/// What one scan does with column j, decided before any column is read.
 #[derive(Clone, Copy, Default)]
 struct Plan {
+    /// The scan considers j: an inactive strong column in a strong-set
+    /// scan, a column outside the strong set in a full scan
     selected: bool,
+    /// A certificate proves j satisfies KKT here, so its score isn't read
     skip: bool,
+    /// With `skip`, j's strong-rule decision at the next lambda (none at the
+    /// last lambda)
     next: Option<NextStrong>,
-    #[cfg(test)]
+    /// The bound on |score - anchor score| the certificate used; 0 when the
+    /// residual hasn't changed since the anchor
     radius: f64,
 }
 
-// Native-test capture: exact trajectory plus the separate certificate metadata.
-// No instrumentation or controls are compiled into the library.
-#[cfg(test)]
-fn observe(path: &Path, st: &GaussianState, kind: u64, lam: f64) {
-    use std::io::Write;
-    let Some(name) = std::env::var_os("PYBIGLASSO_TEST_TRACE") else {
-        return;
-    };
-    let mut f = std::io::BufWriter::new(std::fs::OpenOptions::new().create(true).append(true).open(name).unwrap());
-    let h = [kind, st.il as u64, st.residual.len() as u64, st.beta.len() as u64, path.center.len() as u64, st.version];
-    f.write_all(bytemuck::cast_slice(&h)).unwrap();
-    let (hi, lo, rn) = st.skip.as_ref().map_or((0., 0., 0.), |s| (s.hi, s.lo, s.rnorm));
-    f.write_all(bytemuck::cast_slice(&[lam, st.residual_sum, hi, lo, rn])).unwrap();
-    for a in [&st.residual[..], &st.scores[..], &st.beta[..], &path.center[..], &path.scale[..]] {
-        f.write_all(bytemuck::cast_slice(a)).unwrap();
-    }
-    f.write_all(bytemuck::cast_slice(&path.col_map.iter().map(|&j| j as u64).collect::<Vec<_>>())).unwrap();
-    for a in [&st.active, &st.strong] {
-        f.write_all(&a.iter().map(|&v| u8::from(v)).collect::<Vec<_>>()).unwrap();
-    }
-    let zeros = vec![0u8; st.beta.len()];
-    let fzeros = vec![0.; st.beta.len()];
-    f.write_all(st.skip.as_ref().map_or(&zeros[..], |s| &s.last_skips[..])).unwrap();
-    f.write_all(bytemuck::cast_slice(st.skip.as_ref().map_or(&fzeros[..], |s| &s.last_radius[..]))).unwrap();
-    if let Some(s) = &st.skip {
-        let values: Vec<f64> = s.anchors.iter().map(|a| a.score).collect();
-        f.write_all(bytemuck::cast_slice(&values)).unwrap();
-        for values in [
-            s.anchors.iter().map(|a| a.epoch).collect::<Vec<_>>(),
-            s.anchors.iter().map(|a| a.represented_epoch).collect(),
-            s.anchors.iter().map(|a| a.next.map_or(u64::MAX, |v| v.il as u64)).collect(),
-            s.anchors.iter().map(|a| a.next.map_or(0, |v| v.lambda_bits)).collect(),
-            s.anchors.iter().map(|a| a.next.map_or(0, |v| v.cutoff_bits)).collect(),
-        ] {
-            f.write_all(bytemuck::cast_slice(&values)).unwrap();
-        }
-        f.write_all(
-            &s.anchors.iter().map(|a| a.next.map_or(0, |v| if v.decision { 2 } else { 1 })).collect::<Vec<_>>(),
-        )
-        .unwrap();
-    } else {
-        f.write_all(bytemuck::cast_slice(&fzeros)).unwrap();
-        for _ in 0..5 {
-            f.write_all(bytemuck::cast_slice(&vec![0u64; st.beta.len()])).unwrap();
-        }
-        f.write_all(&zeros).unwrap();
-    }
-    if let Some(s) = &st.skip {
-        f.write_all(bytemuck::cast_slice(&[s.version, u64::from(s.valid)])).unwrap();
-        f.write_all(bytemuck::cast_slice(&s.previous)).unwrap();
-        for values in
-            [s.anchors.iter().map(|a| a.prefix_lo).collect::<Vec<_>>(), s.anchors.iter().map(|a| a.rnorm).collect()]
-        {
-            f.write_all(bytemuck::cast_slice(&values)).unwrap();
-        }
-        let epochs: Vec<u64> = s.anchors.iter().map(|a| a.next.map_or(0, |v| v.epoch)).collect();
-        f.write_all(bytemuck::cast_slice(&epochs)).unwrap();
-        for m in &s.meta {
-            let bits = m.map_or([0; 7], |m| m.test_metadata());
-            f.write_all(bytemuck::cast_slice(&bits)).unwrap();
-        }
-    } else {
-        f.write_all(&vec![0; 16 + 8 * st.residual.len() + 80 * st.beta.len()]).unwrap();
-    }
-}
-
-#[cfg(not(test))]
-#[inline(always)]
-fn observe(_path: &Path, _state: &GaussianState, _kind: u64, _lambda: f64) {}
-
 impl ScoreCache {
-    #[inline(always)]
-    fn shadow(&self) -> bool {
-        #[cfg(test)]
-        {
-            self.shadow
+    /// Advances the residual-distance prefix to the current epoch, from the
+    /// change since `previous`; any nonfinite step invalidates the cache.
+    fn catch_up(&mut self, residual: &[f64], version: u64) {
+        if self.version == version || !self.valid {
+            return;
         }
-        #[cfg(not(test))]
-        {
-            false
+        let step = bound::difference_norm(residual, &self.previous);
+        let advanced = step.and_then(|step| bound::advance(self.hi, self.lo, step));
+        if let Some(((hi, lo), rnorm)) = advanced.zip(bound::norm(residual.len(), |i| residual[i])) {
+            self.hi = hi;
+            self.lo = lo;
+            self.rnorm = rnorm;
+            self.previous.copy_from_slice(residual);
+        } else {
+            self.valid = false;
         }
+        self.version = version;
     }
-}
 
-fn cache_mode() -> (bool, bool) {
-    #[cfg(test)]
-    {
-        match std::env::var("PYBIGLASSO_TEST_SCAN_MODE").as_deref() {
-            Ok("off") => (false, false),
-            Ok("shadow") => (true, true),
-            _ => (true, false),
+    /// Inactive column j's strong-rule decision at lambda il, from the
+    /// certificate its last skip left, or else from its exact score.
+    ///
+    /// The assertions cannot fire: a skip writes `next` together with
+    /// `represented_epoch`, and a read clears `next` as it sets `epoch` and
+    /// `represented_epoch` alike. A scan at lambda il - 1 writes `next` for il,
+    /// and every strong rule takes the `next` of every inactive column, so
+    /// any that remains is from lambda il - 1, whose threshold is this one's
+    /// expression with the same operands. Without one, the last scan read
+    /// the column or skipped it at the last lambda, after which no strong
+    /// rule runs; so `scores[j]` is still exact.
+    fn strong_decision(&mut self, j: usize, il: usize, lam: f64, cutoff: f64, exact_decision: bool) -> bool {
+        self.probe.corrupt_certificate(&mut self.anchors[j]);
+        let anchor = &mut self.anchors[j];
+        let Some(next) = anchor.next.take() else {
+            assert_eq!(anchor.epoch, anchor.represented_epoch, "stale exact score without certificate");
+            return exact_decision;
+        };
+        assert_eq!(next.epoch, anchor.represented_epoch, "score epoch mismatch");
+        assert_eq!(
+            (next.il, next.lambda_bits, next.cutoff_bits),
+            (il, lam.to_bits(), cutoff.to_bits()),
+            "next threshold mismatch"
+        );
+        if self.probe.shadow() {
+            assert_eq!(next.decision, exact_decision, "shadow SSR decision mismatch il={} j={}", il, j);
         }
-    }
-    #[cfg(not(test))]
-    {
-        (true, false)
+        self.probe.certificate_used();
+        if self.probe.shadow() { exact_decision } else { next.decision }
     }
 }
 
@@ -189,6 +178,8 @@ pub(super) fn blocked_sum(values: &[f64]) -> f64 {
     total
 }
 
+/// Default mode's residual update for a coefficient change of `shift`, and
+/// the updated residual's sum in blocked_sum's order, in one pass.
 fn update_blocked<C: Col>(
     column: &C,
     residual: &mut [f64],
@@ -197,12 +188,19 @@ fn update_blocked<C: Col>(
     center: f64,
     scale: f64,
 ) -> f64 {
-    struct Op<'a, C>(&'a C, &'a mut [f64], Option<&'a [f64]>, f64, f64, f64);
+    struct Op<'a, C> {
+        column: &'a C,
+        residual: &'a mut [f64],
+        mask: Option<&'a [f64]>,
+        shift: f64,
+        center: f64,
+        scale: f64,
+    }
     impl<C: Col> WithSimd for Op<'_, C> {
         type Output = f64;
         #[inline(always)]
         fn with_simd<S: Simd>(self, simd: S) -> f64 {
-            let Op(column, residual, mask, shift, center, scale) = self;
+            let Op { column, residual, mask, shift, center, scale } = self;
             let mut total = 0.;
             for (k, r) in residual.chunks_mut(CHUNK).enumerate() {
                 let offset = k * CHUNK;
@@ -261,10 +259,12 @@ fn update_blocked<C: Col>(
             total
         }
     }
-    dispatch(Op(column, residual, mask, shift, center, scale))
+    dispatch(Op { column, residual, mask, shift, center, scale })
 }
 
 impl<D: Design> Fit<'_, D> {
+    /// One coordinate-descent pass over the active columns at lambda `lam`;
+    /// returns the largest squared coefficient change.
     fn gaussian_sweep(&self, path: &Path, st: &mut GaussianState, lam: f64) -> f64 {
         let p = self.params;
         let mut largest: f64 = 0.0;
@@ -284,60 +284,104 @@ impl<D: Design> Fit<'_, D> {
             let l2 = lam * (1.0 - p.alpha) * p.penalty_factor[jj];
             let value = if score.abs() <= l1 { 0.0 } else { score.signum() * (score.abs() - l1) / (1.0 + l2) };
             let shift = value - st.beta[j];
-            if shift != 0.0 {
-                st.version += 1;
-                largest = largest.max(shift * shift);
-                if !p.r_compatible {
-                    st.residual_sum = update_blocked(&column, &mut st.residual, self.mask, shift, center, scale);
-                    st.beta[j] = value;
-                    continue;
-                }
-                // Differs from R biglasso, which groups the update as
-                // (shift * (x - c)) / scale. The two can differ in the low bits;
-                // the R comparison checks agreement to rtol=1e-9.
-                // Keep seqsum's exact left-to-right order over the updated
-                // values, including masked zeros, without a second row pass.
-                let mut sum = 0.0;
-                let mut start = 0;
-                let mut hint = 0;
-                while start < st.residual.len() {
-                    let (run, end) = column.run(start, st.residual.len());
-                    // A byte lookup supplies eight values together; every
-                    // update and sum still happens in the original row order.
-                    // Masked fits retain their guarded scalar reads.
-                    let body = if self.mask.is_none() { (end - start) / LANES * LANES } else { 0 };
-                    for_each_block(&run, body, |i, block| {
-                        // Keep the serial accumulator local to this block.
-                        // Capturing it in the visitor otherwise makes LLVM
-                        // store/reload it after every lane.
-                        let mut block_sum = sum;
-                        for (residual, &value) in st.residual[start + i..start + i + LANES].iter_mut().zip(&block.0) {
-                            *residual -= shift * ((value - center) / scale);
-                            block_sum += *residual;
-                        }
-                        sum = block_sum;
-                    });
-                    for (i, residual) in st.residual[start + body..end].iter_mut().enumerate() {
-                        let i = body + i;
-                        if self.fits(start + i) {
-                            *residual -= shift * ((run.at_seq(i, &mut hint) - center) / scale);
-                        }
-                        sum += *residual;
-                    }
-                    start = end;
-                }
-                st.residual_sum = sum;
-                st.beta[j] = value;
+            if shift == 0.0 {
+                continue;
             }
+            st.version += 1;
+            largest = largest.max(shift * shift);
+            st.residual_sum = if p.r_compatible {
+                self.update_in_row_order(&column, &mut st.residual, shift, center, scale)
+            } else {
+                update_blocked(&column, &mut st.residual, self.mask, shift, center, scale)
+            };
+            st.beta[j] = value;
         }
-        #[cfg(test)]
         if st.il == usize::MAX {
-            observe(path, st, 9, lam);
+            trace(path, st, None, Point::PrefitSweep, lam);
         }
         largest
     }
 
-    fn gaussian_scan_original(&self, path: &Path, st: &mut GaussianState, lam: f64, strong_only: bool) -> usize {
+    /// Compatibility mode's residual update for a coefficient change of
+    /// `shift`, and the updated residual's sum in seqsum's left-to-right
+    /// order, masked zeros included, in the same pass.
+    #[inline(always)]
+    fn update_in_row_order<C: Col>(
+        &self,
+        column: &C,
+        residual: &mut [f64],
+        shift: f64,
+        center: f64,
+        scale: f64,
+    ) -> f64 {
+        // Differs from R biglasso, which groups the update as
+        // (shift * (x - c)) / scale. The two can differ in the low bits;
+        // the R comparison checks agreement to rtol=1e-9.
+        let mut sum = 0.0;
+        let mut start = 0;
+        let mut hint = 0;
+        while start < residual.len() {
+            let (run, end) = column.run(start, residual.len());
+            // A byte lookup supplies eight values together; every
+            // update and sum still happens in the original row order.
+            // Masked fits retain their guarded scalar reads.
+            let body = if self.mask.is_none() { (end - start) / LANES * LANES } else { 0 };
+            for_each_block(&run, body, |i, block| {
+                // Keep the serial accumulator local to this block.
+                // Capturing it in the visitor otherwise makes LLVM
+                // store/reload it after every lane.
+                let mut block_sum = sum;
+                for (residual, &value) in residual[start + i..start + i + LANES].iter_mut().zip(&block.0) {
+                    *residual -= shift * ((value - center) / scale);
+                    block_sum += *residual;
+                }
+                sum = block_sum;
+            });
+            for (i, residual) in residual[start + body..end].iter_mut().enumerate() {
+                let i = body + i;
+                if self.fits(start + i) {
+                    *residual -= shift * ((run.at_seq(i, &mut hint) - center) / scale);
+                }
+                sum += *residual;
+            }
+            start = end;
+        }
+        sum
+    }
+
+    /// KKT scan: the columns a strong-set scan (`strong_only`) or full scan
+    /// considers that violate KKT at `lam` join the active and strong sets.
+    /// Returns how many did.
+    fn gaussian_scan(
+        &self,
+        path: &Path,
+        st: &mut GaussianState,
+        mut cache: Option<&mut ScoreCache>,
+        lam: f64,
+        strong_only: bool,
+    ) -> usize {
+        let (before, after) = if strong_only {
+            (Point::StrongScan, Point::StrongScanDone)
+        } else {
+            (Point::FullScan, Point::FullScanDone)
+        };
+        trace(path, st, cache.as_deref(), before, lam);
+        let violations = match cache.as_deref_mut() {
+            None => self.scan_reading_all(path, st, lam, strong_only),
+            Some(cache) => {
+                cache.probe.invalidate_prefix(&mut cache.hi);
+                cache.catch_up(&st.residual, st.version);
+                let plans = self.plan_scan(path, st, cache, lam, strong_only);
+                let scores = self.read_scores(path, st, cache, &plans);
+                self.apply_scan(path, st, cache, lam, &plans, &scores)
+            }
+        };
+        trace(path, st, cache.as_deref(), after, lam);
+        violations
+    }
+
+    /// The scan without a cache: every column considered is read.
+    fn scan_reading_all(&self, path: &Path, st: &mut GaussianState, lam: f64, strong_only: bool) -> usize {
         let sum = st.residual_sum;
         let p = self.params;
         let residual = &st.residual;
@@ -375,36 +419,12 @@ impl<D: Design> Fit<'_, D> {
             .sum()
     }
 
-    fn gaussian_scan(&self, path: &Path, st: &mut GaussianState, lam: f64, strong_only: bool) -> usize {
-        observe(path, st, if strong_only { 2 } else { 4 }, lam);
-        let Some(cache) = st.skip.as_mut() else {
-            let answer = self.gaussian_scan_original(path, st, lam, strong_only);
-            observe(path, st, if strong_only { 3 } else { 5 }, lam);
-            return answer;
-        };
-        #[cfg(test)]
-        if std::env::var("PYBIGLASSO_TEST_FAULT").as_deref() == Ok("invalidate")
-            && cache.positive_skips > 0
-            && !cache.fault_applied
-        {
-            cache.hi = f64::INFINITY;
-            cache.fault_applied = true;
-        }
-        if cache.version != st.version && cache.valid {
-            let prepared = bound::difference_norm(&st.residual, &cache.previous)
-                .and_then(|step| bound::advance(cache.hi, cache.lo, step))
-                .zip(bound::norm(st.residual.len(), |i| st.residual[i]));
-            if let Some(((hi, lo), rnorm)) = prepared {
-                cache.hi = hi;
-                cache.lo = lo;
-                cache.rnorm = rnorm;
-                cache.previous.copy_from_slice(&st.residual);
-            } else {
-                cache.valid = false;
-            }
-            cache.version = st.version;
-        }
-        let plans: Vec<Plan> = (0..st.beta.len())
+    /// Each column's plan for this scan. A column is skipped only if it is
+    /// inactive and zero, its thresholds are finite, its anchor's score with
+    /// the certified radius proves no KKT violation, and (before the last
+    /// lambda) the same bound settles its next strong-rule decision.
+    fn plan_scan(&self, path: &Path, st: &GaussianState, cache: &ScoreCache, lam: f64, strong_only: bool) -> Vec<Plan> {
+        (0..st.beta.len())
             .into_par_iter()
             .map(|j| {
                 if if strong_only { st.active[j] || !st.strong[j] } else { st.strong[j] } {
@@ -431,10 +451,7 @@ impl<D: Design> Fit<'_, D> {
                 let Some(radius) = radius else {
                     return plan;
                 };
-                #[cfg(test)]
-                {
-                    plan.radius = radius;
-                }
+                plan.radius = radius;
                 if bound::decide(anchor.score, radius, l1) != Some(false) {
                     return plan;
                 }
@@ -456,12 +473,17 @@ impl<D: Design> Fit<'_, D> {
                 plan.skip = true;
                 plan
             })
-            .collect();
-        let oracle: Vec<Option<f64>> = plans
+            .collect()
+    }
+
+    /// The exact score of each column the plans select and don't skip (in
+    /// shadow mode, of skipped ones too).
+    fn read_scores(&self, path: &Path, st: &GaussianState, cache: &ScoreCache, plans: &[Plan]) -> Vec<Option<f64>> {
+        plans
             .par_iter()
             .enumerate()
             .map(|(j, p)| {
-                if !p.selected || (p.skip && !cache.shadow()) {
+                if !p.selected || (p.skip && !cache.probe.shadow()) {
                     return None;
                 }
                 let jj = path.col_map[j];
@@ -474,34 +496,33 @@ impl<D: Design> Fit<'_, D> {
                     self.n_fit as f64,
                 ))
             })
-            .collect();
+            .collect()
+    }
+
+    /// Records each plan's outcome, in column order: a skip moves only the
+    /// anchor's represented epoch and next certificate; a read re-anchors the
+    /// column, and a violation activates it. Returns the violations.
+    fn apply_scan(
+        &self,
+        path: &Path,
+        st: &mut GaussianState,
+        cache: &mut ScoreCache,
+        lam: f64,
+        plans: &[Plan],
+        scores: &[Option<f64>],
+    ) -> usize {
         let mut violations = 0;
         for (j, plan) in plans.iter().enumerate() {
-            #[cfg(test)]
-            {
-                cache.last_skips[j] = u8::from(plan.skip);
-            }
-            #[cfg(test)]
-            {
-                cache.last_radius[j] = plan.radius;
-            }
+            cache.probe.planned(j, plan);
             if !plan.selected {
                 continue;
-            }
-            #[cfg(test)]
-            {
-                cache.baseline_reads += 1;
             }
             let jj = path.col_map[j];
             let l1 = lam * self.params.alpha * self.params.penalty_factor[jj];
             let l2 = lam * (1. - self.params.alpha) * self.params.penalty_factor[jj];
             if plan.skip {
-                #[cfg(test)]
-                {
-                    cache.candidate_skips += 1;
-                    cache.positive_skips += usize::from(plan.radius > 0.);
-                }
-                if let Some(q) = oracle[j] {
+                // Shadow mode: check the certificate against the exact score.
+                if let Some(q) = scores[j] {
                     assert!(
                         q.is_finite() && (q - st.beta[j] * l2).abs() <= l1,
                         "shadow KKT mismatch il={} j={}",
@@ -513,37 +534,30 @@ impl<D: Design> Fit<'_, D> {
                         assert_eq!(q.abs() > cutoff, next.decision, "shadow next SSR mismatch il={} j={}", st.il, j);
                     }
                     st.scores[j] = q;
-                    #[cfg(test)]
-                    {
-                        cache.actual_reads += 1;
-                    }
+                    cache.probe.exact_read();
                 }
                 cache.anchors[j].represented_epoch = st.version;
                 cache.anchors[j].next = plan.next;
                 // An enabled skip NEVER writes an approximate or anchor score.
-            } else {
-                let q = oracle[j].expect("mandatory exact score");
-                #[cfg(test)]
-                {
-                    cache.actual_reads += 1;
-                }
-                st.scores[j] = q;
-                cache.anchors[j] = Anchor {
-                    score: q,
-                    epoch: st.version,
-                    represented_epoch: st.version,
-                    prefix_lo: cache.lo,
-                    rnorm: cache.rnorm,
-                    next: None,
-                };
-                if (q - st.beta[j] * l2).abs() > l1 {
-                    st.active[j] = true;
-                    st.strong[j] = true;
-                    violations += 1;
-                }
+                continue;
+            }
+            let q = scores[j].expect("mandatory exact score");
+            cache.probe.exact_read();
+            st.scores[j] = q;
+            cache.anchors[j] = Anchor {
+                score: q,
+                epoch: st.version,
+                represented_epoch: st.version,
+                prefix_lo: cache.lo,
+                rnorm: cache.rnorm,
+                next: None,
+            };
+            if (q - st.beta[j] * l2).abs() > l1 {
+                st.active[j] = true;
+                st.strong[j] = true;
+                violations += 1;
             }
         }
-        observe(path, st, if strong_only { 3 } else { 5 }, lam);
         violations
     }
 
@@ -557,8 +571,43 @@ impl<D: Design> Fit<'_, D> {
         rss
     }
 
-    fn gaussian_lambda(&self, path: &mut Path, st: &mut GaussianState, il: usize, lam: f64, tolerance: f64) {
+    /// Lambda il's strong set: R's sequential strong rule, from each column's
+    /// score at the previous lambda, or from a skipped column's certificate.
+    fn choose_strong(
+        &self,
+        st: &mut GaussianState,
+        mut cache: Option<&mut ScoreCache>,
+        il: usize,
+        lam: f64,
+        previous: f64,
+        mult: &[f64],
+    ) {
         let p = self.params;
+        for j in 0..mult.len() {
+            let cutoff = (2.0 * lam - previous) * p.alpha * mult[j];
+            let exact_decision = st.scores[j].abs() > cutoff;
+            st.strong[j] = match cache.as_deref_mut() {
+                Some(cache) if !st.active[j] => cache.strong_decision(j, il, lam, cutoff, exact_decision),
+                _ => exact_decision,
+            };
+        }
+    }
+
+    /// Fits lambda il: sweeps the active set to convergence, then scans the
+    /// strong set and then every other column for KKT violations, repeating
+    /// after any violation, all within max_iter sweeps.
+    fn gaussian_lambda(
+        &self,
+        path: &mut Path,
+        st: &mut GaussianState,
+        mut cache: Option<&mut ScoreCache>,
+        il: usize,
+        lam: f64,
+        tolerance: f64,
+    ) {
+        let p = self.params;
+        // the last sweep met the tolerance and no scan since found a violation
+        let mut converged = false;
         while path.iters[il] < p.max_iter {
             while path.iters[il] < p.max_iter {
                 while path.iters[il] < p.max_iter {
@@ -566,20 +615,26 @@ impl<D: Design> Fit<'_, D> {
                     let change = self.gaussian_sweep(path, st, lam);
                     // Differs from R biglasso: its strict comparison against
                     // zero makes constant-response fits exhaust max_iter.
-                    if change < tolerance || (!p.r_compatible && change == 0.0) {
+                    converged = change < tolerance || (!p.r_compatible && change == 0.0);
+                    if converged {
                         break;
                     }
                 }
-                if self.gaussian_scan(path, st, lam, true) == 0 {
+                if self.gaussian_scan(path, st, cache.as_deref_mut(), lam, true) == 0 {
                     break;
                 }
+                converged = false;
             }
-            if self.gaussian_scan(path, st, lam, false) == 0 {
+            if self.gaussian_scan(path, st, cache.as_deref_mut(), lam, false) == 0 {
                 path.deviance[il] = self.gaussian_loss(st);
                 break;
             }
+            converged = false;
         }
-        if path.iters[il] == p.max_iter {
+        // Differs from R biglasso, which warns whenever a lambda used all
+        // max_iter iterations, so also when it converged on the last one;
+        // default mode warns only when the lambda did not converge.
+        if if p.r_compatible { path.iters[il] == p.max_iter } else { !converged } {
             path.events.push(Event::MaxIter(il));
         }
         // Differs from R biglasso: R can leave loss at zero when the budget
@@ -594,6 +649,64 @@ impl<D: Design> Fit<'_, D> {
         path.coef_vals[il] = Some(rows.iter().map(|&j| st.beta[j]).collect());
         path.coef_rows[il] = Some(rows);
         path.intercept[il] = self.params.ybar;
+    }
+
+    /// Fits the unpenalized columns alone, from zero, before the automatic
+    /// grid is set from the residual they leave.
+    fn gaussian_prefit(&self, path: &Path, st: &mut GaussianState, mult: &[f64], tolerance: f64) -> Result<(), String> {
+        for j in 0..mult.len() {
+            st.active[j] = mult[j] == 0.0;
+        }
+        for _ in 0..self.params.max_iter {
+            let change = self.gaussian_sweep(path, st, 0.0);
+            if change < tolerance || change == 0.0 {
+                return Ok(());
+            }
+        }
+        Err("Unpenalized prefit failed to converge within max_iter; increase max_iter or supply lambdas explicitly."
+            .into())
+    }
+
+    /// The score cache, from the scores and residual at the start of the
+    /// lambda loop; None when native tests turn it off.
+    fn gaussian_cache(&self, path: &Path, st: &GaussianState) -> Option<ScoreCache> {
+        let mode = probe::scan_mode();
+        if mode == ScanMode::Off {
+            return None;
+        }
+        let pool_ok = if rayon::current_num_threads() == 1 {
+            bound::arithmetic_ok()
+        } else {
+            rayon::broadcast(|_| bound::arithmetic_ok()).into_iter().all(|v| v)
+        };
+        let meta: Vec<_> = path
+            .col_map
+            .par_iter()
+            .map(|&jj| {
+                bound::Meta::make(&self.x.col(jj), path.center[jj], path.scale[jj], self.n_fit, |i| self.fits(i))
+            })
+            .collect();
+        let rnorm = bound::norm(st.residual.len(), |i| st.residual[i]);
+        let rn = rnorm.unwrap_or(0.);
+        let anchor = |score| Anchor {
+            score,
+            epoch: st.version,
+            represented_epoch: st.version,
+            prefix_lo: 0.,
+            rnorm: rn,
+            next: None,
+        };
+        Some(ScoreCache {
+            meta,
+            anchors: st.scores.iter().map(|&score| anchor(score)).collect(),
+            previous: st.residual.to_vec(),
+            version: st.version,
+            hi: 0.,
+            lo: 0.,
+            rnorm: rn,
+            valid: pool_ok && rnorm.is_some(),
+            probe: Probe::new(mode, st.beta.len()),
+        })
     }
 
     pub(super) fn run_gaussian(&self, center: Vec<f64>, scale: Vec<f64>) -> Result<Path, String> {
@@ -633,7 +746,6 @@ impl<D: Design> Fit<'_, D> {
         let mut st = GaussianState {
             version: 0,
             il: usize::MAX,
-            skip: None,
             scores: self.compute_z(&path, &residual),
             residual_sum: self.score_sum(&residual),
             residual,
@@ -660,20 +772,7 @@ impl<D: Design> Fit<'_, D> {
             if mult.contains(&0.0) {
                 // Differs from R biglasso: determine the grid from the
                 // residual after fitting unpenalized columns, as for binomial.
-                for j in 0..nc {
-                    st.active[j] = mult[j] == 0.0;
-                }
-                let mut converged = false;
-                for _ in 0..p.max_iter {
-                    let change = self.gaussian_sweep(&path, &mut st, 0.0);
-                    if change < tolerance || change == 0.0 {
-                        converged = true;
-                        break;
-                    }
-                }
-                if !converged {
-                    return Err("Unpenalized prefit failed to converge within max_iter; increase max_iter or supply lambdas explicitly.".into());
-                }
+                self.gaussian_prefit(&path, &mut st, &mult, tolerance)?;
                 st.scores = self.compute_z(&path, &st.residual);
                 lambda_max = maximum(&st.scores);
             }
@@ -706,64 +805,9 @@ impl<D: Design> Fit<'_, D> {
             start = 1;
         }
 
-        observe(&path, &st, 7, 0.);
-        let (enabled, _shadow) = cache_mode();
-        if enabled {
-            let pool_ok = if rayon::current_num_threads() == 1 {
-                bound::arithmetic_ok()
-            } else {
-                rayon::broadcast(|_| bound::arithmetic_ok()).into_iter().all(|v| v)
-            };
-            let meta: Vec<_> = path
-                .col_map
-                .par_iter()
-                .map(|&jj| {
-                    bound::Meta::make(&self.x.col(jj), path.center[jj], path.scale[jj], self.n_fit, |i| self.fits(i))
-                })
-                .collect();
-            let rnorm = bound::norm(st.residual.len(), |i| st.residual[i]);
-            let rn = rnorm.unwrap_or(0.);
-            st.skip = Some(ScoreCache {
-                #[cfg(test)]
-                shadow: _shadow,
-                meta,
-                anchors: st
-                    .scores
-                    .iter()
-                    .map(|&score| Anchor {
-                        score,
-                        epoch: st.version,
-                        represented_epoch: st.version,
-                        prefix_lo: 0.,
-                        rnorm: rn,
-                        next: None,
-                    })
-                    .collect(),
-                previous: st.residual.to_vec(),
-                version: st.version,
-                hi: 0.,
-                lo: 0.,
-                rnorm: rn,
-                valid: pool_ok && rnorm.is_some(),
-                #[cfg(test)]
-                baseline_reads: 0,
-                #[cfg(test)]
-                actual_reads: 0,
-                #[cfg(test)]
-                candidate_skips: 0,
-                #[cfg(test)]
-                next_certificates_used: 0,
-                #[cfg(test)]
-                last_skips: vec![0; nc],
-                #[cfg(test)]
-                last_radius: vec![0.; nc],
-                #[cfg(test)]
-                positive_skips: 0,
-                #[cfg(test)]
-                fault_applied: false,
-            });
-        }
-        observe(&path, &st, 0, 0.);
+        trace(&path, &st, None, Point::GridReady, 0.);
+        let mut cache = self.gaussian_cache(&path, &st);
+        trace(&path, &st, cache.as_ref(), Point::CacheReady, 0.);
         for il in start..nl {
             st.il = il;
 
@@ -774,66 +818,12 @@ impl<D: Design> Fit<'_, D> {
             }
             let previous = if il == 0 { lambda_max } else { path.lambda[il - 1] };
             let lam = path.lambda[il];
-            for j in 0..nc {
-                let cutoff = (2.0 * lam - previous) * p.alpha * mult[j];
-                let exact_decision = st.scores[j].abs() > cutoff;
-                if let Some(cache) = st.skip.as_mut() {
-                    #[cfg(test)]
-                    if !cache.fault_applied
-                        && cache.positive_skips > 0
-                        && !st.active[j]
-                        && cache.anchors[j].next.is_some()
-                        && let Ok(fault) = std::env::var("PYBIGLASSO_TEST_FAULT")
-                    {
-                        let a = &mut cache.anchors[j];
-                        let next = a.next.as_mut().unwrap();
-                        match fault.as_str() {
-                            "epoch" => next.epoch ^= 1,
-                            "represented" => a.represented_epoch ^= 1,
-                            "index" => next.il += 1,
-                            "lambda" => next.lambda_bits ^= 1,
-                            "cutoff" => next.cutoff_bits ^= 1,
-                            _ => {}
-                        }
-                        cache.fault_applied = fault != "invalidate";
-                    }
-                    let anchor = &mut cache.anchors[j];
-                    if !st.active[j] {
-                        if let Some(next) = anchor.next.take() {
-                            assert_eq!(next.epoch, anchor.represented_epoch, "score epoch mismatch");
-                            assert_eq!(
-                                (next.il, next.lambda_bits, next.cutoff_bits),
-                                (il, lam.to_bits(), cutoff.to_bits()),
-                                "next threshold mismatch"
-                            );
-                            if cache.shadow() {
-                                assert_eq!(
-                                    next.decision, exact_decision,
-                                    "shadow SSR decision mismatch il={} j={}",
-                                    il, j
-                                );
-                            }
-                            st.strong[j] = if cache.shadow() { exact_decision } else { next.decision };
-                            #[cfg(test)]
-                            {
-                                cache.next_certificates_used += 1;
-                            }
-                        } else {
-                            assert_eq!(anchor.epoch, anchor.represented_epoch, "stale exact score without certificate");
-                            st.strong[j] = exact_decision;
-                        }
-                    } else {
-                        st.strong[j] = exact_decision;
-                    }
-                } else {
-                    st.strong[j] = exact_decision;
-                }
-            }
-            observe(&path, &st, 1, lam);
+            self.choose_strong(&mut st, cache.as_mut(), il, lam, previous, &mult);
+            trace(&path, &st, cache.as_ref(), Point::StrongSet, lam);
             path.n_reject[il] = st.strong.iter().filter(|&&v| !v).count() as i64;
-            self.gaussian_lambda(&mut path, &mut st, il, lam, tolerance);
+            self.gaussian_lambda(&mut path, &mut st, cache.as_mut(), il, lam, tolerance);
             self.gaussian_record(&mut path, &st, il);
-            observe(&path, &st, 6, lam);
+            trace(&path, &st, cache.as_ref(), Point::Recorded, lam);
             if self.stopped(&mut path, il)? {
                 break;
             }
@@ -895,7 +885,7 @@ mod tests {
                         rows: Some(&rows),
                         n_fit: rows.len(),
                     };
-                    let (center, scale, _, _) = fit.center_scale().unwrap();
+                    let Standardization { center, scale, .. } = fit.center_scale().unwrap();
                     let path = Path {
                         center,
                         scale,
@@ -918,7 +908,6 @@ mod tests {
                     let mut state = GaussianState {
                         version: 0,
                         il: 0,
-                        skip: None,
                         residual_sum: fit.score_sum(&residual),
                         residual,
                         beta: vec![0.0; 3],
@@ -952,28 +941,6 @@ mod tests {
 #[cfg(test)]
 #[path = "gaussian_skip_tests.rs"]
 mod skip_tests;
-
-#[cfg(test)]
-impl Drop for ScoreCache {
-    fn drop(&mut self) {
-        use std::io::Write;
-        if let Some(file) = std::env::var_os("PYBIGLASSO_TEST_STATS") {
-            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(file).unwrap();
-            writeln!(
-                f,
-                "{} {} {} {} {} {} {}",
-                self.baseline_reads,
-                self.actual_reads,
-                self.candidate_skips,
-                self.positive_skips,
-                self.next_certificates_used,
-                self.valid as u8,
-                self.fault_applied as u8
-            )
-            .unwrap();
-        }
-    }
-}
 
 #[cfg(test)]
 #[path = "gaussian_sum_tests.rs"]

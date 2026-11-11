@@ -1,4 +1,4 @@
-//! Independent formula and boundary probes formerly available only via numba.
+//! Independent formula and boundary probes of standardization, scores and updates.
 //! The fused row passes, intercept, IRLS and SIMD bits have separate tests.rs checks.
 
 use super::*;
@@ -73,7 +73,7 @@ fn standardization_and_initial_scores_use_selected_rows_and_raw_column_map() {
     fn check<D: Design>(x: &D, p: &Params, source_rows: &[usize]) {
         let y: Vec<f64> = source_rows.iter().map(|&i| (i % 2) as f64).collect();
         let fit = Fit { x, y: &y, params: p, mask: None, rows: None, n_fit: source_rows.len() };
-        let (center, scale, safe, _) = fit.center_scale().unwrap();
+        let Standardization { center, scale, mask_safe: safe, .. } = fit.center_scale().unwrap();
         assert!(safe);
         assert_eq!(center, [7.0, 3.0, -4.0, 2.0]);
         assert_eq!(scale, [0.0, 2.0, 1.0, 4.0]);
@@ -99,7 +99,7 @@ fn material_center_error_is_repaired_only_in_default_mode() {
             p.family = family;
             p.r_compatible = compatible;
             let fit = Fit { x: &x, y: &y, params: &p, mask: None, rows: None, n_fit: y.len() };
-            let (center, scale, _, imprecise) = fit.center_scale().unwrap();
+            let Standardization { center, scale, imprecise, .. } = fit.center_scale().unwrap();
             if compatible {
                 assert_eq!(center, [base + 0.25]);
                 assert_eq!(scale, [1.25]);
@@ -190,7 +190,7 @@ fn corrected_moments_control_dropping_and_left_out_safety() {
     let a = Array2::from_elem((4096, 1).f(), constant);
     let x = ContigX::<_, true> { x: a.view() };
     let fit = Fit { x: &x, y: &y[..4096], params: &p, mask: None, rows: None, n_fit: 4096 };
-    let (center, scale, _, warnings) = fit.center_scale().unwrap();
+    let Standardization { center, scale, imprecise: warnings, .. } = fit.center_scale().unwrap();
     assert_eq!(center, [constant]);
     assert_eq!(scale, [0.0]);
     assert!(warnings.is_empty());
@@ -201,7 +201,7 @@ fn corrected_moments_control_dropping_and_left_out_safety() {
     let a = Array2::from_shape_fn((4096, 1).f(), |(i, _)| base + 2f64.powi(-19) * (i % 2) as f64);
     let x = ContigX::<_, true> { x: a.view() };
     let fit = Fit { x: &x, y: &y[..4096], params: &p, mask: None, rows: None, n_fit: 4096 };
-    let (center, scale, _, warnings) = fit.center_scale().unwrap();
+    let Standardization { center, scale, imprecise: warnings, .. } = fit.center_scale().unwrap();
     assert_eq!(center, [base + 2f64.powi(-20)]);
     assert_eq!(scale, [2f64.powi(-20)]);
     assert!(scale[0] < SCALE_MIN);
@@ -214,7 +214,7 @@ fn corrected_moments_control_dropping_and_left_out_safety() {
     let mut mask = vec![1.0; 4097];
     mask[4096] = 0.0;
     let fit = Fit { x: &x, y: &y, params: &p, mask: Some(&mask), rows: Some(&rows), n_fit: 4096 };
-    let (center, scale, safe, _) = fit.center_scale().unwrap();
+    let Standardization { center, scale, mask_safe: safe, .. } = fit.center_scale().unwrap();
     assert_eq!(center, [2f64.powi(50) + 1.0]);
     assert_eq!(scale, [1.0]);
     assert!(!safe); // old RMS 1.25 would have incorrectly marked these rows safe
@@ -234,7 +234,7 @@ fn center_scale_flags_columns_binary64_cannot_center() {
     let x = ContigX::<f64, true> { x: a.view() };
     let y: Vec<f64> = (0..16).map(|i| (i % 2) as f64).collect();
     let fit = Fit { x: &x, y: &y, params: &p, mask: None, rows: None, n_fit: 16 };
-    let (center, scale, _, imprecise) = fit.center_scale().unwrap();
+    let Standardization { center, scale, imprecise, .. } = fit.center_scale().unwrap();
     assert_eq!(imprecise, [0]);
     assert_eq!(center[1], 2f64.powi(30) + 6.0);
     let mut path = path(center, scale, vec![0, 1]);
