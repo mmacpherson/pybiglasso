@@ -13,12 +13,14 @@ pick up the same content. It follows the [AGENTS.md](https://agents.md) conventi
 - Issues are tracked locally with beads (`bd`); `.beads/` is untracked and stays
   on this machine.
 
-## Matching R biglasso is the contract
+## Matching R biglasso is the compatibility contract
 
 pybiglasso ports R biglasso's binomial and Gaussian solvers, matching them to
 floating-point precision: coefficients, lambda grid, centering and scaling,
 strong-rule rejections, and the iteration count at every lambda. A change that
 moves any of these, on a case where R's behavior is intended, is a regression.
+The R comparison exercises `r_compatible=True`; default mode is held to the
+plain reference implementation and independent checks described below.
 
 Where R's behavior looks unintended, pybiglasso may differ, but only like this:
 
@@ -84,7 +86,7 @@ to observed output.
   examples each, where `make test` and CI run a fixed 20
 - `make fixtures` — regenerate the stored R output (see above)
 - `make run-hooks-all-files` — every pre-commit hook on every file
-- `benchmarks/run-path.sh`, `benchmarks/run-extra.sh` — the README's benchmarks
+- `benchmarks/run-path.sh` — the README's in-memory path benchmarks
 
 ## Quality Gates
 
@@ -127,6 +129,9 @@ so macOS and every wheel run before it merges.
   step; the tests hold the Rust solver to it
 - `src/pybiglasso/path.py` — `BiglassoPath`, the fitted path: prediction, scoring,
   dataframe export
+- `src/pybiglasso/arrow.py` — zero-copy column access for Arrow tables and
+  chunked arrays; `src/pybiglasso/ingest.py` — bounded-memory conversion from
+  tabular files to solver-ready NumPy or Feather data
 - `src/pybiglasso/sklearn.py` — `BiglassoClassifier`, `BiglassoClassifierCV`
   and the corresponding `BiglassoRegressor`, `BiglassoRegressorCV`
 - `tests/support/rcompare.py`, `tests/r/fit_biglasso.R` — the R comparison harness
