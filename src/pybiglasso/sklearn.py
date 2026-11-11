@@ -85,7 +85,41 @@ def _validate_data(estimator, X, y="no_validation", **kwargs):
     return X, y
 
 
-class _BiglassoBase(ClassifierMixin, BaseEstimator):
+def _resolve_n_jobs(n_jobs, n_folds):
+    if n_jobs is not None and (
+        isinstance(n_jobs, (bool, np.bool_))
+        or not isinstance(n_jobs, numbers.Integral)
+        or n_jobs == 0
+    ):
+        raise ValueError("n_jobs must be None or a nonzero integer.")
+    workers = (os.cpu_count() or 1) if n_jobs is None or n_jobs < 0 else n_jobs
+    return min(workers, n_folds)
+
+
+def _score_folds(folds, score_fold, n_jobs, n_alphas):
+    scores = np.full((len(folds), n_alphas), np.nan)
+    with ThreadPoolExecutor(max_workers=_resolve_n_jobs(n_jobs, len(folds))) as pool:
+        for fold_index, score in enumerate(pool.map(score_fold, folds)):
+            scores[fold_index, : len(score)] = score
+    return scores
+
+
+def _choose_alpha(scores, rule, lower_is_better, complete, allow_nan):
+    if not complete.any():
+        raise ValueError("No alpha was fit in every fold; try a larger alpha range.")
+    sign = 1.0 if lower_is_better else -1.0
+    mean = np.full(scores.shape[1], np.inf)
+    reducer = np.nanmean if allow_nan else np.mean
+    mean[complete] = sign * reducer(scores[:, complete], axis=0)
+    best = int(np.argmin(mean))
+    if rule == "1se":
+        spread = np.nanstd if allow_nan else np.std
+        error = spread(scores[:, best], ddof=1) / np.sqrt(len(scores))
+        best = int(np.flatnonzero(mean <= mean[best] + error)[0])
+    return best
+
+
+class _ClassifierBase(ClassifierMixin, BaseEstimator):
     def _validate_xy(self, X, y):
         X, y = _validate_data(
             self, X, y, dtype="numeric", order=None, copy=False, ensure_all_finite=False
@@ -280,22 +314,14 @@ class BiglassoRegressorCV(_RegressionBase):
             score = fit.score(X, y, self.scoring, row_indices=test)
             return score / len(test) if self.scoring == "deviance" else score
 
-        jobs = self.n_jobs
-        if jobs is not None and (
-            isinstance(jobs, bool)
-            or not isinstance(jobs, numbers.Integral)
-            or jobs == 0
-        ):
-            raise ValueError("n_jobs must be None or a nonzero integer.")
-        jobs = (os.cpu_count() or 1) if jobs is None or jobs < 0 else jobs
-        with ThreadPoolExecutor(max_workers=min(jobs, len(folds))) as pool:
-            scores = np.array(list(pool.map(score_fold, folds)))
-        sign = -1 if self.scoring == "r2" else 1
-        means = sign * scores.mean(axis=0)
-        best = int(np.argmin(means))
-        if self.rule == "1se":
-            error = scores[:, best].std(ddof=1) / np.sqrt(len(folds))
-            best = int(np.flatnonzero(means <= means[best] + error)[0])
+        scores = _score_folds(folds, score_fold, self.n_jobs, len(grid))
+        best = _choose_alpha(
+            scores,
+            self.rule,
+            lower_is_better=self.scoring != "r2",
+            complete=np.ones(len(grid), dtype=bool),
+            allow_nan=False,
+        )
         self.cv_scores_, self.alphas_, self.path_ = scores, grid, path
         self.alpha_ = grid[best]
         self.coef_ = path.coef[:, [best]].toarray().ravel()
@@ -304,7 +330,7 @@ class BiglassoRegressorCV(_RegressionBase):
         return self
 
 
-class BiglassoClassifier(_BiglassoBase):
+class BiglassoClassifier(_ClassifierBase):
     """Lasso / elastic-net logistic regression at a single penalty strength.
 
     Parameters
@@ -351,7 +377,7 @@ class BiglassoClassifier(_BiglassoBase):
         return self
 
 
-class BiglassoClassifierCV(_BiglassoBase):
+class BiglassoClassifierCV(_ClassifierBase):
     """Lasso / elastic-net logistic regression, choosing alpha by cross-validation.
 
     Fits the full regularization path once on all the data, then once per fold
@@ -485,7 +511,6 @@ class BiglassoClassifierCV(_BiglassoBase):
                         "is undefined there; use fewer folds, a stratified "
                         "splitter, or scoring='deviance'."
                     )
-        scores = np.full((len(folds), len(grid)), np.nan)
 
         def score_fold(fold):
             train, test = fold
@@ -504,25 +529,32 @@ class BiglassoClassifierCV(_BiglassoBase):
             s = fold_path.score(X, y01, self.scoring, row_indices=test)
             return s / len(test) if self.scoring == "deviance" else s
 
-        n_jobs = self.n_jobs
-        if n_jobs is None or n_jobs < 0:
-            n_jobs = os.cpu_count() or 1
-        with ThreadPoolExecutor(max_workers=min(n_jobs, len(folds))) as pool:
-            for k, s in enumerate(pool.map(score_fold, folds)):
-                scores[k, : len(s)] = s
+        scores = _score_folds(folds, score_fold, self.n_jobs, len(grid))
         self.cv_scores_ = scores
         self.alphas_ = grid
 
         # only consider alphas that every fold reached (paths can stop early)
         complete = ~np.isnan(scores).any(axis=0)
-        best = self._choose(scores, complete)
+        best = _choose_alpha(
+            scores,
+            self.rule,
+            lower_is_better=self.scoring == "deviance",
+            complete=complete,
+            allow_nan=True,
+        )
         if patience is not None:
             path = fit_all(lambda il, *_: il >= best)
             if len(path) <= best:
                 # the fit on all the data stopped first (saturation, dfmax);
                 # without early stopping, the grid would have ended there
                 complete[len(path) :] = False
-                best = self._choose(scores, complete)
+                best = _choose_alpha(
+                    scores,
+                    self.rule,
+                    lower_is_better=self.scoring == "deviance",
+                    complete=complete,
+                    allow_nan=True,
+                )
         self.path_ = path
 
         self.alpha_ = grid[best]
@@ -530,22 +562,6 @@ class BiglassoClassifierCV(_BiglassoBase):
         self.coef_ = path.coef[:, [best]].toarray().T
         self.intercept_ = path.intercept[[best]].copy()
         return self
-
-    def _choose(self, scores, complete):
-        """The index of the chosen alpha, among those `complete`."""
-        if not complete.any():
-            raise ValueError(
-                "No alpha was fit in every fold; try a larger alpha range."
-            )
-        sign = 1.0 if self.scoring == "deviance" else -1.0  # lower is better
-        mean = np.full(scores.shape[1], np.inf)
-        mean[complete] = sign * np.nanmean(scores[:, complete], axis=0)
-        best = int(np.argmin(mean))
-        if self.rule == "1se":
-            se = np.nanstd(scores[:, best], ddof=1) / np.sqrt(len(scores))
-            # alphas are decreasing, so the first qualifying index is largest
-            best = int(np.flatnonzero(mean <= mean[best] + se)[0])
-        return best
 
 
 class _NoImprovement:

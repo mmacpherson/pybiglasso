@@ -8,7 +8,11 @@ pytest.importorskip("sklearn")
 from sklearn.utils.estimator_checks import parametrize_with_checks  # noqa: E402
 
 import pybiglasso as bl  # noqa: E402
-from pybiglasso.sklearn import BiglassoClassifier, BiglassoClassifierCV  # noqa: E402
+from pybiglasso.sklearn import (  # noqa: E402
+    BiglassoClassifier,
+    BiglassoClassifierCV,
+    BiglassoRegressorCV,
+)
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
@@ -129,3 +133,11 @@ def test_cv_n_jobs_does_not_change_results(data):
     many = BiglassoClassifierCV(n_alphas=15, cv=5, n_jobs=5).fit(X, y)
     np.testing.assert_array_equal(one.cv_scores_, many.cv_scores_)
     assert one.alpha_ == many.alpha_
+
+
+@pytest.mark.parametrize("estimator", [BiglassoClassifierCV, BiglassoRegressorCV])
+@pytest.mark.parametrize("n_jobs", [0, True, 1.5, "2"])
+def test_cv_rejects_bad_n_jobs(data, estimator, n_jobs):
+    X, y = data
+    with pytest.raises(ValueError, match="n_jobs must be None or a nonzero integer"):
+        estimator(n_alphas=3, cv=2, n_jobs=n_jobs).fit(X, y)
