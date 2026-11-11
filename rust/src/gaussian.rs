@@ -5,7 +5,7 @@
 //! Each lambda chooses a strong set (`choose_strong`), then alternates
 //! coordinate sweeps over the active set (`gaussian_sweep`) with KKT scans of
 //! the columns outside it (`gaussian_scan`) until a scan finds no violation.
-//! In default mode a score cache lets a scan skip reading an inactive column
+//! In both modes a score cache lets a scan skip reading an inactive column
 //! whose KKT and next strong-rule decisions a certificate already proves; see
 //! docs/gaussian-screening.md. Native-test instrumentation is in
 //! gaussian_probe.rs.
@@ -69,7 +69,7 @@ struct Anchor {
     next: Option<NextStrong>,
 }
 
-/// The score cache (default mode only). It tracks a bound on how far the
+/// The score cache, in both modes. It tracks a bound on how far the
 /// residual has moved since each column's anchor, through a running sum of
 /// upper bounds on the residual's step norms: `hi` and `lo` enclose that sum
 /// from above and below, so `hi - anchor.prefix_lo` bounds the distance from
