@@ -689,6 +689,12 @@ impl<D: Design> Fit<'_, D> {
                     return Ok(path);
                 }
                 Status::MaxIter => path.events.push(Event::MaxIter(il)),
+                // Differs from R biglasso, which warns whenever a lambda used
+                // all max_iter iterations, so also when it converged on the
+                // last one; default mode warns only when it did not converge.
+                Status::Converged if p.r_compatible && path.iters[il] == p.max_iter => {
+                    path.events.push(Event::MaxIter(il))
+                }
                 Status::Converged => {}
             }
             Self::record(&mut path, &st, il);

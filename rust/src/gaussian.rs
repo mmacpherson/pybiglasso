@@ -606,6 +606,8 @@ impl<D: Design> Fit<'_, D> {
         tolerance: f64,
     ) {
         let p = self.params;
+        // the last sweep met the tolerance and no scan since found a violation
+        let mut converged = false;
         while path.iters[il] < p.max_iter {
             while path.iters[il] < p.max_iter {
                 while path.iters[il] < p.max_iter {
@@ -613,20 +615,26 @@ impl<D: Design> Fit<'_, D> {
                     let change = self.gaussian_sweep(path, st, lam);
                     // Differs from R biglasso: its strict comparison against
                     // zero makes constant-response fits exhaust max_iter.
-                    if change < tolerance || (!p.r_compatible && change == 0.0) {
+                    converged = change < tolerance || (!p.r_compatible && change == 0.0);
+                    if converged {
                         break;
                     }
                 }
                 if self.gaussian_scan(path, st, cache.as_deref_mut(), lam, true) == 0 {
                     break;
                 }
+                converged = false;
             }
             if self.gaussian_scan(path, st, cache.as_deref_mut(), lam, false) == 0 {
                 path.deviance[il] = self.gaussian_loss(st);
                 break;
             }
+            converged = false;
         }
-        if path.iters[il] == p.max_iter {
+        // Differs from R biglasso, which warns whenever a lambda used all
+        // max_iter iterations, so also when it converged on the last one;
+        // default mode warns only when the lambda did not converge.
+        if if p.r_compatible { path.iters[il] == p.max_iter } else { !converged } {
             path.events.push(Event::MaxIter(il));
         }
         // Differs from R biglasso: R can leave loss at zero when the budget

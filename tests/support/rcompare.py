@@ -144,6 +144,10 @@ def fast_grid():
     # lambda, from where the last stopped, and warn
     for nrow, ncol in ((300, 40), (60, 200)):
         cases.append(Case(nrow, ncol, alpha=0.5, max_iter=4))
+    # a budget of exactly the most iterations R's uncapped fit of this case
+    # takes (9, in the stored R output): every lambda converges, and R warns
+    # for the ones that used all nine
+    cases.append(Case(300, 40, alpha=0.5, max_iter=9))
 
     # imbalanced responses, where the intercept sits far from zero
     for nrow, ncol in ((300, 40), (1000, 20)):
@@ -185,6 +189,9 @@ def gaussian_grid():
             Case(**base, dfmax=5),
             Case(**base, max_iter=4),
         ]
+    # as for binomial: R's uncapped fit of this case takes at most 7
+    # iterations, so this budget converges everywhere, and R warns
+    cases.append(Case(100, 10, alpha=0.5, family="gaussian", max_iter=7))
     return cases
 
 
@@ -404,6 +411,31 @@ WARNING_KINDS = {
     "saturated": ("Model saturated;", "Model saturated by the unpenalized"),
     "max_iter": ("Failed to converge within max_iter", "Algorithm failed to converge"),
 }
+
+
+# Cases fit with max_iter equal to the most iterations R's own uncapped fit
+# of the same problem takes, mapped to that uncapped case: every lambda
+# converges, so R warns and default mode, differing from R, does not
+# (README, "Convergence warnings"); tests/test_max_iter_warning.py checks
+# the pairing against the stored R output.
+CONVERGED_AT_MAX_ITER = {
+    "normal-300x40_s123_a0.5_L20_max_iter=9": "normal-300x40_s123_a0.5_L20",
+    "normal-100x10_s123_a0.5_L20_family=gaussian_max_iter=7": (
+        "normal-100x10_s123_a0.5_L20_family=gaussian"
+    ),
+}
+
+
+def default_mode_expected(case, r):
+    """R's output as default mode should reproduce it."""
+    if case.name not in CONVERGED_AT_MAX_ITER:
+        return r
+    kept = [
+        w
+        for w in r.get("warnings") or []
+        if not w.startswith(WARNING_KINDS["max_iter"])
+    ]
+    return {**r, "warnings": kept}
 
 
 def warning_kinds(messages):

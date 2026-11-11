@@ -548,6 +548,11 @@ with a comment beginning "Differs from R biglasso".
   with extremely small positive `alpha`), R returns non-finite penalties, and
   pybiglasso raises `ValueError`, for both families and in both modes. Finite
   supplied grids remain supported, including in compatibility mode.
+- **Convergence warnings.** R warns that the algorithm failed to converge
+  whenever some lambda used all `max.iter` iterations, including a lambda that
+  converged on its last one. pybiglasso warns only for a lambda that stopped
+  without converging; its fit is the same either way. `r_compatible=True`
+  keeps R's rule.
 
 **Least squares.**
 
