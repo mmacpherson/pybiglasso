@@ -99,6 +99,12 @@ jobs:
       with:
         python-version: '3.14'
     - run: make run-hooks-all-files
+    # the playground's Rust, which only the path-filtered browser workflow
+    # builds otherwise (about 15 s)
+    - name: Lint the wasm build
+      run: |
+        rustup target add wasm32-unknown-unknown
+        make lint-wasm
 
   # Native kernels and exact-rational certificate audits, once per platform
   # (macOS runs them in the macos job).

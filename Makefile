@@ -56,6 +56,12 @@ lint:
 test-rust:
 	uv run --no-project python scripts/test_rust.py
 
+# The browser build's Rust (rust/src/wasm.rs, behind the wasm feature), which
+# no other check compiles; needs the wasm32-unknown-unknown target
+.PHONY: lint-wasm
+lint-wasm:
+	cargo clippy --manifest-path rust/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings
+
 .PHONY: browser test-browser
 browser:
 	cd web && npm ci && npm run build
