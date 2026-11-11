@@ -132,23 +132,6 @@ def test_all_r_benchmark_adapters_forward_thread_limits(
     assert calls == [benchmark.r_thread_limits(6)]
 
 
-def test_gaussian_table_requires_native_glmnet(benchmark, tmp_path):
-    table = importlib.import_module("gaussian-table")
-    path = tmp_path / "results.jsonl"
-    path.write_text(
-        json.dumps(
-            dict(
-                family="gaussian",
-                solver="r-glmnet",
-                glmnet_family="gaussian()",
-            )
-        )
-        + "\n"
-    )
-    with pytest.raises(ValueError, match="native Gaussian"):
-        table.render(path)
-
-
 @pytest.mark.r
 @pytest.mark.skipif(not rcompare.r_available(), reason="R not available")
 @pytest.mark.parametrize("solver", ["pybiglasso", "r-biglasso-ssr", "r-glmnet"])

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import collections
 import logging
 import math
@@ -10,7 +9,7 @@ import scipy.sparse as sps
 
 from ._threads import resolve_threads
 from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
-from .config import check_backend, settings
+from .config import settings
 from .path import INTERCEPT, BiglassoPath
 
 logger = logging.getLogger(__name__)
@@ -34,6 +33,12 @@ BigLassoParams = collections.namedtuple(
     "stop_on_saturation r_compatible",
 )
 
+_ValidatedInput = collections.namedtuple(
+    "_ValidatedInput",
+    "X y row_indices nrow ncol n_threads lambda_min penalty_factor lambdas nlambda "
+    "dfmax feature_names named_features",
+)
+
 
 def biglasso(
     X,
@@ -53,59 +58,161 @@ def biglasso(
     stop_on_saturation=True,
     r_compatible=False,
     n_threads="auto",
-    backend=None,
     _stop=None,
 ):
     """Fit a lasso or elastic-net binomial or Gaussian regression path.
 
-    The default family="gaussian" minimizes RSS/(2n) plus the standardized elastic-net
-    penalty, with an unpenalized intercept. It requires the Rust backend and
-    reports RSS as deviance. Gaussian fits do not use a saturation cutoff.
+    Parameters
+    ----------
+    X : array-like of shape (n_samples, n_features)
+        Numeric NumPy array or memory map, preferably in Fortran order, or a
+        PyArrow Table or RecordBatch. Columns are read without copying X.
+    y : array-like of shape (n_samples,)
+        Numeric response. Binomial fits require both 0 and 1 among the rows
+        used; Gaussian fits require finite values there.
+    alpha : float, default=1.0
+        Elastic-net mixing parameter in (0, 1]. One is the lasso; smaller
+        values mix L1 and L2 penalties.
+    family : {"gaussian", "binomial"}, default="gaussian"
+        Gaussian least-squares or binomial logistic regression.
+    nlambda : int, default=100
+        Number of penalty strengths in an automatically generated path. Must
+        be at least two; use ``lambdas=[value]`` for one fit.
+    lambdas : array-like, optional
+        Explicit nonnegative penalty strengths in decreasing order. When
+        supplied, these replace the automatic grid and ``nlambda``.
+    eps : float, default=1e-7
+        Positive convergence tolerance, corresponding to R biglasso's ``eps``.
+    lambda_min : float, optional
+        Smallest automatic penalty as a fraction of the largest. The default
+        is 0.001 when fitted rows outnumber features and 0.05 otherwise.
+    lambda_log_scale : bool, default=True
+        Space an automatic grid geometrically when true, linearly when false.
+    penalty_factor : array-like of shape (n_features,), optional
+        Nonnegative multiplier for each feature's penalty. Zero leaves a
+        feature unpenalized; at least one multiplier must be positive.
+    row_indices : array-like, optional
+        Nonempty integer indices of rows to fit, without copying those rows.
+        Predictions and path metadata still refer to the original X.
+    dfmax : int, optional
+        Stop after a fit exceeds this many nonzero feature coefficients. The
+        default, ``n_features + 1``, does not truncate on model size.
+    max_iter : int, default=1000
+        Maximum coordinate-descent iterations at each penalty strength.
+    feature_names : sequence of str, optional
+        One name per feature for path metadata and named-column prediction.
+        Arrow and dataframe column names are inferred when this is omitted.
+    stop_on_saturation : bool, default=True
+        For binomial fits, stop when training deviance falls below 1% of null
+        deviance, as R biglasso does. False attempts every penalty strength.
+    r_compatible : bool, default=False
+        Reproduce R biglasso's results for both families. This includes its
+        centering sums, logistic elastic-net update and probability cutoff,
+        Gaussian residual sum, strict constant-response convergence comparison,
+        and loss bookkeeping after an iteration limit. See README.md's
+        "Differences from R biglasso" for the full list.
+    n_threads : {"auto", None, int}, default="auto"
+        Threads used by parallel native reductions. Auto mode uses one thread
+        for Arrow, memory-mapped, or small designs and otherwise uses available
+        physical cores, capped by ``RAYON_NUM_THREADS``. Explicit positive
+        integers override that policy. Results do not depend on thread count.
 
-    This ports R biglasso's Gaussian and binomial solvers with screen="SSR",
-    and uses its parameter names: `alpha` mixes the L1 and L2
-    penalties (1 is the lasso), and `lambdas` are penalty strengths.
+    Returns
+    -------
+    BiglassoPath
+        Fitted path with ``lambdas``, sparse ``coef``, ``intercept``,
+        ``deviance``, ``iterations``, ``n_rejected``, centering and scaling,
+        penalty factors, feature names, ``alpha``, and ``family``.
 
-    X may be a pyarrow Table/RecordBatch or a NumPy array/memmap in Fortran order;
-    it is read a column at a time and never copied.
+    Notes
+    -----
+    On standardized columns, the binomial objective is ``(1/n) * NLL + lambda
+    * sum_j pf_j * (alpha * |b_j| + (1 - alpha)/2 * b_j^2)``. The Gaussian
+    objective replaces ``(1/n) * NLL`` with ``RSS/(2n)`` and uses the same
+    penalty. The intercept is unpenalized. R biglasso's logistic elastic-net
+    update solves a slightly different problem, reproduced by
+    ``r_compatible=True``.
 
-    Like R, a binomial path stops early once training deviance falls below 1% of the
-    null deviance; `stop_on_saturation=False` (not in R) fits every lambda.
-
-    For binomial elastic net (alpha < 1), the coordinate update minimizes the
-    documented objective, (1/n) * NLL + lambda * (alpha * |b|_1 +
-    (1 - alpha) / 2 * |b|_2^2), as glmnet and scikit-learn do. R biglasso's
-    logistic update instead divides by v * (1 + l2) rather than v + l2, which
-    solves a different problem; `r_compatible=True` uses R's update formula.
-    The default binomial probability cutoff also differs from R: it uses
-    glmnet's pmin=1e-9 boundary with a positive weight floor; compatibility
-    mode retains R's |eta| > 10 cutoff and 1e-4 weights.
-
-    `n_threads="auto"` (or None) uses one thread for Arrow Tables/RecordBatches, memory-mapped X or fewer
-    than 10 million fitted-row/column entries, otherwise the available physical
-    cores (performance cores on Apple silicon). A positive RAYON_NUM_THREADS
-    caps auto mode; an explicit positive integer overrides the policy.
-    Unknown core topology falls back to one.
-    Coordinate descent itself is sequential. Results do not depend on the
-    thread count. See benchmarks/threads.md for the recorded evidence.
-
-    The solver is implemented in Rust. `backend=None` and `backend="rust"` are
-    accepted for compatibility; `backend="numba"` is no longer supported.
-
-    Returns a `BiglassoPath`.
-
-    Automatic grids require nlambda >= 2; use lambdas=[value] for a single fit.
-    Designs with no varying
-    features (or no varying penalized features for an automatic grid) are
-    rejected. An exactly zero lambda_max produces a finite all-zero grid.
-    `deviance` is evaluated at the final fitted model; compatibility mode
-    retains R's historical pre-sweep loss instead.
+    Automatic grids reject designs without varying penalized features. An
+    exactly zero largest penalty produces a finite all-zero grid. Default-mode
+    deviance is evaluated at the final fitted model.
     """
     # _stop (private, for BiglassoClassifierCV's early stopping): called as
     # _stop(il, lambdas, cols, beta, intercept) after each lambda is fit, with
     # the whole grid and that fit's nonzero coefficients on X's scale; a true
     # result ends the path there, as dfmax does, but without a warning
 
+    data = _validate_args(
+        X,
+        y,
+        alpha,
+        family,
+        nlambda,
+        lambdas,
+        eps,
+        lambda_min,
+        penalty_factor,
+        row_indices,
+        dfmax,
+        max_iter,
+        feature_names,
+        n_threads,
+    )
+
+    params = BigLassoParams(
+        alpha=alpha,
+        lambdas=data.lambdas,
+        nlambda=data.nlambda,
+        eps=eps,
+        lambda_min=data.lambda_min,
+        lambda_log_scale=lambda_log_scale,
+        penalty_factor=data.penalty_factor,
+        dfmax=data.dfmax,
+        max_iter=max_iter,
+        stop_on_saturation=stop_on_saturation,
+        r_compatible=r_compatible,
+    )
+    logger.info(
+        "Starting fit. Design matrix size: [%d, %d]  Num λ values: %d",
+        data.nrow,
+        data.ncol,
+        data.nlambda,
+    )
+    on_lambda = None
+    if _stop is not None:
+
+        def on_lambda(il, lambdas, cols, vals, intercept, center, scale):
+            beta, intercept = _unstandardize(vals, intercept, center, scale)
+            return bool(_stop(il, lambdas, cols, beta, intercept))
+
+    results = _fit_path(
+        data.X,
+        data.y,
+        data.row_indices,
+        params,
+        data.n_threads,
+        on_lambda,
+        family,
+    )
+    return _assemble_path(results, data, alpha, family)
+
+
+def _validate_args(
+    X,
+    y,
+    alpha,
+    family,
+    nlambda,
+    lambdas,
+    eps,
+    lambda_min,
+    penalty_factor,
+    row_indices,
+    dfmax,
+    max_iter,
+    feature_names,
+    n_threads,
+):
     X = _as_arrow_matrix(X)
     y = _response(y)
     if feature_names is None and hasattr(X, "columns"):
@@ -114,7 +221,6 @@ def biglasso(
     mapped = isinstance(X, _ArrowMatrix)
     y = np.asarray(y)
 
-    # first, a few checks on data shape and type
     if (not mapped and X.ndim != 2) or not all(X.shape):
         raise ValueError("X must be a non-empty two-dimensional design matrix.")
     if not mapped and (
@@ -132,19 +238,17 @@ def biglasso(
     if eps <= 0:
         raise ValueError("eps must be positive.")
     _integer("max_iter", max_iter)
-    if lambdas is None:
-        if (
-            isinstance(nlambda, (bool, np.bool_))
-            or not isinstance(nlambda, numbers.Integral)
-            or nlambda < 2
-        ):
-            raise ValueError(
-                "nlambda must be at least 2 (an integer); to fit one value, pass lambdas=[value]."
-            )
+    if lambdas is None and (
+        isinstance(nlambda, (bool, np.bool_))
+        or not isinstance(nlambda, numbers.Integral)
+        or nlambda < 2
+    ):
+        raise ValueError(
+            "nlambda must be at least 2 (an integer); to fit one value, "
+            "pass lambdas=[value]."
+        )
     if dfmax is not None:
         _integer("dfmax", dfmax, minimum=0)
-    if backend is not None:
-        check_backend(backend)
     if family not in ("binomial", "gaussian"):
         raise NotImplementedError("Supported families are 'binomial' and 'gaussian'.")
     # not np.isfortran, which is False for one column: both C and F order
@@ -152,19 +256,19 @@ def biglasso(
         warnings.warn(
             "The design matrix is not in Fortran (column-major) order; "
             "this algorithm performs best on Fortran-ordered arrays.",
-            stacklevel=2,
+            stacklevel=3,
         )
 
     if alpha == 0:
         raise NotImplementedError(
             "Sorry, this implementation does not support zero alpha."
         )
-    elif not (0 < alpha <= 1):
+    if not 0 < alpha <= 1:
         raise ValueError(f"Alpha must be in (0, 1]; you gave [{alpha}]")
-
     if X.shape[0] != len(y):
         raise ValueError(
-            f"Number of rows in X [{X.shape[0]}] is different from length of y [{len(y)}]."
+            f"Number of rows in X [{X.shape[0]}] is different from length of y "
+            f"[{len(y)}]."
         )
 
     if row_indices is not None:
@@ -177,7 +281,8 @@ def biglasso(
             or np.any(row_indices != np.floor(row_indices))
         ):
             raise ValueError(
-                "row_indices must be a non-empty one-dimensional sequence of integer indices."
+                "row_indices must be a non-empty one-dimensional sequence of "
+                "integer indices."
             )
         if np.any((row_indices < 0) | (row_indices >= X.shape[0])):
             raise ValueError("row_indices has indices outside valid range.")
@@ -194,7 +299,6 @@ def biglasso(
 
     nrow = X.shape[0] if row_indices is None else len(row_indices)
     ncol = X.shape[1]
-
     n_threads = resolve_threads(n_threads, X, nrow)
 
     if feature_names is not None:
@@ -206,9 +310,8 @@ def biglasso(
 
     # Differs from R biglasso: R compares nrow(X) with ncol(X); this
     # compares the rows actually fit, which differ when row_indices is given
-    lambda_min_thresh = (0.001, 0.05)
     if lambda_min is None:
-        lambda_min = lambda_min_thresh[0] if (nrow > ncol) else lambda_min_thresh[1]
+        lambda_min = 0.001 if nrow > ncol else 0.05
     _finite_scalar("lambda_min", lambda_min)
     if not 0 < lambda_min <= 1:
         raise ValueError("lambda_min must be in (0, 1].")
@@ -228,7 +331,8 @@ def biglasso(
             or not np.any(penalty_factor > 0)
         ):
             raise ValueError(
-                "penalty_factor must be finite and non-negative, with at least one positive entry."
+                "penalty_factor must be finite and non-negative, with at least "
+                "one positive entry."
             )
 
     if lambdas is not None:
@@ -242,7 +346,8 @@ def biglasso(
             or np.any(lambdas < 0)
         ):
             raise ValueError(
-                "lambdas must be a non-empty one-dimensional sequence of finite values >= 0."
+                "lambdas must be a non-empty one-dimensional sequence of finite "
+                "values >= 0."
             )
         if np.any(np.diff(lambdas) > 0):
             raise ValueError("lambdas must be in decreasing order.")
@@ -250,71 +355,62 @@ def biglasso(
 
     if dfmax is None:
         dfmax = ncol + 1
-
     named_features = feature_names is not None
     if feature_names is None:
-        feature_names = tuple(f"x{e}" for e in range(ncol))
+        feature_names = tuple(f"x{index}" for index in range(ncol))
 
-    y = y.astype(np.float64)
-
-    params = BigLassoParams(
-        alpha=alpha,
+    return _ValidatedInput(
+        X=X,
+        y=y.astype(np.float64),
+        row_indices=row_indices,
+        nrow=nrow,
+        ncol=ncol,
+        n_threads=n_threads,
+        lambda_min=lambda_min,
+        penalty_factor=penalty_factor,
         lambdas=lambdas,
         nlambda=nlambda,
-        eps=eps,
-        lambda_min=lambda_min,
-        lambda_log_scale=lambda_log_scale,
-        penalty_factor=penalty_factor,
         dfmax=dfmax,
-        max_iter=max_iter,
-        stop_on_saturation=stop_on_saturation,
-        r_compatible=r_compatible,
+        feature_names=feature_names,
+        named_features=named_features,
     )
-    logger.info(
-        "Starting fit. Design matrix size: [%d, %d]  Num λ values: %d",
-        nrow,
-        ncol,
-        nlambda,
-    )
-    on_lambda = None
-    if _stop is not None:
 
-        def on_lambda(il, lambdas, cols, vals, intercept, center, scale):
-            beta, intercept = _unstandardize(vals, intercept, center, scale)
-            return bool(_stop(il, lambdas, cols, beta, intercept))
 
-    results = fit_path_rust(X, y, row_indices, params, n_threads, on_lambda, family)
+def _assemble_path(results, data, alpha, family):
     if imprecise := results.pop("imprecise_center", []):
-        names = ", ".join(feature_names[j] for j in imprecise[:5])
+        names = ", ".join(data.feature_names[index] for index in imprecise[:5])
         more = f" and {len(imprecise) - 5} more" if len(imprecise) > 5 else ""
         warnings.warn(
             f"Column(s) {names}{more} of X are too far from zero, relative to their "
             "spread, for float64 to center them precisely, which can make the fit, "
             "its intercept especially, inaccurate. Subtract a reference value, such "
             "as each column's minimum, before fitting.",
-            stacklevel=2,
+            stacklevel=3,
         )
 
-    # keep the part of the path that was fit (it stops early on saturation
-    # or dfmax), and untransform coefficients back to the scale of X
+    # Keep the fitted prefix (saturation and dfmax can stop it early), then
+    # return coefficients to X's original scale.
     fitted = np.flatnonzero(results["iters"] >= 0)
     col_map, center, scale = results["col_map"], results["center"], results["scale"]
     rows, vals, intercept = [], [], results["intercept"][fitted].copy()
-    for k, il in enumerate(fitted):
-        cols = col_map[results["coef_rows"][il]]
-        beta, intercept[k] = _unstandardize(
-            results["coef_vals"][il], intercept[k], center[cols], scale[cols]
+    for output_index, lambda_index in enumerate(fitted):
+        cols = col_map[results["coef_rows"][lambda_index]]
+        beta, intercept[output_index] = _unstandardize(
+            results["coef_vals"][lambda_index],
+            intercept[output_index],
+            center[cols],
+            scale[cols],
         )
         rows.append(cols)
         vals.append(beta)
-    indptr = np.concatenate([[0], np.cumsum([len(r) for r in rows])])
+    indptr = np.concatenate([[0], np.cumsum([len(row) for row in rows])])
     coef = sps.csc_array(
         (
             np.concatenate(vals) if vals else np.zeros(0),
             np.concatenate(rows) if rows else np.zeros(0, dtype=np.int64),
             indptr,
         ),
-        shape=(ncol, len(fitted)),
+        shape=(data.ncol, len(fitted)),
     )
 
     return BiglassoPath(
@@ -327,11 +423,11 @@ def biglasso(
         n_rejected=results["n_reject"][fitted],
         center=center,
         scale=scale,
-        penalty_factor=penalty_factor,
-        feature_names=feature_names,
+        penalty_factor=data.penalty_factor,
+        feature_names=data.feature_names,
         alpha=alpha,
         family=family,
-        named_features=named_features,
+        named_features=data.named_features,
     )
 
 
@@ -343,10 +439,8 @@ def _unstandardize(vals, intercept, center, scale):
     return beta, intercept - math.fsum(center * beta)
 
 
-def fit_path_rust(
-    X, y, row_indices, params, n_threads, on_lambda=None, family="binomial"
-):
-    """fit_path, run by the Rust backend in one call."""
+def _fit_path(X, y, row_indices, params, n_threads, on_lambda, family):
+    """Run the native solver for a complete regularization path."""
     from . import _rust
 
     if not isinstance(X, _ArrowMatrix) and not X.flags.aligned:

@@ -91,7 +91,6 @@ class SmoothProblem:
             alpha=self.alpha,
             penalty_factor=self.penalties,
             lambdas=self.grid,
-            backend="rust",
             **FIT_OPTIONS,
         )
         options.update(overrides)
@@ -292,7 +291,6 @@ def test_penalty_rescaling_and_constant_insertion(problem, exponent, insert):
             alpha=problem.alpha,
             penalty_factor=pf,
             lambdas=problem.grid,
-            backend="rust",
             family="binomial",
             **FIT_OPTIONS,
         )

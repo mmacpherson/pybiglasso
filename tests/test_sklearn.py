@@ -1,3 +1,5 @@
+from decimal import Decimal, localcontext
+
 import numpy as np
 import pytest
 
@@ -6,7 +8,11 @@ pytest.importorskip("sklearn")
 from sklearn.utils.estimator_checks import parametrize_with_checks  # noqa: E402
 
 import pybiglasso as bl  # noqa: E402
-from pybiglasso.sklearn import BiglassoClassifier, BiglassoClassifierCV  # noqa: E402
+from pybiglasso.sklearn import (  # noqa: E402
+    BiglassoClassifier,
+    BiglassoClassifierCV,
+    BiglassoRegressorCV,
+)
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
@@ -14,8 +20,8 @@ from pybiglasso.sklearn import BiglassoClassifier, BiglassoClassifierCV  # noqa:
     [
         BiglassoClassifier(alpha=0.01),
         BiglassoClassifierCV(n_alphas=10, cv=3),
-        bl.BiglassoRegressor(alpha=0.01, backend="rust"),
-        bl.BiglassoRegressorCV(n_alphas=10, cv=3, n_jobs=1, backend="rust"),
+        bl.BiglassoRegressor(alpha=0.01),
+        bl.BiglassoRegressorCV(n_alphas=10, cv=3, n_jobs=1),
     ]
 )
 def test_sklearn_compatible(estimator, check):
@@ -55,6 +61,37 @@ def test_classifier_string_labels(data):
     np.testing.assert_array_equal(
         clf.predict(X), clf.classes_[(proba[:, 1] > 0.5).astype(int)]
     )
+
+
+def test_classifier_extreme_probabilities_are_accurate():
+    eta = np.array([-700.0, -40.0, -36.0, -30.0, -20.0, 0.0, 20.0, 700.0])
+    clf = BiglassoClassifier()
+    clf.classes_ = np.array([0, 1])
+    clf.n_features_in_ = 1
+    clf.coef_ = np.ones((1, 1))
+    clf.intercept_ = np.zeros(1)
+
+    with localcontext() as context:
+        context.prec = 400
+        decimal_eta = [Decimal.from_float(value) for value in eta]
+        probability = np.array(
+            [float(1 / (1 + (-value).exp())) for value in decimal_eta]
+        )
+        complement = np.array([float(1 / (1 + value.exp())) for value in decimal_eta])
+        log_probability = np.array(
+            [float(-(1 + (-value).exp()).ln()) for value in decimal_eta]
+        )
+        log_complement = np.array(
+            [float(-(1 + value.exp()).ln()) for value in decimal_eta]
+        )
+
+    proba = clf.predict_proba(eta[:, None])
+    log_proba = clf.predict_log_proba(eta[:, None])
+    np.testing.assert_array_max_ulp(proba[:, 1], probability, maxulp=2)
+    np.testing.assert_array_max_ulp(proba[:, 0], complement, maxulp=2)
+    np.testing.assert_array_max_ulp(log_proba[:, 1], log_probability, maxulp=2)
+    np.testing.assert_array_max_ulp(log_proba[:, 0], log_complement, maxulp=2)
+    assert np.isfinite(log_proba).all()
 
 
 @pytest.mark.parametrize("scoring", ["deviance", "auc", "accuracy"])
@@ -98,3 +135,11 @@ def test_cv_n_jobs_does_not_change_results(data):
     many = BiglassoClassifierCV(n_alphas=15, cv=5, n_jobs=5).fit(X, y)
     np.testing.assert_array_equal(one.cv_scores_, many.cv_scores_)
     assert one.alpha_ == many.alpha_
+
+
+@pytest.mark.parametrize("estimator", [BiglassoClassifierCV, BiglassoRegressorCV])
+@pytest.mark.parametrize("n_jobs", [0, True, 1.5, "2"])
+def test_cv_rejects_bad_n_jobs(data, estimator, n_jobs):
+    X, y = data
+    with pytest.raises(ValueError, match="n_jobs must be None or a nonzero integer"):
+        estimator(n_alphas=3, cv=2, n_jobs=n_jobs).fit(X, y)

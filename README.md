@@ -16,8 +16,9 @@
 **Lasso and elastic-net regression for data larger than memory.**
 
 If your penalized regression won't fit in memory, pybiglasso fits it where the
-data already is: on disk. A 12 GB design matrix fits under a 3 GB memory limit,
-on an ordinary desktop, in under two minutes (see [Performance](#performance)).
+data already is: on disk. On an ordinary desktop with six solver threads, a
+20-step path over a 12 GB design matrix fits under a 3 GB memory limit in under
+two minutes (see [Performance](#performance)).
 
 Save the matrix as a numpy memmap and pybiglasso fits the whole regularization
 path, with cross-validation to choose the penalty, without loading it into
@@ -30,18 +31,21 @@ own CSV or Parquet file, which never leaves your machine, and can
 cross-validate the fit.
 
 pybiglasso fits least-squares (Gaussian) and logistic (binomial) models, and
-it's also fast when the data does fit in memory. For logistic regression,
-across four benchmark problems with 1,000 to 50,000 features, a full 100-step
-path runs 2.2–4.9x faster than R's glmnet, 2.3–8.4x faster than R biglasso,
-and 4.8–8.5x faster than skglm, the fastest of the other Python solvers we
-tested. On the least-squares benchmarks, it is 3.3–6.2x faster than R biglasso
-and 1.7–12x faster than glmnet (the largest glmnet case has one run per penalty).
+it's also fast when the data does fit in memory. At one thread, for logistic
+lasso across four benchmark problems with 1,000 to 50,000 features, a full
+100-step path runs 1.9–2.8x faster than R's glmnet, 3.5–6.1x faster than R
+biglasso, and 4.3–6.2x faster than skglm, the fastest of the other Python
+solvers we tested. On the one-thread least-squares lasso benchmarks, it is
+3.3–5.6x faster than R biglasso and 1.4–3.5x faster than glmnet.
 Scikit-learn is faster on tall data and slower on wide data; its wide lasso
 fits are less accurate at the default settings (see [Performance](#performance)).
 
 It is an unofficial Python port of the R package
-[biglasso](https://github.com/pbreheny/biglasso), and reproduces its results to
-floating-point precision for both families (see [Validation](#validation)).
+[biglasso](https://github.com/pbreheny/biglasso), and with
+`r_compatible=True` reproduces its results to floating-point precision for
+both families. The default mode has deliberate differences, checked against a
+plain reference implementation and independent optimality conditions (see
+[Validation](#validation)).
 
 ## Install
 
@@ -247,8 +251,8 @@ few operations differently.
 
 ```
 uv run pytest               # against stored R output; no R needed
-make test-r                 # live, in a container (CONTAINER=podman works too)
-make test-r R_VERSION=latest
+make test-r                 # live against the pinned fixture-producing R release
+make test-r R_VERSION=latest  # live against current CRAN
 make soak                   # larger memory-mapped problems; for a big machine
 make soak-hypothesis        # property tests, wide random search (part of soak)
 ```

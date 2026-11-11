@@ -121,7 +121,6 @@ def fit(X, y, lambdas, alpha, pf):
         X,
         y,
         family="gaussian",
-        backend="rust",
         lambdas=lambdas,
         alpha=alpha,
         penalty_factor=pf,

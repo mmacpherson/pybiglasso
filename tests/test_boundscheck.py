@@ -40,7 +40,7 @@ cases = {
 results = {}
 for name, (Xc, row_indices, alpha) in cases.items():
     p = bl.biglasso(
-        Xc, y, family="binomial", alpha=alpha, nlambda=30, row_indices=row_indices, backend="rust"
+        Xc, y, family="binomial", alpha=alpha, nlambda=30, row_indices=row_indices
     )
     results[f"{name}/lambdas"] = p.lambdas
     results[f"{name}/intercept"] = p.intercept

@@ -104,7 +104,6 @@ def fit(X, y, lambdas, alpha=1.0, pf=None):
             X,
             y,
             family="binomial",
-            backend="rust",
             lambdas=lambdas,
             alpha=alpha,
             penalty_factor=pf,

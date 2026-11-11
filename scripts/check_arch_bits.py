@@ -106,7 +106,6 @@ def record(output):
                             family=family,
                             alpha=alpha,
                             nlambda=12,
-                            backend="rust",
                             n_threads=2,
                         )
                     assert len(fit) == 12 and fit.coef.nnz > 0, name

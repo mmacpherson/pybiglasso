@@ -9,20 +9,8 @@ default.
 import dataclasses
 import os
 
-BACKENDS = ("rust",)
 PREFIX = "PYBIGLASSO_"
 SWITCH = {"1": True, "true": True, "on": True, "0": False, "false": False, "off": False}
-
-
-def check_backend(backend):
-    if backend == "numba":
-        raise ValueError(
-            "The numba backend was removed in pybiglasso 0.4.0; "
-            'use backend="rust" or omit backend.'
-        )
-    if backend not in BACKENDS:
-        raise ValueError(f"backend must be one of {BACKENDS}; got {backend!r}.")
-    return backend
 
 
 def check_switch(name, value):
@@ -49,15 +37,6 @@ class Settings:
 
     @classmethod
     def from_env(cls, environ=os.environ):
-        # No backend selection remains. Diagnose old configurations rather
-        # than silently running a different implementation after upgrading.
-        if PREFIX + "BACKEND" in environ:
-            try:
-                check_backend(environ[PREFIX + "BACKEND"])
-            except ValueError as e:
-                raise ValueError(
-                    f"{e} (from the environment: PYBIGLASSO_BACKEND)"
-                ) from None
         values = {}
         for field in dataclasses.fields(cls):
             name = PREFIX + field.name.upper()

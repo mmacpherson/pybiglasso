@@ -13,7 +13,6 @@ import pybiglasso as bl
 
 
 def _fit(*args, **kwargs):
-    kwargs.setdefault("backend", "rust")
     return bl.biglasso(*args, **kwargs)
 
 
@@ -25,10 +24,8 @@ def fixtures():
 def test_gaussian_is_the_default_family():
     X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
     y = 3 + 2 * X[:, 0]
-    implicit = bl.biglasso(X, y, lambdas=[0.5], alpha=0.5, backend="rust")
-    explicit = bl.biglasso(
-        X, y, lambdas=[0.5], alpha=0.5, family="gaussian", backend="rust"
-    )
+    implicit = bl.biglasso(X, y, lambdas=[0.5], alpha=0.5)
+    explicit = bl.biglasso(X, y, lambdas=[0.5], alpha=0.5, family="gaussian")
     assert implicit.family == "gaussian"
     assert_bitwise(implicit, explicit)
     restored = pickle.loads(pickle.dumps(implicit))
@@ -224,10 +221,8 @@ def test_gaussian_reports_actual_rss_after_iteration_limit():
     )
 
 
-def test_gaussian_validates_family_backend_and_selected_y():
+def test_gaussian_validates_selected_y():
     X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
-    with pytest.raises(ValueError, match="removed.*0.4.0"):
-        _fit(X, np.arange(4), family="gaussian", backend="numba")
     with pytest.raises(ValueError, match="finite"):
         _fit(X, [0, 1, 2, np.nan], family="gaussian")
     fit = _fit(
@@ -241,7 +236,7 @@ def test_gaussian_regressor_sklearn_contract():
 
     X = np.asfortranarray([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
     y = 3 + 2 * X[:, 0]
-    model = bl.BiglassoRegressor(alpha=0.5, l1_ratio=0.5, tol=1e-14, backend="rust")
+    model = bl.BiglassoRegressor(alpha=0.5, l1_ratio=0.5, tol=1e-14)
     assert is_regressor(model)
     model = clone(model).fit(X, y)
     assert model.coef_.shape == (2,)
@@ -267,7 +262,6 @@ def test_gaussian_regressor_cv_has_analytic_fold_scores(rule):
             rule=rule,
             n_jobs=jobs,
             tol=1e-14,
-            backend="rust",
         ).fit(X, y)
 
     a, b = fit(1), fit(2)

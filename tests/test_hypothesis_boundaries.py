@@ -40,9 +40,7 @@ def test_strong_rule_at_and_next_to_the_boundary(direction):
     X = np.asfortranarray(np.repeat(hadamard(4)[:, 1:3].astype(float), 4, axis=0))
     y = np.concatenate([np.arange(4) < count for count in (3, 1, 2, 0)]).astype(float)
     lam = 3 / 16 if direction == 0 else np.nextafter(3 / 16, direction * np.inf)
-    path = bl.biglasso(
-        X, y, lambdas=[lam], backend="rust", family="binomial", **FIT_OPTIONS
-    )
+    path = bl.biglasso(X, y, lambdas=[lam], family="binomial", **FIT_OPTIONS)
     assert len(path) == 1
     assert path.n_rejected[0] == int(direction >= 0)
 
@@ -73,7 +71,6 @@ def test_both_kkt_reentry_branches_are_needed():
         y,
         penalty_factor=[1.0, 1 / 16],
         lambdas=[3 / 16, 1 / 8],
-        backend="rust",
         family="binomial",
         **FIT_OPTIONS,
     )
@@ -102,9 +99,7 @@ def test_scale_cutoff_and_neighbors(direction):
     cutoff = 1e-6
     scale = cutoff if direction == 0 else np.nextafter(cutoff, direction * np.inf)
     X[:, 1] *= scale
-    fit = bl.biglasso(
-        X, y, lambdas=[0.125, 0.0625], backend="rust", family="binomial", **FIT_OPTIONS
-    )
+    fit = bl.biglasso(X, y, lambdas=[0.125, 0.0625], family="binomial", **FIT_OPTIONS)
     assert_bitwise(fit.scale[1:], np.array([scale]))
     if direction <= 0:
         assert fit.coef.nnz == 0
@@ -118,7 +113,7 @@ def test_default_lambda_min_switches_when_n_crosses_p(delta):
     x = np.resize([-1.0, 1.0], n)
     X = np.asfortranarray(np.tile(x[:, None], (1, p)))
     y = np.resize([0.0, 0.0, 0.0, 1.0], n)
-    options = dict(nlambda=2, backend="rust", **FIT_OPTIONS)
+    options = dict(nlambda=2, **FIT_OPTIONS)
     auto = bl.biglasso(X, y, family="binomial", **options)
     ratio = 0.001 if n > p else 0.05
     explicit = bl.biglasso(X, y, lambda_min=ratio, family="binomial", **options)
@@ -153,7 +148,6 @@ def test_storage_and_promotion_do_not_change_the_fit(dtype, layout):
         stored.astype(float),
         y,
         lambdas=[0.125, 0.0625],
-        backend="rust",
         family="binomial",
         **FIT_OPTIONS,
     )
@@ -178,7 +172,6 @@ def test_storage_and_promotion_do_not_change_the_fit(dtype, layout):
                 view,
                 y,
                 lambdas=[0.125, 0.0625],
-                backend="rust",
                 family="binomial",
                 **FIT_OPTIONS,
             )
@@ -229,7 +222,7 @@ def invalid_inputs(draw):
 def test_invalid_input_raises_value_error(case):
     name, value = case
     X, y = signal_arrays()
-    options = dict(nlambda=2, n_threads=1, backend="rust")
+    options = dict(nlambda=2, n_threads=1)
     if name == "response":
         y = {
             "zero": np.zeros(8),
@@ -252,12 +245,12 @@ def test_invalid_input_raises_value_error(case):
 
 def test_zero_alpha_has_its_documented_exception():
     with pytest.raises(NotImplementedError, match="zero alpha"):
-        bl.biglasso(*signal_arrays(), alpha=0, backend="rust", family="binomial")
+        bl.biglasso(*signal_arrays(), alpha=0, family="binomial")
 
 
 def test_dfmax_equality_vs_one_above():
     X, y = signal_arrays()
-    options = dict(lambdas=[0.125, 0.0625], backend="rust", **FIT_OPTIONS)
+    options = dict(lambdas=[0.125, 0.0625], **FIT_OPTIONS)
     equal = bl.biglasso(X, y, dfmax=1, family="binomial", **options)
     assert len(equal) == 2
     np.testing.assert_array_equal(equal.n_nonzero, [1, 1])
@@ -273,9 +266,7 @@ def test_saturation_can_return_an_empty_exportable_path(prefit):
         dict(penalty_factor=[1.0, 0.0], nlambda=2) if prefit else dict(lambdas=[0.0])
     )
     with pytest.warns(UserWarning, match="Model saturated"):
-        path = bl.biglasso(
-            X, y, backend="rust", family="binomial", **options, **FIT_OPTIONS
-        )
+        path = bl.biglasso(X, y, family="binomial", **options, **FIT_OPTIONS)
     assert len(path) == 0
     assert path.coef.shape == (2, 0)
     assert path.decision_function(X).shape == (8, 0)
@@ -300,7 +291,7 @@ def test_rust_row_chunk_parallelism_preserves_bits(delta):
         )
     )
     y = np.resize([1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0], n)
-    options = dict(alpha=0.5, lambdas=[0.125, 0.0625], backend="rust")
+    options = dict(alpha=0.5, lambdas=[0.125, 0.0625])
     one = bl.biglasso(X, y, n_threads=1, family="binomial", **options)
     many = bl.biglasso(X, y, n_threads=2, family="binomial", **options)
     assert len(one) == 2
@@ -334,7 +325,6 @@ def test_one_active_sweep_uses_the_documented_enet_denominator(alpha, lam, compa
                 max_iter=2,
                 r_compatible=compatible,
                 n_threads=1,
-                backend="rust",
                 family="binomial",
             )
     l1 = Fraction(lam) * Fraction(alpha)
@@ -384,7 +374,6 @@ def test_tiny_positive_alpha_fits_finitely_or_raises_value_error():
                 alpha=np.nextafter(0.0, 1.0),
                 nlambda=2,
                 n_threads=1,
-                backend="rust",
                 family="binomial",
             )
         except ValueError:

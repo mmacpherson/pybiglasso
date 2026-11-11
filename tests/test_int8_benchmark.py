@@ -194,29 +194,12 @@ def test_benchmark_rejects_silent_truncation(benchmark, monkeypatch):
         benchmark.checked_fit(None, None)
 
 
-def test_benchmark_accepts_only_numba_deprecation(benchmark, monkeypatch):
-    def fit(*args, **kwargs):
-        warnings.warn(
-            "The numba backend is deprecated and slated for removal in pybiglasso 0.4.0",
-            FutureWarning,
-            stacklevel=2,
-        )
-        return range(kwargs["nlambda"])
-
-    monkeypatch.setattr(benchmark.bl, "biglasso", fit)
-    path, seconds = benchmark.checked_fit(None, None, nlambda=7)
-    assert len(path) == 7
-    assert seconds >= 0
-
-
 def test_benchmark_rejects_actual_unconverged_fit(benchmark):
     # Correlated predictors require several coordinate sweeps at this lambda.
     X = np.asfortranarray([[-1.0, -2.0], [-1.0, 0.0], [1.0, 0.0], [1.0, 2.0]])
     y = 3 + 2 * X[:, 0] - X[:, 1]
     with pytest.raises(UserWarning, match="converg|iteration"):
-        benchmark.checked_fit(
-            X, y, family="gaussian", backend="rust", max_iter=1, n_threads=1
-        )
+        benchmark.checked_fit(X, y, family="gaussian", max_iter=1, n_threads=1)
 
 
 def test_benchmark_records_each_balanced_fit_interval(benchmark, monkeypatch, tmp_path):

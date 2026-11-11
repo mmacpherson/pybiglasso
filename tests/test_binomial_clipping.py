@@ -41,7 +41,6 @@ def test_default_fits_analytic_log_odds_above_ten():
                 X,
                 y,
                 family="binomial",
-                backend="rust",
                 alpha=1.0,
                 lambdas=[lam],
                 eps=1e-14,

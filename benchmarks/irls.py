@@ -57,7 +57,6 @@ def main():
                         X,
                         y,
                         family="binomial",
-                        backend="rust",
                         alpha=0.5,
                         nlambda=30,
                         lambda_min=0.05,
