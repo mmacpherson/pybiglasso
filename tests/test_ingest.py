@@ -293,6 +293,71 @@ def test_decimal_source_requires_exact_binary_representation(tmp_path):
     assert result.X.column(0)[0].as_py() == float(Decimal("0.1"))
 
 
+def test_pandas_physical_index_is_not_a_feature(tmp_path):
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame({"x": [1, 2]}, index=pd.Index([10, 20], name="row"))
+    table = pa.Table.from_pandas(frame)
+    with pytest.raises(ValueError, match="reset_index.*drop=True"):
+        ingest(table, tmp_path / "indexed.arrow")
+
+
+def test_failed_ingest_removes_created_directories(tmp_path):
+    source = tmp_path / "bad.csv"
+    source.write_text("x\nnot-a-number\n")
+    cache = tmp_path / "cache"
+    with pytest.raises(ValueError):
+        ingest(source, cache_dir=cache)
+    assert list(cache.iterdir()) == []
+
+    output = tmp_path / "new" / "nested" / "data.arrow"
+    with pytest.raises(ValueError):
+        ingest(source, output)
+    assert not (tmp_path / "new").exists()
+
+    stream_output = tmp_path / "stream" / "nested" / "data.arrow"
+    with pytest.raises(ValueError):
+        ingest(pa.table({"x": [1, None]}), stream_output)
+    assert not (tmp_path / "stream").exists()
+
+
+def test_ingest_option_validation_is_specific(tmp_path):
+    source = tmp_path / "source.csv"
+    source.write_text("x\n1\n")
+    with pytest.raises(ValueError, match="unselected or unknown.*missing"):
+        ingest(source, tmp_path / "unknown.arrow", dtypes={"missing": "float64"})
+    with pytest.raises(ValueError, match="Unsupported dtype.*int64"):
+        ingest(source, tmp_path / "dtype.arrow", dtypes={"x": "int64"})
+    with pytest.raises(ValueError, match="sheet is only valid"):
+        ingest(source, tmp_path / "sheet.arrow", sheet="Data")
+    with pytest.raises(ValueError, match="cache_dir cannot be used"):
+        ingest(
+            source,
+            tmp_path / "out.arrow",
+            cache_dir=tmp_path / "cache",
+        )
+    result = ingest(source, tmp_path / "numpy-int.arrow", block_size=np.int64(1))
+    assert result.X.shape == (1, 1)
+
+
+def test_csv_text_parsing_edge_cases(tmp_path):
+    source = tmp_path / "source.csv"
+    source.write_text("x\n1_000\n")
+    with pytest.raises(ValueError, match="1_000"):
+        ingest(source, tmp_path / "underscore.arrow")
+    source.write_text("x\n1e-400\n")
+    with pytest.raises(ValueError, match="1e-400"):
+        ingest(source, tmp_path / "underflow.arrow")
+    source.write_text("x\n1e400\n")
+    with pytest.raises(ValueError, match="1e400"):
+        ingest(source, tmp_path / "overflow.arrow")
+    source.write_text("x\ntrue\n2\n")
+    assert ingest(source, tmp_path / "mixed.arrow").X.column(0).to_pylist() == [1, 2]
+    source.write_text("x\n-0\n")
+    assert ingest(source, tmp_path / "minus-zero.arrow").X.column(0).to_pylist() == [
+        False
+    ]
+
+
 def test_excel_round_trip_against_independent_reader(tmp_path):
     openpyxl = pytest.importorskip("openpyxl")
     source = tmp_path / "source.xlsx"
@@ -317,6 +382,8 @@ def test_excel_round_trip_against_independent_reader(tmp_path):
         assert actual.column("x").to_pylist() == [row[0] for row in rows]
         assert actual.column("bit").to_pylist() == [row[1] for row in rows]
     np.testing.assert_array_equal(result.y, [row[2] for row in rows])
+    with pytest.raises(ValueError, match="Unknown Excel sheet.*Missing"):
+        ingest(source, tmp_path / "missing-sheet.arrow", sheet="Missing")
 
 
 def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_path):

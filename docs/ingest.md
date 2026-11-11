@@ -67,6 +67,8 @@ relation's Arrow reader or an ADBC Arrow reader. It uses Arrow's standard
 `RecordBatchReader.from_stream` interface, without adapters for each tool.
 It acquires and consumes the stream once; empty batches do not end the stream.
 Pass the Arrow reader exported by a cursor, rather than the database connection.
+Pandas index columns materialized in Arrow are rejected rather than silently
+becoming model features; call `frame.reset_index(drop=True)` before conversion.
 
 **Stream producers must supply every batch using the declared schema.**
 Ingest preserves and validates the schema exposed by the stream; it cannot
@@ -136,6 +138,9 @@ Unsupported exact types are not silently rounded: for example, an integer
 `9007199254740993` is rejected. Missing, nonnumeric and nonfinite selected
 values are rejected with the column name and one-based data-row number
 (excluding the header). Unselected columns are not numerically validated.
+CSV numeric text follows ordinary decimal syntax: underscores, overflow and
+nonzero values that underflow float64 are rejected. Boolean text may share a
+column with integers (`true` is 1), and integer `-0` is boolean false.
 
 ## Bounded conversion
 
@@ -157,7 +162,8 @@ bool columns. Source size and modification time are checked between passes.
   blocks. Compressed source batches must be decoded by Arrow; their original
   batch size therefore bounds the decoding allocation, not `block_size`.
 - Excel uses openpyxl's read-only worksheet iterator. `sheet` selects a named
-  worksheet; otherwise the first is used. Formula cells need stored values;
+  worksheet and an unknown name is an error; otherwise the first is used.
+  Formula cells need stored values;
   external workbook links are not loaded. **The workbook's complete
   shared-string table may be held in memory, including strings in unselected
   columns or sheets.** `read_only=True` does not make this table block-bounded.
@@ -227,6 +233,8 @@ remove them only after all mappings are no longer in use.
 There is no implicit temporary destination or automatic artifact deletion.
 Publication links the response first and the metadata-bearing Feather file
 last, so a visible completed Feather output has its companion ready.
+If conversion fails, ingest removes only directories that the call created; an
+existing cache root and pre-existing output parents are left untouched.
 
 Tests compare values and types against independent Arrow/openpyxl source
 reads, check row errors, selection and caching, and on Linux put the first

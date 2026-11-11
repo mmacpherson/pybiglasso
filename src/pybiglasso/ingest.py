@@ -10,6 +10,7 @@ import math
 import numbers
 import os
 import re
+import shutil
 import struct
 import tempfile
 import zipfile
@@ -122,13 +123,17 @@ def _numeric(value, column, row, dtype=None):
     if isinstance(value, str):
         text = value.strip()
         try:
+            if "_" in text:
+                raise ValueError
             if text.lower() in ("true", "false"):
                 value = text.lower() == "true"
             elif _INTEGER.fullmatch(text):
                 value = int(text)
             else:
                 number = Decimal(text)
-                if not number.is_finite() or number.adjusted() > 308:
+                if not number.is_finite():
+                    raise ValueError
+                if number.adjusted() > 308 or (number and float(number) == 0):
                     raise ValueError
                 # Integral decimal/exponent spellings must not round via f64.
                 value = (
@@ -142,16 +147,20 @@ def _numeric(value, column, row, dtype=None):
                 )
         except (ValueError, InvalidOperation, OverflowError):
             raise ValueError(
-                f"Column {column!r}, row {row}: missing or nonnumeric value."
+                f"Column {column!r}, row {row}: missing or nonnumeric value {value!r}."
             ) from None
     if not isinstance(value, (bool, int, float)):
-        raise ValueError(f"Column {column!r}, row {row}: missing or nonnumeric value.")
+        raise ValueError(
+            f"Column {column!r}, row {row}: missing or nonnumeric value {value!r}."
+        )
     try:
         finite = math.isfinite(value)
     except OverflowError:
         finite = False
     if not finite:
-        raise ValueError(f"Column {column!r}, row {row}: nonfinite numeric value.")
+        raise ValueError(
+            f"Column {column!r}, row {row}: nonfinite numeric value {value!r}."
+        )
     return value
 
 
@@ -191,7 +200,7 @@ def _headers(source, pa, sheet, excel_shared_strings_limit):
     if suffix == ".xlsx":
         workbook = _workbook(source, excel_shared_strings_limit)
         try:
-            worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
+            worksheet = _worksheet(workbook, sheet)
             return _names(next(worksheet.iter_rows(values_only=True), ()))
         finally:
             workbook.close()
@@ -303,6 +312,15 @@ def _workbook(source, excel_shared_strings_limit):
     )
 
 
+def _worksheet(workbook, sheet):
+    if sheet is None:
+        return workbook.worksheets[0]
+    try:
+        return workbook[sheet]
+    except KeyError:
+        raise ValueError(f"Unknown Excel sheet: {sheet!r}") from None
+
+
 def _row_block_size(block_size, columns):
     return min(block_size, max(1, _MAX_BLOCK_CELLS // len(columns)))
 
@@ -373,7 +391,7 @@ def _blocks(
     else:
         workbook = _workbook(source, excel_shared_strings_limit)
         try:
-            worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
+            worksheet = _worksheet(workbook, sheet)
             rows = worksheet.iter_rows(values_only=True)
             next(rows, None)
             indices = [all_names.index(name) for name in columns]
@@ -425,7 +443,8 @@ def _infer(blocks, columns, overrides):
                 ]
                 if not candidates[name]:
                     raise ValueError(
-                        f"Column {name!r}, row {index}: no supported exact dtype."
+                        f"Column {name!r}, row {index}: no supported exact dtype "
+                        f"for value {value!r}."
                     )
         count += length
     if not count:
@@ -450,7 +469,9 @@ def _stage(blocks, columns, types, directory, count):
             for index, value in enumerate(values, seen + 1):
                 if not _exact(value, types[name]):
                     raise ValueError(
-                        f"Column {name!r}, row {index}: no supported exact dtype."
+                        f"Column {name!r}, row {index}: no supported exact dtype; "
+                        f"value {value!r} is not representable as target dtype "
+                        f"{types[name]!r}."
                     )
             array = np.asarray(values, dtype=types[name])
             if types[name] == "bool":
@@ -712,6 +733,18 @@ def _ingest_stream(
     fingerprint=None,
     key=None,
 ):
+    pandas_metadata = (reader.schema.metadata or {}).get(b"pandas")
+    if pandas_metadata is not None:
+        try:
+            index_columns = json.loads(pandas_metadata).get("index_columns", [])
+        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+            index_columns = []
+        physical_index = [name for name in index_columns if isinstance(name, str)]
+        if physical_index:
+            raise ValueError(
+                "Pandas index columns are not features; call reset_index(drop=True) "
+                "before ingest."
+            )
     names = _names(reader.schema.names)
     selected = _selection(names, response, features, exclude, match)
     preserve = isinstance(dtypes, str) and dtypes == "preserve"
@@ -824,11 +857,18 @@ def _dtype_overrides(dtypes, selected):
         overrides = {name: np.dtype(dtype).name for name, dtype in dtypes.items()}
     else:
         raise ValueError("dtypes must be 'auto', 'preserve' or a mapping.")
-    if set(overrides) - set(selected) or any(
-        dtype not in _TYPES for dtype in overrides.values()
-    ):
+    unknown = set(overrides) - set(selected)
+    if unknown:
         raise ValueError(
-            "dtype overrides must name selected features and supported types."
+            f"dtype overrides name unselected or unknown features: {sorted(unknown)!r}."
+        )
+    unsupported = {
+        name: dtype for name, dtype in overrides.items() if dtype not in _TYPES
+    }
+    if unsupported:
+        raise ValueError(
+            f"Unsupported dtype overrides {unsupported!r}; supported types are "
+            f"{_TYPES}."
         )
     return overrides
 
@@ -903,15 +943,40 @@ def ingest(
         or excel_shared_strings_limit <= 0
     ):
         raise ValueError("excel_shared_strings_limit must be a positive integer.")
+    block_size = int(block_size)
+    excel_shared_strings_limit = int(excel_shared_strings_limit)
     if not is_path:
         path = Path(out).absolute()
         if path.exists() or path.with_suffix(path.suffix + ".response").exists():
             raise FileExistsError(f"Ingest output already exists: {path}")
-        with pa.RecordBatchReader.from_stream(source) as reader:
-            return _ingest_stream(
-                reader, path, response, features, exclude, match, dtypes, block_size, pa
-            )
+        missing_parents = []
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
+        try:
+            with pa.RecordBatchReader.from_stream(source) as reader:
+                return _ingest_stream(
+                    reader,
+                    path,
+                    response,
+                    features,
+                    exclude,
+                    match,
+                    dtypes,
+                    block_size,
+                    pa,
+                )
+        except Exception:
+            for directory in missing_parents:
+                if directory.exists():
+                    shutil.rmtree(directory)
+            raise
     source = Path(source).resolve(strict=True)
+    if sheet is not None and source.suffix.lower() != ".xlsx":
+        raise ValueError("sheet is only valid for Excel .xlsx sources.")
+    if out is not None and cache_dir is not None:
+        raise ValueError("cache_dir cannot be used when out is explicit.")
     names = _headers(source, pa, sheet, excel_shared_strings_limit)
     selected = _selection(names, response, features, exclude, match)
     overrides = _dtype_overrides(dtypes, selected)
@@ -928,17 +993,32 @@ def ingest(
         excel_shared_strings_limit=excel_shared_strings_limit,
     )
     key = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
+    cleanup_paths = []
     if out is None:
         root = Path(cache_dir).absolute()
         root.mkdir(parents=True, exist_ok=True)
         directory = (
             root / key if cache else Path(tempfile.mkdtemp(prefix="ingest-", dir=root))
         )
+        if not cache or not directory.exists():
+            cleanup_paths.append(directory)
         directory.mkdir(exist_ok=True)
         path = directory / "data.feather"
     else:
         path = Path(out).absolute()
+        missing_parents = []
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
         path.parent.mkdir(parents=True, exist_ok=True)
+        cleanup_paths.extend(missing_parents)
+
+    def cleanup_failed_output():
+        for candidate in cleanup_paths:
+            if candidate.exists():
+                shutil.rmtree(candidate)
+
     response_path = path.with_suffix(path.suffix + ".response")
     if cache and path.exists():
         metadata = _read_metadata(path)
@@ -948,38 +1028,51 @@ def ingest(
         raise FileExistsError(f"Ingest output already exists: {path}")
 
     if isinstance(dtypes, str) and dtypes == "preserve":
-        with _preserve_reader(source, columns, block_size, pa) as reader:
-            return _ingest_stream(
-                reader,
-                path,
-                response,
-                selected,
-                None,
-                None,
-                dtypes,
-                block_size,
-                pa,
-                (source, fingerprint),
-                key,
-            )
+        try:
+            with _preserve_reader(source, columns, block_size, pa) as reader:
+                return _ingest_stream(
+                    reader,
+                    path,
+                    response,
+                    selected,
+                    None,
+                    None,
+                    dtypes,
+                    block_size,
+                    pa,
+                    (source, fingerprint),
+                    key,
+                )
+        except Exception:
+            cleanup_failed_output()
+            raise
 
     def blocks():
         return _blocks(
             source, columns, names, block_size, sheet, pa, excel_shared_strings_limit
         )
 
-    # The response is separate solver input, always exactly representable f64.
-    types, count = _infer(
-        blocks(),
-        columns,
-        {**overrides, **({response: _RESPONSE_DTYPE} if response is not None else {})},
-    )
-    _check_source(source, fingerprint)
-    with tempfile.TemporaryDirectory(prefix=".ingest-", dir=path.parent) as temporary:
-        staging = Path(temporary)
-        raw, _ = _stage(blocks(), columns, types, staging, count)
-        _check_source(source, fingerprint)
-        metadata = _publish(
-            staging, raw, selected, types, count, path, response, key, pa
+    try:
+        # The response is separate solver input, always exactly representable f64.
+        types, count = _infer(
+            blocks(),
+            columns,
+            {
+                **overrides,
+                **({response: _RESPONSE_DTYPE} if response is not None else {}),
+            },
         )
-    return _open_result(path, metadata)
+        _check_source(source, fingerprint)
+        with tempfile.TemporaryDirectory(
+            prefix=".ingest-", dir=path.parent
+        ) as temporary:
+            staging = Path(temporary)
+            raw, _ = _stage(blocks(), columns, types, staging, count)
+            _check_source(source, fingerprint)
+            metadata = _publish(
+                staging, raw, selected, types, count, path, response, key, pa
+            )
+        return _open_result(path, metadata)
+    except Exception:
+        cleanup_failed_output()
+        raise
