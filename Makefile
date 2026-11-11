@@ -96,10 +96,10 @@ test-recipes-tools:
 
 # R comparisons; set CONTAINER=podman to use podman instead
 CONTAINER ?= docker
-R_VERSION ?= latest
-R_TAG = $(if $(filter latest,$(R_VERSION)),latest,r$(R_VERSION))
 # the R release whose package snapshot made tests/fixtures (biglasso 1.7.2)
 FIXTURES_R = 4.6.1
+R_VERSION ?= $(FIXTURES_R)
+R_TAG = $(if $(filter latest,$(R_VERSION)),latest,r$(R_VERSION))
 R_ENV = CONTAINER=$(CONTAINER) R_IMAGE=pybiglasso-r:$(R_TAG)
 
 .PHONY: r-image
