@@ -67,8 +67,11 @@ relation's Arrow reader or an ADBC Arrow reader. It uses Arrow's standard
 `RecordBatchReader.from_stream` interface, without adapters for each tool.
 It acquires and consumes the stream once; empty batches do not end the stream.
 Pass the Arrow reader exported by a cursor, rather than the database connection.
-Pandas index columns materialized in Arrow are rejected rather than silently
-becoming model features; call `frame.reset_index(drop=True)` before conversion.
+Pandas index columns materialized in Arrow are not selected implicitly. Choose
+model columns with `features=` or `exclude=`, or call
+`frame.reset_index(drop=True)` before exporting a stream. An index named
+explicitly in `features=` is treated as an intentional feature. The same rule
+applies to Parquet and Feather paths carrying pandas schema metadata.
 
 **Stream producers must supply every batch using the declared schema.**
 Ingest preserves and validates the schema exposed by the stream; it cannot
@@ -158,6 +161,9 @@ bool columns. Source size and modification time are checked between passes.
   records work at the default. Blank data lines are rejected; an ordinary
   trailing newline, CRLF and a UTF-8 BOM are accepted.
 - Parquet uses bounded `iter_batches`, respecting column selection.
+  Its decoder may retain column pages for a selected row group even when the
+  yielded batch is smaller, so source decoding is bounded by that row group's
+  selected, uncompressed data rather than by `block_size` alone.
 - Feather files are read one existing record batch at a time, then sliced into
   blocks. Compressed source batches must be decoded by Arrow; their original
   batch size therefore bounds the decoding allocation, not `block_size`.
@@ -196,9 +202,14 @@ Parquet when a strict blockwise-memory workflow is needed.
 
 For non-CSV readers `block_size` counts rows, but each consumer block is also
 capped at 262,144 selected cells. Wide inputs therefore use fewer rows per
-block instead of multiplying conversion memory by their column count. Output
-disk space must cover both column staging and the final Feather file during
-conversion.
+block instead of multiplying Python conversion objects by their column count.
+Arrow-backed batches convert one column to Python values at a time. During the
+final IPC write, the writer maps every staged feature column; those file-backed
+pages are bounded by the logical output size, not by one consumer block. Peak
+RSS is therefore bounded by the selected source row group or record batch, the
+logical output size, the 262,144-cell consumer block and reader/writer metadata,
+not by `block_size` alone. Output disk space must cover both column staging and
+the final Feather file during conversion.
 
 ## Persistent outputs and reuse
 
@@ -233,8 +244,11 @@ remove them only after all mappings are no longer in use.
 There is no implicit temporary destination or automatic artifact deletion.
 Publication links the response first and the metadata-bearing Feather file
 last, so a visible completed Feather output has its companion ready.
-If conversion fails, ingest removes only directories that the call created; an
-existing cache root and pre-existing output parents are left untouched.
+Output storage must support hard links; this preserves atomic, no-overwrite
+publication and is not available on filesystems such as exFAT. If conversion
+fails, ingest removes a directory created by the call only while it remains
+empty; an existing cache root, pre-existing output parents and concurrently
+published contents are left untouched.
 
 Tests compare values and types against independent Arrow/openpyxl source
 reads, check row errors, selection and caching, and on Linux put the first

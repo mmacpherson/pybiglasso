@@ -88,8 +88,16 @@ def test_default_csv_block_handles_very_wide_rows_and_headers(tmp_path):
 def test_csv_rejects_blank_data_lines(tmp_path, header, row):
     source = tmp_path / "blank.csv"
     source.write_text(f"{header}\n{row}\n\n{row}\n")
-    with pytest.raises(ValueError, match=r"row|line|CSV"):
+    with pytest.raises(ValueError, match=r"Column 'x', row 2"):
         ingest(source, tmp_path / "blank.arrow")
+
+
+def test_csv_ragged_row_reports_parse_error_not_block_size(tmp_path):
+    source = tmp_path / "ragged.csv"
+    source.write_text("x,y,z\n1,2,3\n4,5\n")
+    with pytest.raises(ValueError, match=r"Expected 3 columns, got 2") as error:
+        ingest(source, tmp_path / "ragged.arrow")
+    assert "block_size" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -292,13 +300,56 @@ def test_decimal_source_requires_exact_binary_representation(tmp_path):
     result = ingest(source, tmp_path / "rounded.arrow", dtypes={"x": "float64"})
     assert result.X.column(0)[0].as_py() == float(Decimal("0.1"))
 
+    pq.write_table(
+        pa.table(
+            {
+                "x": [Decimal("0.25"), Decimal("0.50")],
+                "y": [Decimal("9007199254740993"), Decimal("9007199254740995")],
+            }
+        ),
+        source,
+    )
+    with pytest.raises(ValueError, match="Column 'y'.*no supported exact dtype"):
+        ingest(
+            source,
+            tmp_path / "response.arrow",
+            response="y",
+            dtypes={"x": "float64"},
+        )
+    pq.write_table(pa.table({"x": [Decimal("1.00000000000000000001")]}), source)
+    with pytest.raises(ValueError, match="Column 'x'.*no supported exact dtype"):
+        ingest(source, tmp_path / "float32.arrow", dtypes={"x": "float32"})
 
-def test_pandas_physical_index_is_not_a_feature(tmp_path):
+
+@pytest.mark.parametrize("format", ["stream", "parquet", "feather"])
+@pytest.mark.parametrize("dtypes", ["auto", {"x": "int8"}, "preserve"])
+def test_pandas_physical_index_requires_explicit_selection(tmp_path, format, dtypes):
     pd = pytest.importorskip("pandas")
     frame = pd.DataFrame({"x": [1, 2]}, index=pd.Index([10, 20], name="row"))
     table = pa.Table.from_pandas(frame)
-    with pytest.raises(ValueError, match="reset_index.*drop=True"):
-        ingest(table, tmp_path / "indexed.arrow")
+    source = table
+    if format == "parquet":
+        source = tmp_path / "indexed.parquet"
+        pq.write_table(table, source)
+    elif format == "feather":
+        source = tmp_path / "indexed.feather"
+        feather.write_feather(table, source)
+    with pytest.raises(ValueError, match="Pandas index columns.*row"):
+        ingest(source, tmp_path / f"implicit-{format}.arrow", dtypes=dtypes)
+    selected = ingest(
+        source,
+        tmp_path / f"selected-{format}.arrow",
+        features=["x"],
+        dtypes=dtypes,
+    )
+    assert selected.feature_names == ("x",)
+    explicit = ingest(
+        source,
+        tmp_path / f"explicit-{format}.arrow",
+        features=["x", "row"],
+        dtypes=dtypes,
+    )
+    assert explicit.feature_names == ("x", "row")
 
 
 def test_failed_ingest_removes_created_directories(tmp_path):
@@ -318,6 +369,27 @@ def test_failed_ingest_removes_created_directories(tmp_path):
     with pytest.raises(ValueError):
         ingest(pa.table({"x": [1, None]}), stream_output)
     assert not (tmp_path / "stream").exists()
+
+
+def test_failed_ingest_does_not_remove_concurrent_output(tmp_path, monkeypatch):
+    import importlib
+
+    module = importlib.import_module("pybiglasso.ingest")
+    bad = tmp_path / "bad.csv"
+    good = tmp_path / "good.csv"
+    bad.write_text("x\nnot-a-number\n")
+    good.write_text("x\n1\n")
+    original = module._infer
+
+    def interleave(*args, **kwargs):
+        monkeypatch.setattr(module, "_infer", original)
+        ingest(good, tmp_path / "shared" / "successful.arrow")
+        raise ValueError("first ingest failed")
+
+    monkeypatch.setattr(module, "_infer", interleave)
+    with pytest.raises(ValueError, match="first ingest failed"):
+        ingest(bad, tmp_path / "shared" / "failed.arrow")
+    assert (tmp_path / "shared" / "successful.arrow").exists()
 
 
 def test_ingest_option_validation_is_specific(tmp_path):
