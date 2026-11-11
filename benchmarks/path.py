@@ -275,7 +275,6 @@ def fit_pybiglasso(
             eps=eps,
             r_compatible=r_compatible,
             family=family,
-            backend="rust" if family == "gaussian" else None,
         )
     coef = path.coef.toarray().T * path.scale
     intercept = standardized_intercept(path)
@@ -932,6 +931,9 @@ def main():
         args.out = ap.parse_known_args()[1][0]
         return run_one(args)
 
+    if args.out is None:
+        ap.error("--out is required")
+
     import numpy as np
 
     datasets = args.dataset or list(DATASETS)
@@ -946,8 +948,7 @@ def main():
     )
     alphas = args.alpha or [1.0]
     threads = args.threads or [1]
-    filename = "path-gaussian.jsonl" if args.family == "gaussian" else "path.jsonl"
-    out = pathlib.Path(args.out or HERE / "results" / filename)
+    out = pathlib.Path(args.out)
     if args.record and (out.exists() or out.with_suffix(".audit.jsonl").exists()):
         raise FileExistsError("recording requires new result and audit files")
     out.parent.mkdir(parents=True, exist_ok=True)
