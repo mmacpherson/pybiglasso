@@ -1,6 +1,7 @@
 """One-shot producers and exact, bounded Arrow-stream materialization."""
 
 import importlib
+from decimal import Decimal
 
 import numpy as np
 import pytest
@@ -91,6 +92,35 @@ def test_auto_stream_matches_first_principles(tmp_path, kind):
     assert result.X.schema.types == [pa.float32(), pa.bool_()]
     assert result.X.to_pydict() == {"f": [0.25, -0.0, 0.5], "x": [False, True, False]}
     assert np.signbit(result.X["f"][1].as_py())
+
+
+def test_decimal_stream_rounding_only_for_explicit_float64_feature(tmp_path):
+    table = pa.table(
+        {
+            "x": [Decimal("0.1"), Decimal("0.2")],
+            "y": [Decimal("9007199254740993"), Decimal("9007199254740995")],
+        }
+    )
+    with pytest.raises(ValueError, match="Column 'y'.*no supported exact dtype"):
+        ingest(
+            table,
+            tmp_path / "response.arrow",
+            response="y",
+            dtypes={"x": "float64"},
+        )
+    inexact_float32 = pa.table({"x": [Decimal("1.00000000000000000001")]})
+    with pytest.raises(ValueError, match="Column 'x'.*no supported exact dtype"):
+        ingest(
+            inexact_float32,
+            tmp_path / "float32.arrow",
+            dtypes={"x": "float32"},
+        )
+    rounded = ingest(
+        table.select(["x"]),
+        tmp_path / "float64.arrow",
+        dtypes={"x": "float64"},
+    )
+    assert rounded.X["x"].to_pylist() == [0.1, 0.2]
 
 
 @pytest.mark.parametrize("options", [{}, {"cache": True}, {"cache_dir": "unused"}])
@@ -187,10 +217,10 @@ def test_auto_never_reacquires_and_uses_lossless_spool(tmp_path, monkeypatch):
     module = importlib.import_module("pybiglasso.ingest")
     original = module._stage
 
-    def stage(blocks, columns, types, directory, count):
+    def stage(blocks, columns, types, directory, count, decimal_rounding=()):
         assert producer.reads == 2
         assert (directory / "source.arrow").exists()
-        return original(blocks, columns, types, directory, count)
+        return original(blocks, columns, types, directory, count, decimal_rounding)
 
     monkeypatch.setattr(module, "_stage", stage)
     result = ingest(producer, tmp_path / "data.feather")

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import csv
+import errno
 import fnmatch
 import hashlib
 import json
 import math
+import numbers
 import os
 import re
 import struct
@@ -35,6 +36,7 @@ _INTEGER = re.compile(r"[+-]?\d+\Z")
 _METADATA_KEY = b"pybiglasso.ingest"
 _FORMAT_VERSION = 1
 _RESPONSE_DTYPE = "<f8"
+_MAX_BLOCK_CELLS = 1 << 18
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,26 @@ class IngestResult:
     y: np.ndarray | None
     feature_names: tuple[str, ...]
     path: Path
+
+
+@dataclass(frozen=True)
+class _ArrowBlock:
+    """A batch whose Python values exist for only one column at a time."""
+
+    batch: object
+
+    @property
+    def num_rows(self):
+        return self.batch.num_rows
+
+    def __getitem__(self, name):
+        return self.batch.column(name).to_pylist()
+
+
+def _block_length(block, first_column):
+    return (
+        block.num_rows if isinstance(block, _ArrowBlock) else len(block[first_column])
+    )
 
 
 def _arrow():
@@ -101,12 +123,41 @@ def _selection(names, response, features, exclude, match):
     return tuple(selected)
 
 
-def _numeric(value, column, row):
+def _pandas_index_columns(metadata):
+    raw = (metadata or {}).get(b"pandas")
+    if raw is None:
+        return ()
+    try:
+        columns = json.loads(raw).get("index_columns", [])
+    except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+        return ()
+    return tuple(name for name in columns if isinstance(name, str))
+
+
+def _reject_implicit_pandas_indices(metadata, selected, features, source_kind):
+    if features is not None:
+        return
+    indices = [name for name in _pandas_index_columns(metadata) if name in selected]
+    if not indices:
+        return
+    guidance = (
+        "pass features= or exclude=, or call reset_index(drop=True) before ingest"
+        if source_kind == "stream"
+        else "pass features= or exclude= to choose model features explicitly"
+    )
+    raise ValueError(
+        f"Pandas index columns are not implicit model features: {indices!r}; {guidance}."
+    )
+
+
+def _numeric(value, column, row, allow_decimal_rounding=False):
     """Preserve integer precision before testing any floating representation."""
     if isinstance(value, Decimal):
         if not value.is_finite() or value.adjusted() > 308:
             raise ValueError(f"Column {column!r}, row {row}: nonfinite numeric value.")
-        if value == value.to_integral_value():
+        if allow_decimal_rounding:
+            value = float(value)
+        elif value == value.to_integral_value():
             value = int(value)
         else:
             converted = float(value)
@@ -118,13 +169,17 @@ def _numeric(value, column, row):
     if isinstance(value, str):
         text = value.strip()
         try:
+            if "_" in text:
+                raise ValueError
             if text.lower() in ("true", "false"):
                 value = text.lower() == "true"
             elif _INTEGER.fullmatch(text):
                 value = int(text)
             else:
                 number = Decimal(text)
-                if not number.is_finite() or number.adjusted() > 308:
+                if not number.is_finite():
+                    raise ValueError
+                if number.adjusted() > 308 or (number and float(number) == 0):
                     raise ValueError
                 # Integral decimal/exponent spellings must not round via f64.
                 value = (
@@ -138,16 +193,20 @@ def _numeric(value, column, row):
                 )
         except (ValueError, InvalidOperation, OverflowError):
             raise ValueError(
-                f"Column {column!r}, row {row}: missing or nonnumeric value."
+                f"Column {column!r}, row {row}: missing or nonnumeric value {value!r}."
             ) from None
     if not isinstance(value, (bool, int, float)):
-        raise ValueError(f"Column {column!r}, row {row}: missing or nonnumeric value.")
+        raise ValueError(
+            f"Column {column!r}, row {row}: missing or nonnumeric value {value!r}."
+        )
     try:
         finite = math.isfinite(value)
     except OverflowError:
         finite = False
     if not finite:
-        raise ValueError(f"Column {column!r}, row {row}: nonfinite numeric value.")
+        raise ValueError(
+            f"Column {column!r}, row {row}: nonfinite numeric value {value!r}."
+        )
     return value
 
 
@@ -166,24 +225,34 @@ def _exact(value, dtype):
         return False
 
 
-def _headers(source, pa, sheet, excel_shared_strings_limit):
+def _headers(source, pa, sheet, excel_shared_strings_limit, csv_block_size=None):
     suffix = source.suffix.lower()
     if suffix == ".csv":
-        with source.open(newline="", encoding="utf-8-sig") as stream:
-            return _names(next(csv.reader(stream), ()))
+        import pyarrow.csv as pc
+
+        try:
+            with pc.open_csv(
+                source,
+                read_options=pc.ReadOptions(block_size=csv_block_size),
+                parse_options=pc.ParseOptions(ignore_empty_lines=False),
+            ) as reader:
+                return _names(reader.schema.names), reader.schema.metadata
+        except pa.ArrowInvalid as error:
+            raise _csv_error(error, csv_block_size) from error
     if suffix in (".parquet", ".pq"):
         import pyarrow.parquet as pq
 
         with pq.ParquetFile(source) as reader:
-            return _names(reader.schema_arrow.names)
+            return _names(reader.schema_arrow.names), reader.schema_arrow.metadata
     if suffix in (".feather", ".arrow", ".ipc"):
         with pa.memory_map(str(source), "r") as mapping:
-            return _names(pa.ipc.open_file(mapping).schema.names)
+            schema = pa.ipc.open_file(mapping).schema
+            return _names(schema.names), schema.metadata
     if suffix == ".xlsx":
         workbook = _workbook(source, excel_shared_strings_limit)
         try:
-            worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
-            return _names(next(worksheet.iter_rows(values_only=True), ()))
+            worksheet = _worksheet(workbook, sheet)
+            return _names(next(worksheet.iter_rows(values_only=True), ())), None
         finally:
             workbook.close()
     raise ValueError("Source must be CSV, Parquet, Arrow file (Feather v2), or .xlsx.")
@@ -294,8 +363,44 @@ def _workbook(source, excel_shared_strings_limit):
     )
 
 
+def _worksheet(workbook, sheet):
+    if sheet is None:
+        return workbook.worksheets[0]
+    try:
+        return workbook[sheet]
+    except KeyError:
+        raise ValueError(f"Unknown Excel sheet: {sheet!r}") from None
+
+
+def _row_block_size(block_size, columns):
+    return min(block_size, max(1, _MAX_BLOCK_CELLS // len(columns)))
+
+
+def _csv_block_size(source, block_size):
+    with source.open("rb") as stream:
+        longest_line = max((len(line) for line in stream), default=0)
+    return max(block_size, longest_line + 1)
+
+
+def _csv_error(error, block_size):
+    message = str(error)
+    if "straddl" in message.lower() or "block boundary" in message.lower():
+        return ValueError(
+            f"Cannot parse CSV because a record exceeds ingest's "
+            f"block_size={block_size} bytes: {message}"
+        )
+    return ValueError(f"Cannot parse CSV: {message}")
+
+
 def _blocks(
-    source, columns, all_names, block_size, sheet, pa, excel_shared_strings_limit
+    source,
+    columns,
+    all_names,
+    block_size,
+    sheet,
+    pa,
+    excel_shared_strings_limit,
+    csv_block_size=None,
 ):
     """Yield selected columns; only a source batch or block is decoded at once."""
     suffix = source.suffix.lower()
@@ -307,49 +412,48 @@ def _blocks(
             include_columns=list(columns),
             strings_can_be_null=False,
         )
-        with pc.open_csv(
-            source,
-            read_options=pc.ReadOptions(block_size=block_size),
-            convert_options=options,
-        ) as reader:
-            for batch in reader:
-                yield dict(
-                    zip(
-                        columns,
-                        (column.to_pylist() for column in batch.columns),
-                        strict=True,
-                    )
-                )
+        try:
+            with pc.open_csv(
+                source,
+                read_options=pc.ReadOptions(block_size=csv_block_size),
+                parse_options=pc.ParseOptions(ignore_empty_lines=False),
+                convert_options=options,
+            ) as reader:
+                for batch in reader:
+                    yield _ArrowBlock(batch)
+        except pa.ArrowInvalid as error:
+            raise _csv_error(error, csv_block_size) from error
     elif suffix in (".parquet", ".pq"):
         import pyarrow.parquet as pq
 
         with pq.ParquetFile(source) as reader:
             for batch in reader.iter_batches(
-                batch_size=block_size, columns=list(columns), use_threads=False
+                batch_size=_row_block_size(block_size, columns),
+                columns=list(columns),
+                use_threads=False,
             ):
-                yield {name: batch.column(name).to_pylist() for name in columns}
+                yield _ArrowBlock(batch)
     elif suffix in (".feather", ".arrow", ".ipc"):
         with pa.memory_map(str(source), "r") as mapping:
             reader = pa.ipc.open_file(mapping)
             for index in range(reader.num_record_batches):
                 batch = reader.get_batch(index)
-                for start in range(0, batch.num_rows, block_size):
-                    yield {
-                        name: batch.column(name).slice(start, block_size).to_pylist()
-                        for name in columns
-                    }
+                row_block_size = _row_block_size(block_size, columns)
+                for start in range(0, batch.num_rows, row_block_size):
+                    yield _ArrowBlock(batch.slice(start, row_block_size))
     else:
         workbook = _workbook(source, excel_shared_strings_limit)
         try:
-            worksheet = workbook.worksheets[0] if sheet is None else workbook[sheet]
+            worksheet = _worksheet(workbook, sheet)
             rows = worksheet.iter_rows(values_only=True)
             next(rows, None)
             indices = [all_names.index(name) for name in columns]
             block = {name: [] for name in columns}
+            row_block_size = _row_block_size(block_size, columns)
             for row in rows:
                 for name, index in zip(columns, indices, strict=True):
                     block[name].append(row[index] if index < len(row) else None)
-                if len(block[columns[0]]) == block_size:
+                if len(block[columns[0]]) == row_block_size:
                     yield block
                     block = {name: [] for name in columns}
             if block[columns[0]]:
@@ -368,17 +472,17 @@ def _check_source(source, fingerprint):
         raise ValueError("Source changed during ingest.")
 
 
-def _infer(blocks, columns, overrides):
+def _infer(blocks, columns, overrides, decimal_rounding=()):
     candidates = {
         name: ([overrides[name]] if name in overrides else list(_TYPES))
         for name in columns
     }
     count = 0
     for block in blocks:
-        length = len(block[columns[0]])
+        length = _block_length(block, columns[0])
         for name in columns:
             for index, raw in enumerate(block[name], count + 1):
-                value = _numeric(raw, name, index)
+                value = _numeric(raw, name, index, name in decimal_rounding)
                 # Counts/IDs beyond the supported integer widths use f64,
                 # not f32, even when a particular integer happens to fit f32.
                 wide_integer = isinstance(value, int) and not -32768 <= value <= 32767
@@ -392,7 +496,8 @@ def _infer(blocks, columns, overrides):
                 ]
                 if not candidates[name]:
                     raise ValueError(
-                        f"Column {name!r}, row {index}: no supported exact dtype."
+                        f"Column {name!r}, row {index}: no supported exact dtype "
+                        f"for value {value!r}."
                     )
         count += length
     if not count:
@@ -400,7 +505,7 @@ def _infer(blocks, columns, overrides):
     return {name: candidates[name][0] for name in columns}, count
 
 
-def _stage(blocks, columns, types, directory, count):
+def _stage(blocks, columns, types, directory, count, decimal_rounding=()):
     tails = {
         name: np.empty(0, dtype=np.bool_) for name in columns if types[name] == "bool"
     }
@@ -409,15 +514,18 @@ def _stage(blocks, columns, types, directory, count):
     }
     seen = 0
     for block in blocks:
+        length = _block_length(block, columns[0])
         for name in columns:
             values = [
-                _numeric(raw, name, seen + index + 1)
+                _numeric(raw, name, seen + index + 1, name in decimal_rounding)
                 for index, raw in enumerate(block[name])
             ]
             for index, value in enumerate(values, seen + 1):
                 if not _exact(value, types[name]):
                     raise ValueError(
-                        f"Column {name!r}, row {index}: no supported exact dtype."
+                        f"Column {name!r}, row {index}: no supported exact dtype; "
+                        f"value {value!r} is not representable as target dtype "
+                        f"{types[name]!r}."
                     )
             array = np.asarray(values, dtype=types[name])
             if types[name] == "bool":
@@ -427,7 +535,7 @@ def _stage(blocks, columns, types, directory, count):
                 tails[name] = bits[complete:].copy()
             with paths[name].open("ab") as stream:
                 stream.write(array.tobytes())
-        seen += len(block[columns[0]])
+        seen += length
     if count is not None and seen != count:
         raise ValueError("Source row count changed during ingest.")
     for name, tail in tails.items():
@@ -623,15 +731,16 @@ def _publish(
 
 def _stream_blocks(reader, columns, block_size, spool=None):
     schema = reader.schema
+    row_block_size = _row_block_size(block_size, columns)
     for batch in reader:
         if not batch.schema.equals(schema, check_metadata=True):
             raise ValueError("Arrow stream schema changed during ingest.")
         # Empty batches carry a schema, not an end-of-stream indication.
-        for start in range(0, batch.num_rows, block_size):
-            selected = batch.select(list(columns)).slice(start, block_size)
+        for start in range(0, batch.num_rows, row_block_size):
+            selected = batch.select(list(columns)).slice(start, row_block_size)
             if spool is not None:
                 spool.write_batch(selected)
-            block = {name: selected.column(name).to_pylist() for name in columns}
+            block = _ArrowBlock(selected)
             del selected
             yield block
             del block
@@ -680,8 +789,12 @@ def _ingest_stream(
 ):
     names = _names(reader.schema.names)
     selected = _selection(names, response, features, exclude, match)
+    _reject_implicit_pandas_indices(
+        reader.schema.metadata, selected, features, "stream"
+    )
     preserve = isinstance(dtypes, str) and dtypes == "preserve"
     overrides = _dtype_overrides(dtypes, selected)
+    decimal_rounding = {name for name, dtype in overrides.items() if dtype == "float64"}
     columns = (*selected, *((response,) if response is not None else ()))
     schema = (
         pa.schema(
@@ -709,6 +822,7 @@ def _ingest_stream(
                 types,
                 staging,
                 None,
+                decimal_rounding,
             )
             if not count:
                 raise ValueError("Source must contain at least one data row.")
@@ -733,6 +847,7 @@ def _ingest_stream(
                         **overrides,
                         **({response: _RESPONSE_DTYPE} if response is not None else {}),
                     },
+                    decimal_rounding,
                 )
             raw, _ = _stage(
                 _spooled_blocks(spool_path, columns, block_size, pa),
@@ -740,6 +855,7 @@ def _ingest_stream(
                 types,
                 staging,
                 count,
+                decimal_rounding,
             )
         if fingerprint is not None:
             _check_source(*fingerprint)
@@ -761,7 +877,9 @@ def _preserve_reader(source, columns, block_size, pa):
                     metadata=file.schema_arrow.metadata,
                 ),
                 file.iter_batches(
-                    batch_size=block_size, columns=list(columns), use_threads=False
+                    batch_size=_row_block_size(block_size, columns),
+                    columns=list(columns),
+                    use_threads=False,
                 ),
             ) as reader:
                 yield reader
@@ -788,13 +906,29 @@ def _dtype_overrides(dtypes, selected):
         overrides = {name: np.dtype(dtype).name for name, dtype in dtypes.items()}
     else:
         raise ValueError("dtypes must be 'auto', 'preserve' or a mapping.")
-    if set(overrides) - set(selected) or any(
-        dtype not in _TYPES for dtype in overrides.values()
-    ):
+    unknown = set(overrides) - set(selected)
+    if unknown:
         raise ValueError(
-            "dtype overrides must name selected features and supported types."
+            f"dtype overrides name unselected or unknown features: {sorted(unknown)!r}."
+        )
+    unsupported = {
+        name: dtype for name, dtype in overrides.items() if dtype not in _TYPES
+    }
+    if unsupported:
+        raise ValueError(
+            f"Unsupported dtype overrides {unsupported!r}; supported types are "
+            f"{_TYPES}."
         )
     return overrides
+
+
+def _remove_empty_directories(directories):
+    for directory in directories:
+        try:
+            os.rmdir(directory)
+        except OSError as error:
+            if error.errno not in (errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST):
+                raise
 
 
 def ingest(
@@ -856,29 +990,61 @@ def ingest(
         raise ValueError("Specify a persistent out or cache_dir for ingest.")
     pa = _arrow()
     if (
-        not isinstance(block_size, int)
+        not isinstance(block_size, numbers.Integral)
         or isinstance(block_size, bool)
         or block_size <= 0
     ):
         raise ValueError("block_size must be a positive integer.")
     if (
-        not isinstance(excel_shared_strings_limit, int)
+        not isinstance(excel_shared_strings_limit, numbers.Integral)
         or isinstance(excel_shared_strings_limit, bool)
         or excel_shared_strings_limit <= 0
     ):
         raise ValueError("excel_shared_strings_limit must be a positive integer.")
+    block_size = int(block_size)
+    excel_shared_strings_limit = int(excel_shared_strings_limit)
     if not is_path:
         path = Path(out).absolute()
         if path.exists() or path.with_suffix(path.suffix + ".response").exists():
             raise FileExistsError(f"Ingest output already exists: {path}")
-        with pa.RecordBatchReader.from_stream(source) as reader:
-            return _ingest_stream(
-                reader, path, response, features, exclude, match, dtypes, block_size, pa
-            )
+        missing_parents = []
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
+        try:
+            with pa.RecordBatchReader.from_stream(source) as reader:
+                return _ingest_stream(
+                    reader,
+                    path,
+                    response,
+                    features,
+                    exclude,
+                    match,
+                    dtypes,
+                    block_size,
+                    pa,
+                )
+        except Exception:
+            _remove_empty_directories(missing_parents)
+            raise
     source = Path(source).resolve(strict=True)
-    names = _headers(source, pa, sheet, excel_shared_strings_limit)
+    if sheet is not None and source.suffix.lower() != ".xlsx":
+        raise ValueError("sheet is only valid for Excel .xlsx sources.")
+    if out is not None and cache_dir is not None:
+        raise ValueError("cache_dir cannot be used when out is explicit.")
+    csv_block_size = (
+        _csv_block_size(source, block_size) if source.suffix.lower() == ".csv" else None
+    )
+    names, source_metadata = _headers(
+        source, pa, sheet, excel_shared_strings_limit, csv_block_size
+    )
     selected = _selection(names, response, features, exclude, match)
+    _reject_implicit_pandas_indices(
+        source_metadata, selected, features, source.suffix.lower()
+    )
     overrides = _dtype_overrides(dtypes, selected)
+    decimal_rounding = {name for name, dtype in overrides.items() if dtype == "float64"}
     columns = (*selected, *((response,) if response is not None else ()))
     fingerprint = _fingerprint(source)
     options = dict(
@@ -892,17 +1058,30 @@ def ingest(
         excel_shared_strings_limit=excel_shared_strings_limit,
     )
     key = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
+    cleanup_paths = []
     if out is None:
         root = Path(cache_dir).absolute()
         root.mkdir(parents=True, exist_ok=True)
         directory = (
             root / key if cache else Path(tempfile.mkdtemp(prefix="ingest-", dir=root))
         )
+        if not cache or not directory.exists():
+            cleanup_paths.append(directory)
         directory.mkdir(exist_ok=True)
         path = directory / "data.feather"
     else:
         path = Path(out).absolute()
+        missing_parents = []
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
         path.parent.mkdir(parents=True, exist_ok=True)
+        cleanup_paths.extend(missing_parents)
+
+    def cleanup_failed_output():
+        _remove_empty_directories(cleanup_paths)
+
     response_path = path.with_suffix(path.suffix + ".response")
     if cache and path.exists():
         metadata = _read_metadata(path)
@@ -912,38 +1091,59 @@ def ingest(
         raise FileExistsError(f"Ingest output already exists: {path}")
 
     if isinstance(dtypes, str) and dtypes == "preserve":
-        with _preserve_reader(source, columns, block_size, pa) as reader:
-            return _ingest_stream(
-                reader,
-                path,
-                response,
-                selected,
-                None,
-                None,
-                dtypes,
-                block_size,
-                pa,
-                (source, fingerprint),
-                key,
-            )
+        try:
+            with _preserve_reader(source, columns, block_size, pa) as reader:
+                return _ingest_stream(
+                    reader,
+                    path,
+                    response,
+                    selected,
+                    None,
+                    None,
+                    dtypes,
+                    block_size,
+                    pa,
+                    (source, fingerprint),
+                    key,
+                )
+        except Exception:
+            cleanup_failed_output()
+            raise
 
     def blocks():
         return _blocks(
-            source, columns, names, block_size, sheet, pa, excel_shared_strings_limit
+            source,
+            columns,
+            names,
+            block_size,
+            sheet,
+            pa,
+            excel_shared_strings_limit,
+            csv_block_size,
         )
 
-    # The response is separate solver input, always exactly representable f64.
-    types, count = _infer(
-        blocks(),
-        columns,
-        {**overrides, **({response: _RESPONSE_DTYPE} if response is not None else {})},
-    )
-    _check_source(source, fingerprint)
-    with tempfile.TemporaryDirectory(prefix=".ingest-", dir=path.parent) as temporary:
-        staging = Path(temporary)
-        raw, _ = _stage(blocks(), columns, types, staging, count)
-        _check_source(source, fingerprint)
-        metadata = _publish(
-            staging, raw, selected, types, count, path, response, key, pa
+    try:
+        # The response is separate solver input, always exactly representable f64.
+        types, count = _infer(
+            blocks(),
+            columns,
+            {
+                **overrides,
+                **({response: _RESPONSE_DTYPE} if response is not None else {}),
+            },
+            decimal_rounding,
         )
-    return _open_result(path, metadata)
+        _check_source(source, fingerprint)
+        with tempfile.TemporaryDirectory(
+            prefix=".ingest-", dir=path.parent
+        ) as temporary:
+            staging = Path(temporary)
+            raw, _ = _stage(blocks(), columns, types, staging, count, decimal_rounding)
+            _check_source(source, fingerprint)
+            metadata = _publish(
+                staging, raw, selected, types, count, path, response, key, pa
+            )
+        return _open_result(path, metadata)
+    except Exception:
+        cleanup_failed_output()
+        raise

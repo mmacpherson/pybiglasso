@@ -14,6 +14,139 @@ pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="Linux RLIMIT_DATA accounting"
 )
 
+
+def test_wide_parquet_blocks_bound_converted_cells(tmp_path):
+    import importlib
+
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    module = importlib.import_module("pybiglasso.ingest")
+    nrow, ncol = 300, 2_000
+    source = tmp_path / "wide.parquet"
+    table = pa.table(
+        {
+            f"x{column}": pa.array(np.arange(nrow, dtype=np.int16))
+            for column in range(ncol)
+        }
+    )
+    pq.write_table(table, source, row_group_size=nrow)
+    columns = tuple(table.column_names)
+    largest = max(
+        len(block[columns[0]])
+        for block in module._blocks(source, columns, columns, 65_536, None, pa, 1 << 30)
+    )
+    assert largest <= module._MAX_BLOCK_CELLS // ncol
+
+
+WIDE_CHILD = textwrap.dedent("""
+    import ctypes, gc, json, sys, threading
+    from pathlib import Path
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from pybiglasso.ingest import ingest
+
+    source, small, output, mode = map(Path, sys.argv[1:])
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+    pa.set_memory_pool(pa.system_memory_pool())
+    warm = ingest(small, output.with_suffix('.warm.arrow'), dtypes='preserve')
+    del warm
+    gc.collect()
+    pa.default_memory_pool().release_unused()
+    ctypes.CDLL(None).malloc_trim(0)
+    def rss():
+        with open('/proc/self/status') as status:
+            return next(int(line.split()[1]) * 1024 for line in status
+                        if line.startswith('VmRSS:'))
+    baseline = rss()
+    peak = [baseline]
+    stop = threading.Event()
+    def sample():
+        while not stop.wait(.001):
+            peak[0] = max(peak[0], rss())
+    monitor = threading.Thread(target=sample)
+    monitor.start()
+    if mode.name == 'control':
+        result = pq.read_table(source, use_threads=False).to_pydict()
+        assert result
+    else:
+        result = ingest(source, output, dtypes='preserve')
+        assert result.X.num_rows * result.X.num_columns == 1 << 22
+    peak[0] = max(peak[0], rss())
+    stop.set()
+    monitor.join()
+    print(json.dumps({'peak': peak[0] - baseline}))
+""")
+
+
+@pytest.fixture(scope="module")
+def same_size_wide_parquet(tmp_path_factory):
+    import gc
+
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    directory = tmp_path_factory.mktemp("wide-parquet-memory")
+    paths = []
+    for name, rows, columns in (
+        ("narrow", 65_536, 64),
+        ("wide", 2_048, 2_048),
+    ):
+        values = np.arange(rows, dtype=np.float64)
+        table = pa.table({f"x{j}": pa.array(values) for j in range(columns)})
+        path = directory / f"{name}.parquet"
+        pq.write_table(table, path, row_group_size=rows, compression="none")
+        paths.append(path)
+        del table
+        gc.collect()
+    small = directory / "small.parquet"
+    pq.write_table(pa.table({"x": [1.0, 2.0]}), small, compression="none")
+    return paths, small
+
+
+@pytest.mark.parametrize("width", ["narrow", "wide"])
+@pytest.mark.parametrize("mode", ["ingest", "control"])
+def test_wide_parquet_peak_is_bounded_by_source_size(
+    tmp_path, same_size_wide_parquet, width, mode
+):
+    paths, small = same_size_wide_parquet
+    source = paths[width == "wide"]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            WIDE_CHILD,
+            str(source),
+            str(small),
+            str(tmp_path / f"{width}-{mode}.arrow"),
+            mode,
+        ],
+        env={
+            **os.environ,
+            "MALLOC_ARENA_MAX": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    peak = json.loads(completed.stdout.splitlines()[-1])["peak"]
+    logical_bytes = (1 << 22) * 8
+    # Source decoding, staging, mapped writer input and the final file may each
+    # account for the logical values; add 32 MiB of reader/writer metadata.
+    # This derives one width-independent ceiling from source size.
+    budget = 4 * logical_bytes + (32 << 20)
+    assert (peak <= budget) if mode == "ingest" else (peak > budget), (
+        peak,
+        budget,
+    )
+
+
 CHILD = textwrap.dedent("""
     import ctypes, gc, json, os, resource, sys
     # glibc snapshots RLIMIT_STACK at exec for C++ worker stacks. Bound those

@@ -259,6 +259,7 @@ class _ArrowMatrix:
         if len(set(self.columns)) != len(self.columns):
             raise ValueError("Arrow X requires unique column names.")
         self._columns = []
+        self._chunk_ends = []
         for j, name in enumerate(self.columns):
             column = table.column(j)
             chunks = column.chunks if isinstance(column, pa.ChunkedArray) else [column]
@@ -270,7 +271,11 @@ class _ArrowMatrix:
             if sum(n for _, _, n in descriptors) != self.shape[0]:
                 raise ValueError(f"Column {name!r}: chunk lengths must match X rows.")
             self._columns.append(tuple(descriptors))
+            self._chunk_ends.append(
+                np.cumsum([descriptor[2] for descriptor in descriptors], dtype=np.intp)
+            )
         self._columns = tuple(self._columns)
+        self._chunk_ends = tuple(self._chunk_ends)
 
     def _block(self, rows, columns):
         indices = (
@@ -288,17 +293,28 @@ class _ArrowMatrix:
             raise IndexError("row_indices has indices outside the design.")
         indices = np.where(indices < 0, indices + nrow, indices)
         block = np.empty((len(indices), len(columns)), dtype=np.float64)
+        if not len(indices):
+            return block
         for k, j in enumerate(columns):
-            start = 0
-            for values, offset, n in self._columns[j]:
-                selected = (indices >= start) & (indices < start + n)
-                local = indices[selected] - start
-                block[selected, k] = (
+            descriptors = self._columns[int(j)]
+            ends = self._chunk_ends[int(j)]
+            chunk_ids = np.searchsorted(ends, indices, side="right")
+            order = np.argsort(chunk_ids, kind="stable")
+            ordered_chunks = chunk_ids[order]
+            boundaries = np.r_[
+                0, np.flatnonzero(np.diff(ordered_chunks)) + 1, len(indices)
+            ]
+            for first, last in zip(boundaries[:-1], boundaries[1:], strict=True):
+                chunk_id = ordered_chunks[first]
+                positions = order[first:last]
+                values, offset, _ = descriptors[chunk_id]
+                chunk_start = 0 if chunk_id == 0 else ends[chunk_id - 1]
+                local = indices[positions] - chunk_start
+                block[positions, k] = (
                     values[local]
                     if offset is None
                     else (values[(local + offset) // 8] >> ((local + offset) % 8)) & 1
                 )
-                start += n
         return block
 
     def _check_finite(self):

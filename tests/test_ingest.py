@@ -66,6 +66,51 @@ def test_source_round_trip_and_exact_types(tmp_path, source_table, format):
     assert result.X.shape == (9, 6)
 
 
+def test_default_csv_block_handles_very_wide_rows_and_headers(tmp_path):
+    wide = tmp_path / "wide.csv"
+    names = [f"feature_{index:05d}" for index in range(20_000)]
+    wide.write_text(",".join(names) + "\n" + ",".join(["1"] * len(names)) + "\n")
+    result = ingest(wide, tmp_path / "wide.arrow")
+    assert result.feature_names == tuple(names)
+    assert result.X.shape == (1, 20_000)
+    assert result.X.column(19_999)[0].as_py() == 1
+
+    long_name = "x" * 200_000
+    long_header = tmp_path / "long-header.csv"
+    long_header.write_text(f"{long_name},y\n2,0\n3,1\n")
+    result = ingest(long_header, tmp_path / "long-header.arrow", response="y")
+    assert result.feature_names == (long_name,)
+    assert result.X.column(0).to_pylist() == [2, 3]
+    np.testing.assert_array_equal(result.y, [0.0, 1.0])
+
+
+@pytest.mark.parametrize("header,row", [("x", "1"), ("x,y", "1,0")])
+def test_csv_rejects_blank_data_lines(tmp_path, header, row):
+    source = tmp_path / "blank.csv"
+    source.write_text(f"{header}\n{row}\n\n{row}\n")
+    with pytest.raises(ValueError, match=r"Column 'x', row 2"):
+        ingest(source, tmp_path / "blank.arrow")
+
+
+def test_csv_ragged_row_reports_parse_error_not_block_size(tmp_path):
+    source = tmp_path / "ragged.csv"
+    source.write_text("x,y,z\n1,2,3\n4,5\n")
+    with pytest.raises(ValueError, match=r"Expected 3 columns, got 2") as error:
+        ingest(source, tmp_path / "ragged.arrow")
+    assert "block_size" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "content", [b"x,y\n1,0\n", b"x,y\r\n1,0\r\n", b"\xef\xbb\xbfx,y\n1,0\n"]
+)
+def test_csv_trailing_newline_crlf_and_bom(tmp_path, content):
+    source = tmp_path / "ordinary.csv"
+    source.write_bytes(content)
+    result = ingest(source, tmp_path / "ordinary.arrow", response="y")
+    assert result.X.column("x").to_pylist() == [1]
+    np.testing.assert_array_equal(result.y, [0.0])
+
+
 def test_selection_order_glob_regex_and_unselected_bad_values(tmp_path):
     source = tmp_path / "source.parquet"
     pq.write_table(
@@ -252,6 +297,137 @@ def test_decimal_source_requires_exact_binary_representation(tmp_path):
     pq.write_table(pa.table({"x": [Decimal("0.1")]}), source)
     with pytest.raises(ValueError, match="Column 'x', row 1: no supported exact dtype"):
         ingest(source, tmp_path / "inexact.arrow")
+    result = ingest(source, tmp_path / "rounded.arrow", dtypes={"x": "float64"})
+    assert result.X.column(0)[0].as_py() == float(Decimal("0.1"))
+
+    pq.write_table(
+        pa.table(
+            {
+                "x": [Decimal("0.25"), Decimal("0.50")],
+                "y": [Decimal("9007199254740993"), Decimal("9007199254740995")],
+            }
+        ),
+        source,
+    )
+    with pytest.raises(ValueError, match="Column 'y'.*no supported exact dtype"):
+        ingest(
+            source,
+            tmp_path / "response.arrow",
+            response="y",
+            dtypes={"x": "float64"},
+        )
+    pq.write_table(pa.table({"x": [Decimal("1.00000000000000000001")]}), source)
+    with pytest.raises(ValueError, match="Column 'x'.*no supported exact dtype"):
+        ingest(source, tmp_path / "float32.arrow", dtypes={"x": "float32"})
+
+
+@pytest.mark.parametrize("format", ["stream", "parquet", "feather"])
+@pytest.mark.parametrize("dtypes", ["auto", {"x": "int8"}, "preserve"])
+def test_pandas_physical_index_requires_explicit_selection(tmp_path, format, dtypes):
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame({"x": [1, 2]}, index=pd.Index([10, 20], name="row"))
+    table = pa.Table.from_pandas(frame)
+    source = table
+    if format == "parquet":
+        source = tmp_path / "indexed.parquet"
+        pq.write_table(table, source)
+    elif format == "feather":
+        source = tmp_path / "indexed.feather"
+        feather.write_feather(table, source)
+    with pytest.raises(ValueError, match="Pandas index columns.*row"):
+        ingest(source, tmp_path / f"implicit-{format}.arrow", dtypes=dtypes)
+    selected = ingest(
+        source,
+        tmp_path / f"selected-{format}.arrow",
+        features=["x"],
+        dtypes=dtypes,
+    )
+    assert selected.feature_names == ("x",)
+    explicit = ingest(
+        source,
+        tmp_path / f"explicit-{format}.arrow",
+        features=["x", "row"],
+        dtypes=dtypes,
+    )
+    assert explicit.feature_names == ("x", "row")
+
+
+def test_failed_ingest_removes_created_directories(tmp_path):
+    source = tmp_path / "bad.csv"
+    source.write_text("x\nnot-a-number\n")
+    cache = tmp_path / "cache"
+    with pytest.raises(ValueError):
+        ingest(source, cache_dir=cache)
+    assert list(cache.iterdir()) == []
+
+    output = tmp_path / "new" / "nested" / "data.arrow"
+    with pytest.raises(ValueError):
+        ingest(source, output)
+    assert not (tmp_path / "new").exists()
+
+    stream_output = tmp_path / "stream" / "nested" / "data.arrow"
+    with pytest.raises(ValueError):
+        ingest(pa.table({"x": [1, None]}), stream_output)
+    assert not (tmp_path / "stream").exists()
+
+
+def test_failed_ingest_does_not_remove_concurrent_output(tmp_path, monkeypatch):
+    import importlib
+
+    module = importlib.import_module("pybiglasso.ingest")
+    bad = tmp_path / "bad.csv"
+    good = tmp_path / "good.csv"
+    bad.write_text("x\nnot-a-number\n")
+    good.write_text("x\n1\n")
+    original = module._infer
+
+    def interleave(*args, **kwargs):
+        monkeypatch.setattr(module, "_infer", original)
+        ingest(good, tmp_path / "shared" / "successful.arrow")
+        raise ValueError("first ingest failed")
+
+    monkeypatch.setattr(module, "_infer", interleave)
+    with pytest.raises(ValueError, match="first ingest failed"):
+        ingest(bad, tmp_path / "shared" / "failed.arrow")
+    assert (tmp_path / "shared" / "successful.arrow").exists()
+
+
+def test_ingest_option_validation_is_specific(tmp_path):
+    source = tmp_path / "source.csv"
+    source.write_text("x\n1\n")
+    with pytest.raises(ValueError, match="unselected or unknown.*missing"):
+        ingest(source, tmp_path / "unknown.arrow", dtypes={"missing": "float64"})
+    with pytest.raises(ValueError, match="Unsupported dtype.*int64"):
+        ingest(source, tmp_path / "dtype.arrow", dtypes={"x": "int64"})
+    with pytest.raises(ValueError, match="sheet is only valid"):
+        ingest(source, tmp_path / "sheet.arrow", sheet="Data")
+    with pytest.raises(ValueError, match="cache_dir cannot be used"):
+        ingest(
+            source,
+            tmp_path / "out.arrow",
+            cache_dir=tmp_path / "cache",
+        )
+    result = ingest(source, tmp_path / "numpy-int.arrow", block_size=np.int64(1))
+    assert result.X.shape == (1, 1)
+
+
+def test_csv_text_parsing_edge_cases(tmp_path):
+    source = tmp_path / "source.csv"
+    source.write_text("x\n1_000\n")
+    with pytest.raises(ValueError, match="1_000"):
+        ingest(source, tmp_path / "underscore.arrow")
+    source.write_text("x\n1e-400\n")
+    with pytest.raises(ValueError, match="1e-400"):
+        ingest(source, tmp_path / "underflow.arrow")
+    source.write_text("x\n1e400\n")
+    with pytest.raises(ValueError, match="1e400"):
+        ingest(source, tmp_path / "overflow.arrow")
+    source.write_text("x\ntrue\n2\n")
+    assert ingest(source, tmp_path / "mixed.arrow").X.column(0).to_pylist() == [1, 2]
+    source.write_text("x\n-0\n")
+    assert ingest(source, tmp_path / "minus-zero.arrow").X.column(0).to_pylist() == [
+        False
+    ]
 
 
 def test_excel_round_trip_against_independent_reader(tmp_path):
@@ -278,6 +454,8 @@ def test_excel_round_trip_against_independent_reader(tmp_path):
         assert actual.column("x").to_pylist() == [row[0] for row in rows]
         assert actual.column("bit").to_pylist() == [row[1] for row in rows]
     np.testing.assert_array_equal(result.y, [row[2] for row in rows])
+    with pytest.raises(ValueError, match="Unknown Excel sheet.*Missing"):
+        ingest(source, tmp_path / "missing-sheet.arrow", sheet="Missing")
 
 
 def test_receipt_contains_standard_table_and_file_reopens_without_sidecar(tmp_path):
