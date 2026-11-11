@@ -78,6 +78,9 @@ CHILD = textwrap.dedent("""
     gc.collect()
     with open('/proc/self/status') as status:
         private = next(int(s.split()[1]) * 1024 for s in status if s.startswith('VmData:'))
+    # The smallest target is packed bool: 48,000 * 2,000 / 8 = 12,000,000
+    # value bytes. Three quarters of that is a problem-derived 9 MB allowance,
+    # so no full stored-representation copy fits for either target dtype.
     resource.setrlimit(resource.RLIMIT_DATA, (private + 9_000_000, resource.RLIM_INFINITY))
     stage = 'open'
     try:
