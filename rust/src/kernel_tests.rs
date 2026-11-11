@@ -1,4 +1,4 @@
-//! Independent formula and boundary probes formerly available only via numba.
+//! Independent formula and boundary probes of standardization, scores and updates.
 //! The fused row passes, intercept, IRLS and SIMD bits have separate tests.rs checks.
 
 use super::*;
