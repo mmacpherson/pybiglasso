@@ -877,7 +877,7 @@ mod tests {
                         rows: Some(&rows),
                         n_fit: rows.len(),
                     };
-                    let (center, scale, _, _) = fit.center_scale().unwrap();
+                    let Standardization { center, scale, .. } = fit.center_scale().unwrap();
                     let path = Path {
                         center,
                         scale,

@@ -114,7 +114,7 @@ fn run_typed<T: Elem + Element>(
                 ($design:expr, $y:expr, $mask:expr, $n_fit:expr, $rows:expr) => {{
                     let d = $design;
                     let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: $rows.masked_rows(), n_fit: $n_fit };
-                    let (center, scale, mask_safe, imprecise) = fit.center_scale().map_err(Fail)?;
+                    let Standardization { center, scale, mask_safe, imprecise } = fit.center_scale().map_err(Fail)?;
                     if !mask_safe {
                         // a row left out holds something the mask can't sweep
                         // safely: gather the rows instead
@@ -318,7 +318,8 @@ fn run_mapped(
                     ($design:expr, $y:expr, $mask:expr, $n:expr) => {{
                         let d = $design;
                         let fit = Fit { x: &d, y: $y, params, mask: $mask, rows: rows.masked_rows(), n_fit: $n };
-                        let (center, scale, safe, imprecise) = fit.center_scale().map_err(Fail)?;
+                        let Standardization { center, scale, mask_safe: safe, imprecise } =
+                            fit.center_scale().map_err(Fail)?;
                         if !safe {
                             return Err(Fallback);
                         }

@@ -130,7 +130,7 @@ impl Dataset {
         n_fit: usize,
     ) -> Result<Option<Path>, String> {
         let fit = Fit { x, y, params, mask: mask.map(|(m, _)| m), rows: mask.map(|(_, rows)| rows), n_fit };
-        let (center, scale, mask_safe, imprecise) = fit.center_scale()?;
+        let Standardization { center, scale, mask_safe, imprecise } = fit.center_scale()?;
         if !mask_safe {
             return Ok(None);
         }

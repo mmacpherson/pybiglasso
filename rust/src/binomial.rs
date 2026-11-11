@@ -286,10 +286,6 @@ struct State {
 }
 
 impl<D: Design> Fit<'_, D> {
-    fn y_at(&self, i: usize) -> f64 {
-        self.y[i]
-    }
-
     /// w, s, r from eta; returns -log-likelihood with probabilities clipped
     /// at the mode's boundary. Rows are independent; the loss sum stays serial.
     fn update_irls(&self, st: &mut State) -> f64 {
@@ -303,12 +299,12 @@ impl<D: Design> Fit<'_, D> {
                 continue;
             }
             (st.irls_work[i], st.w[i]) = irls_probability_weight(st.eta[i], eta_max, w_min);
-            st.s[i] = self.y_at(i) - st.irls_work[i];
+            st.s[i] = self.y[i] - st.irls_work[i];
             st.r[i] = st.s[i] / st.w[i];
         }
         let mut acc = 0.0;
         for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
-            acc += if self.y_at(i) == 1.0 { log(st.irls_work[i]) } else { log(1.0 - st.irls_work[i]) };
+            acc += if self.y[i] == 1.0 { log(st.irls_work[i]) } else { log(1.0 - st.irls_work[i]) };
         }
         -acc
     }
@@ -326,9 +322,9 @@ impl<D: Design> Fit<'_, D> {
             }
             let (probability, weight) = irls_probability_weight(st.eta[i], eta_max, w_min);
             *w = weight;
-            *s = self.y_at(i) - probability;
+            *s = self.y[i] - probability;
             *r = *s / *w;
-            *loss = if self.y_at(i) == 1.0 { log(probability) } else { log(1.0 - probability) };
+            *loss = if self.y[i] == 1.0 { log(probability) } else { log(1.0 - probability) };
         };
         st.w.par_iter_mut()
             .zip(st.s.par_iter_mut())
@@ -537,7 +533,7 @@ impl<D: Design> Fit<'_, D> {
     fn final_loss(&self, st: &State) -> f64 {
         let mut loss = 0.0;
         for i in (0..st.eta.len()).filter(|&i| self.fits(i)) {
-            let signed = if self.y_at(i) == 1.0 { -st.eta[i] } else { st.eta[i] };
+            let signed = if self.y[i] == 1.0 { -st.eta[i] } else { st.eta[i] };
             loss += signed.max(0.0) + log1p(exp(-signed.abs()));
         }
         loss
