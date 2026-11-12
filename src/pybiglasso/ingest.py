@@ -508,31 +508,43 @@ def _infer(blocks, columns, overrides, decimal_rounding=()):
     return {name: candidates[name][0] for name in columns}, count
 
 
-def _preserved_array(block, name, dtype, first_row):
+def _preserved_array(block, name, dtype, first_row, pa):
     column = block.column(name)
-    try:
-        source_dtype = np.dtype(column.type.to_pandas_dtype())
-    except TypeError:
+    arrow_type = column.type
+    if not (
+        pa.types.is_boolean(arrow_type)
+        or pa.types.is_integer(arrow_type)
+        or arrow_type in (pa.float32(), pa.float64())
+    ):
         return None
-    if source_dtype.kind not in "biuf":
-        return None
-    if column.null_count:
-        missing = column.is_null().to_numpy(zero_copy_only=False)
-        index = int(missing.argmax())
-        raise ValueError(
-            f"Column {name!r}, row {first_row + index}: "
-            "missing or nonnumeric value None."
-        )
-    values = column.to_numpy(zero_copy_only=False)
+    source_dtype = np.dtype(arrow_type.to_pandas_dtype())
+    missing = (
+        column.is_null().to_numpy(zero_copy_only=False) if column.null_count else None
+    )
     if source_dtype.kind == "f":
+        values = column.to_numpy(zero_copy_only=missing is None)
         nonfinite = ~np.isfinite(values)
-        if nonfinite.any():
-            index = int(nonfinite.argmax())
+        invalid = nonfinite if missing is None else nonfinite | missing
+        if invalid.any():
+            index = int(invalid.argmax())
+            if missing is not None and missing[index]:
+                raise ValueError(
+                    f"Column {name!r}, row {first_row + index}: "
+                    "missing or nonnumeric value None."
+                )
             value = column[index].as_py()
             raise ValueError(
                 f"Column {name!r}, row {first_row + index}: "
                 f"nonfinite numeric value {value!r}."
             )
+    else:
+        if missing is not None:
+            index = int(missing.argmax())
+            raise ValueError(
+                f"Column {name!r}, row {first_row + index}: "
+                "missing or nonnumeric value None."
+            )
+        values = column.to_numpy(zero_copy_only=source_dtype.kind != "b")
     target_dtype = np.dtype(dtype)
     if source_dtype == target_dtype:
         return values
@@ -554,7 +566,13 @@ def _preserved_array(block, name, dtype, first_row):
 
 
 def _stage(
-    blocks, columns, types, directory, count, decimal_rounding=(), preserve=False
+    blocks,
+    columns,
+    types,
+    directory,
+    count,
+    decimal_rounding=(),
+    primitive_arrow=None,
 ):
     tails = {
         name: np.empty(0, dtype=np.bool_) for name in columns if types[name] == "bool"
@@ -567,8 +585,8 @@ def _stage(
         length = _block_length(block, columns[0])
         for name in columns:
             array = (
-                _preserved_array(block, name, types[name], seen + 1)
-                if preserve and isinstance(block, _ArrowBlock)
+                _preserved_array(block, name, types[name], seen + 1, primitive_arrow)
+                if primitive_arrow is not None and isinstance(block, _ArrowBlock)
                 else None
             )
             if array is None:
@@ -590,14 +608,14 @@ def _stage(
                 array = np.packbits(bits[:complete], bitorder="little")
                 tails[name] = bits[complete:].copy()
             with paths[name].open("ab") as stream:
-                stream.write(memoryview(array).cast("B"))
+                stream.write(array.tobytes())
         seen += length
     if count is not None and seen != count:
         raise ValueError("Source row count changed during ingest.")
     for name, tail in tails.items():
         if len(tail):
             with paths[name].open("ab") as stream:
-                stream.write(memoryview(np.packbits(tail, bitorder="little")))
+                stream.write(np.packbits(tail, bitorder="little").tobytes())
     return paths, seen
 
 
@@ -879,8 +897,12 @@ def _ingest_stream(
                 staging,
                 None,
                 decimal_rounding,
-                preserve=True,
+                primitive_arrow=pa,
             )
+            # The vectorized path can finish before Arrow reuses or returns a
+            # decoded source batch. Do not retain that unused input-sized pool
+            # allocation while mapping the staged columns for publication.
+            pa.default_memory_pool().release_unused()
             if not count:
                 raise ValueError("Source must contain at least one data row.")
         else:
