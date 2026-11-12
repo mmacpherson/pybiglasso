@@ -151,7 +151,10 @@ For paths in auto mode, the first pass infers types and counts rows. The second 
 on disk. CSV, Parquet and Feather are read by block or source record batch,
 with per-column state. Excel is an explicit exception to block-bounded memory.
 The writer maps those raw columns read-only and writes one Arrow record batch;
-it does not concatenate the full input into an in-memory table. Bool staging carries
+it does not concatenate the full input into an in-memory table. It retains one
+mapping, Arrow array and writer slot per selected feature until that batch is
+written, so this metadata grows linearly with the number of columns even though
+the mapped values are not copied. Bool staging carries
 at most seven bits between blocks, and writes packed bits, not byte-per-row
 bool columns. Source size and modification time are checked between passes.
 

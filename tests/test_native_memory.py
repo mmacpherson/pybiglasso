@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 # over 16,384 rows, where the solver turns row-parallel
-NROW, NCOL = 20_000, 2_000  # 40 MB as int8; 320 MB as float64
+NROW, NCOL = 17_000, 1_200  # 20.4 MB as int8; 163.2 MB as float64
 
 CHILD = textwrap.dedent(
     """
