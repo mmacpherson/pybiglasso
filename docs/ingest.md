@@ -96,7 +96,10 @@ uncompressed Arrow stream spool while types are inferred, then converted from
 that spool. The spool is sequential: it keeps no growing batch index and accepts
 replacement dictionaries with a fixed schema. There is no sampling or second
 request to the producer. Preserve mode validates and stages in one pass, without
-this spool. Both modes reject schema differences exposed by imported batches,
+this spool. Primitive bool, integer and floating Arrow columns use column-wide
+Arrow/NumPy validation and conversion; strings and decimals retain per-value
+parsing so their exactness rules do not change. Both modes reject schema
+differences exposed by imported batches,
 report value errors with cumulative one-based row numbers and publish only after
 the whole stream succeeds. These checks do not recover types concealed by a
 malformed producer.

@@ -167,16 +167,67 @@ def test_stream_bad_values_have_cumulative_rows_and_no_publication(tmp_path, mod
         pa.bool_(),
     ],
 )
-def test_preserve_all_solver_types(tmp_path, dtype):
+def test_preserve_all_solver_types(tmp_path, dtype, monkeypatch):
     value = (
         True
         if pa.types.is_boolean(dtype)
         else (2**64 - 1 if dtype == pa.uint64() else 1)
     )
     table = pa.table({"x": pa.array([value, value], type=dtype)})
-    result = ingest(table, tmp_path / "data.feather", dtypes="preserve")
+    module = importlib.import_module("pybiglasso.ingest")
+    monkeypatch.setattr(
+        module,
+        "_numeric",
+        lambda *_args, **_kwargs: pytest.fail(
+            "primitive preserve used scalar validation"
+        ),
+    )
+    result = ingest(table, tmp_path / "data.feather", dtypes="preserve", block_size=1)
     assert result.X.schema.types == [dtype]
     assert result.X["x"].to_pylist() == [value, value]
+
+
+def test_preserve_primitive_response_is_vectorized_and_exact(tmp_path, monkeypatch):
+    table = pa.table({"x": [1, 2], "y": [2**53, 2**54]})
+    module = importlib.import_module("pybiglasso.ingest")
+    monkeypatch.setattr(
+        module,
+        "_numeric",
+        lambda *_args, **_kwargs: pytest.fail(
+            "primitive response used scalar validation"
+        ),
+    )
+    result = ingest(
+        table,
+        tmp_path / "data.feather",
+        response="y",
+        dtypes="preserve",
+    )
+    np.testing.assert_array_equal(result.y, [2**53, 2**54])
+
+
+@pytest.mark.parametrize("values", [[Decimal("0.25"), Decimal("0.5")], ["0.25", "0.5"]])
+def test_preserve_decimal_and_string_responses_keep_scalar_validation(
+    tmp_path, monkeypatch, values
+):
+    table = pa.table({"x": [1, 2], "y": values})
+    module = importlib.import_module("pybiglasso.ingest")
+    original = module._numeric
+    validated = []
+
+    def numeric(value, *args, **kwargs):
+        validated.append(value)
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_numeric", numeric)
+    result = ingest(
+        table,
+        tmp_path / "data.feather",
+        response="y",
+        dtypes="preserve",
+    )
+    assert validated == values
+    np.testing.assert_array_equal(result.y, [0.25, 0.5])
 
 
 @pytest.mark.parametrize(
