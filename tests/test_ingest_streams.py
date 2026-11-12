@@ -239,6 +239,20 @@ def test_preserve_primitive_response_is_vectorized_and_exact(tmp_path, monkeypat
     np.testing.assert_array_equal(result.y, [2**53, 2**54])
 
 
+def test_preserve_does_not_manage_the_process_memory_pool(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        pa,
+        "default_memory_pool",
+        lambda: pytest.fail("ingest flushed the process-wide Arrow pool"),
+    )
+    result = ingest(
+        pa.table({"x": [1.0, 2.0]}),
+        tmp_path / "data.feather",
+        dtypes="preserve",
+    )
+    assert result.X["x"].to_pylist() == [1.0, 2.0]
+
+
 @pytest.mark.parametrize("values", [[Decimal("0.25"), Decimal("0.5")], ["0.25", "0.5"]])
 def test_preserve_decimal_and_string_responses_keep_scalar_validation(
     tmp_path, monkeypatch, values

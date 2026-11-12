@@ -899,10 +899,6 @@ def _ingest_stream(
                 decimal_rounding,
                 primitive_arrow=pa,
             )
-            # The vectorized path can finish before Arrow reuses or returns a
-            # decoded source batch. Do not retain that unused input-sized pool
-            # allocation while mapping the staged columns for publication.
-            pa.default_memory_pool().release_unused()
             if not count:
                 raise ValueError("Source must contain at least one data row.")
         else:
