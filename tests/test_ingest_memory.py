@@ -52,7 +52,8 @@ WIDE_CHILD = textwrap.dedent("""
     pa.set_io_thread_count(1)
     pa.set_memory_pool(pa.system_memory_pool())
     warm = ingest(small, output.with_suffix('.warm.arrow'), dtypes='preserve')
-    del warm
+    warm_control = pq.read_table(small, use_threads=False).to_pydict()
+    del warm, warm_control
     gc.collect()
     pa.default_memory_pool().release_unused()
     ctypes.CDLL(None).malloc_trim(0)
@@ -73,7 +74,7 @@ WIDE_CHILD = textwrap.dedent("""
         assert result
     else:
         result = ingest(source, output, dtypes='preserve')
-        assert result.X.num_rows * result.X.num_columns == 1 << 21
+        assert result.X.num_rows * result.X.num_columns == 1 << 22
     peak[0] = max(peak[0], rss())
     stop.set()
     monitor.join()
@@ -92,8 +93,8 @@ def same_size_wide_parquet(tmp_path_factory):
     directory = tmp_path_factory.mktemp("wide-parquet-memory")
     paths = []
     for name, rows, columns in (
-        ("narrow", 32_768, 64),
-        ("wide", 1_024, 2_048),
+        ("narrow", 65_536, 64),
+        ("wide", 2_048, 2_048),
     ):
         values = np.arange(rows, dtype=np.float64)
         table = pa.table({f"x{j}": pa.array(values) for j in range(columns)})
@@ -136,15 +137,17 @@ def test_wide_parquet_peak_is_bounded_by_source_size(
     )
     assert completed.returncode == 0, completed.stderr[-3000:]
     peak = json.loads(completed.stdout.splitlines()[-1])["peak"]
-    logical_bytes = (1 << 21) * 8
+    logical_bytes = (1 << 22) * 8
     columns = 64 if width == "narrow" else 2_048
     # Source decoding, staging, mapped writer input and the final file may each
     # account for the logical values. Add 32 MiB of fixed reader/writer state,
-    # then five 4 KiB allocation/page units per column for its staged mapping,
-    # Arrow buffer/array, field/schema, record-batch slot and IPC encoder state.
-    # The explicit column term keeps the 2,048-column case honest while
-    # remaining independent of observed RSS.
-    budget = 4 * logical_bytes + (32 << 20) + columns * (20 << 10)
+    # then 12 KiB per column. Isolating _write_ipc with one float64 value per
+    # staged column measured at most 6.4 KiB of incremental cost per column
+    # from 64 through 4,096 columns; 12 KiB leaves 87.5% headroom for dependency
+    # and allocator differences.
+    # The explicit term keeps the 2,048-column case honest without fitting the
+    # ceiling to this test's end-to-end RSS.
+    budget = 4 * logical_bytes + (32 << 20) + columns * (12 << 10)
     assert (peak <= budget) if mode == "ingest" else (peak > budget), (
         peak,
         budget,
