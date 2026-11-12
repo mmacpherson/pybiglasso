@@ -28,6 +28,7 @@ raise SystemExit(
             "cargo",
             "test",
             "--release",
+            "--locked",
             "--manifest-path",
             str(root / "rust/Cargo.toml"),
         ],

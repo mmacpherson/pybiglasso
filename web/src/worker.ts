@@ -160,9 +160,11 @@ self.onmessage = async (event: MessageEvent<Request>) => {
   try {
     const request = event.data;
     if (request.kind === "inspect") {
-      dataset?.free(); dataset = undefined; file = request.file;
-      inspection = await inspect(file);
-      send({ kind: "inspected", info: inspection });
+      dataset?.free(); dataset = undefined;
+      // only a file that inspects cleanly replaces the current one
+      const info = await inspect(request.file);
+      file = request.file; inspection = info;
+      send({ kind: "inspected", info });
     } else if (request.kind === "load") {
       send({ kind: "loaded", info: await load(request.target, request.features, request.positive, request.family) });
     } else {

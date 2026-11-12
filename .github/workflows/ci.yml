@@ -23,6 +23,14 @@ concurrency:
 env:
   UV_LOCKED: 1
 
+# Jobs that only test build the extension without link-time optimization and
+# in 16 codegen units: about 2.8x faster to compile than the release profile
+# (fat LTO, one unit), and bit-identical, since neither changes the floating-
+# point operations or their order. They set these two variables, and their
+# cache keys say nolto16. The shipped wheels, which the wheels job
+# builds with the release profile, run the stored R comparison and the bit
+# snapshot themselves, and rust-cross-architecture compares the two builds.
+
 jobs:
   # Pull requests get every platform's tests but macOS, and only the Linux x86
   # wheel. The other wheels build on main, on release, and on any PR that
@@ -55,7 +63,7 @@ jobs:
         if [ "$EVENT" = pull_request ]; then
           full=false
           macos=false
-          builds='^(pyproject\.toml|uv\.lock|Makefile|rust-toolchain(\.toml)?|rust/(Cargo\.(toml|lock)|build\.rs|src/(lib|python)\.rs)|\.github/|scripts/(check_(wheel|dist|arch_bits)|wheel_provenance)\.py)'
+          builds='^(pyproject\.toml|uv\.lock|Makefile|rust/(Cargo\.(toml|lock)|src/(lib|python)\.rs)|\.github/|scripts/(check_(wheel|arch_bits)|wheel_provenance)\.py)'
           # On its own line so a failed diff stops the step (bash -e) rather
           # than reading as "nothing build-related changed"
           files=$(git diff --name-only "$BASE...$HEAD")
@@ -91,6 +99,12 @@ jobs:
       with:
         python-version: '3.14'
     - run: make run-hooks-all-files
+    # the playground's Rust, which only the path-filtered browser workflow
+    # builds otherwise (about 15 s)
+    - name: Lint the wasm build
+      run: |
+        rustup target add wasm32-unknown-unknown
+        make lint-wasm
 
   # Native kernels and exact-rational certificate audits, once per platform
   # (macOS runs them in the macos job).
@@ -140,6 +154,9 @@ jobs:
   test:
     name: Python ${{ matrix.python }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:  # the test build (see the top of this file)
+      CARGO_PROFILE_RELEASE_LTO: false
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +189,7 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
       with:
         path: rust/target
-        key: rust-ext-${{ matrix.os }}-py${{ matrix.python }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
+        key: rust-ext-nolto16-${{ matrix.os }}-py${{ matrix.python }}-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml') }}
     - name: Date the Rust sources before the restored build
       if: steps.rust-cache.outputs.cache-hit == 'true'
       shell: bash
@@ -223,7 +240,7 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
       with:
         path: rust/target
-        key: rust-macos-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml', 'tests/support/gaussian_screening/**') }}
+        key: rust-macos-nolto16-rustc${{ steps.rustc.outputs.commit }}-${{ hashFiles('rust/**', '!rust/target/**', 'pyproject.toml', 'tests/support/gaussian_screening/**') }}
     - name: Date the Rust sources before the restored build
       if: steps.rust-cache.outputs.cache-hit == 'true'
       shell: bash
@@ -231,6 +248,9 @@ jobs:
     - name: Bit for bit at every SIMD width this CPU runs
       run: make test-rust
     - name: Tests (against stored R biglasso 1.7.2 output)
+      env:  # the test build (see the top of this file)
+        CARGO_PROFILE_RELEASE_LTO: false
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
       run: make test
     - name: Save the Rust build for later runs
       if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
@@ -240,6 +260,9 @@ jobs:
         key: ${{ steps.rust-cache.outputs.cache-primary-key }}
     - name: Record fixed Rust fits for the cross-architecture check
       shell: bash
+      env:
+        CARGO_PROFILE_RELEASE_LTO: false
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
       run: uv run python scripts/check_arch_bits.py record rust-bits-macos-latest.json
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
       with:
@@ -250,10 +273,10 @@ jobs:
 
   rust-cross-architecture:
     name: Rust fits, bit-identical across platforms
-    needs: [scope, test, macos]
+    needs: [scope, test, macos, wheels]
     # without macOS on a pull request, compare the other three platforms
     if: >-
-      always() && needs.test.result == 'success'
+      always() && needs.test.result == 'success' && needs.wheels.result == 'success'
       && (needs.macos.result == 'success'
           || (needs.scope.outputs.macos == 'false' && needs.macos.result == 'skipped'))
     runs-on: ubuntu-latest
@@ -266,6 +289,11 @@ jobs:
         pattern: rust-bits-*
         path: snapshots
         merge-multiple: true
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333    # v8.0.2
+      with:
+        pattern: wheel-bits-*
+        path: wheel-snapshots
+        merge-multiple: true
     - name: Compare the other runners against this run's Linux x86 reference
       shell: bash
       env:
@@ -277,12 +305,29 @@ jobs:
         files=()
         for platform in "${platforms[@]}"; do files+=("snapshots/rust-bits-$platform.json"); done
         python3 scripts/check_arch_bits.py compare "${flags[@]}" "${files[@]}"
+    # every wheel this run built, Intel macOS among them on main and release,
+    # from the release profile, against the test build's Linux x86 snapshot:
+    # by name, each wheel scope chose on both Pythons, so a missing one fails
+    - name: Compare the published wheels against the same reference
+      shell: bash
+      env:
+        WHEELS: ${{ needs.scope.outputs.wheels }}
+      run: |
+        files=()
+        for platform in $(jq -r '.[].platform' <<<"$WHEELS"); do
+          for python in 3.11 3.15; do
+            files+=("wheel-snapshots/wheel-bits-$platform-py$python.json")
+          done
+        done
+        python3 scripts/check_arch_bits.py match snapshots/rust-bits-ubuntu-latest.json "${files[@]}"
 
   latest-deps:
     name: Newest dependencies (ignoring uv.lock)
     runs-on: ubuntu-latest
     env:
       UV_LOCKED: false
+      CARGO_PROFILE_RELEASE_LTO: false  # the test build (see the top)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -297,6 +342,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_LOCKED: false
+      CARGO_PROFILE_RELEASE_LTO: false  # the test build (see the top)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -319,6 +366,8 @@ jobs:
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       DATABASE_URL: postgresql://postgres:recipes@localhost:5432/postgres
+      CARGO_PROFILE_RELEASE_LTO: false  # the test build (see the top)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -332,6 +381,11 @@ jobs:
   sdist:
     name: Build the sdist and a wheel from it; fit from that wheel with no extras
     runs-on: ubuntu-latest
+    # the wheel built here only checks that the sdist builds and fits; the
+    # test build (see the top) leaves the sdist, which is what ships, as it is
+    env:
+      CARGO_PROFILE_RELEASE_LTO: false
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
       with:
@@ -339,6 +393,7 @@ jobs:
     - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         enable-cache: false    # this build is what release.yml publishes
+        version: 0.13.7    # pinned on the release path; bump deliberately
     - name: Build, check the metadata PyPI will render, and fit from the wheel
       run: make check-dist
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
@@ -366,22 +421,38 @@ jobs:
     - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b    # v1.51.0
       with:
         command: build
+        maturin-version: v1.16.0    # pinned on the release path; bump deliberately
         target: ${{ matrix.target }}
         rust-toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
         container: ${{ matrix.container }}
         manylinux: auto
         before-script-linux: make wheel-provenance
-        args: --release --out dist
+        args: --release --locked --out dist
     - name: Record the host wheel build toolchain
       if: runner.os != 'Linux'
       run: make wheel-provenance
     - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2    # v10.3.3
       with:
         enable-cache: false
-        python-version: ${{ matrix.python }}
-    - name: Fit from the wheel with no extras
+        version: 0.13.7    # pinned on the release path; bump deliberately
+    - name: Check the wheel is cp311-abi3, and fit from it with no extras
       shell: bash
       run: make check-wheel
+    # The binary that ships, on the oldest and newest supported Pythons:
+    # the stored R comparison and the bit snapshot, which
+    # rust-cross-architecture holds to the test build's (about 40 s)
+    - name: Stored R comparison and bit snapshot from the wheel, Python 3.11
+      shell: bash
+      run: make check-wheel-r WHEEL_TEST_PYTHON=3.11 WHEEL_BITS=wheel-bits-${{ matrix.platform }}-py3.11.json
+    - name: Stored R comparison and bit snapshot from the wheel, Python 3.15
+      shell: bash
+      run: make check-wheel-r WHEEL_TEST_PYTHON=3.15 WHEEL_BITS=wheel-bits-${{ matrix.platform }}-py3.15.json
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
+      with:
+        name: wheel-bits-${{ matrix.platform }}
+        path: wheel-bits-*.json
+        if-no-files-found: error
+        retention-days: 7
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9    # v7.0.2
       with:
         name: dist-wheel-${{ matrix.platform }}

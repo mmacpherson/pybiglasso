@@ -4,9 +4,15 @@ Build web/pkg first. The selected cases need no row subsets or linear grids;
 they include early truncation, constant columns, penalties and max_iter. Input
 digests must match the stored R fixtures. No pybiglasso fit supplies an expected
 value, and the comparison uses the existing R policy, not a new tolerance.
+
+Options a case leaves at R's defaults are left out, so the adapter's own
+defaults face R: a drifted lambda_min rule changes the grid. One more fit
+exhausts its budget by construction, so its iterations show the adapter's
+default max_iter, which must be biglasso()'s.
 """
 
 import argparse
+import inspect
 import json
 import subprocess
 import sys
@@ -18,6 +24,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 from support import rcompare  # noqa: E402
+
+import pybiglasso as bl  # noqa: E402
 
 
 def main():
@@ -48,10 +56,13 @@ def main():
                 alpha=case.alpha,
                 nlambda=case.nlambda,
                 eps=rcompare.EPS,
-                lambda_min=case.resolved_lambda_min,
-                max_iter=case.max_iter,
                 r_compatible=True,
             )
+            # R's defaults stay the adapter's to supply
+            if case.lambda_min is not None:
+                options["lambda_min"] = case.lambda_min
+            if case.max_iter != rcompare.MAX_ITER:
+                options["max_iter"] = case.max_iter
             if lambdas is not None:
                 options["lambdas"] = np.asarray(lambdas).tolist()
             if data["penalty_factor"] is not None:
@@ -69,6 +80,15 @@ def main():
                     options=options,
                 )
             )
+        # A constant response under R's rule never meets its tolerance of
+        # zero (README, "Constant responses"), so every lambda after the
+        # first uses the whole default budget
+        budget = dict(
+            X=[[float(i), float(i % 3)] for i in range(12)],
+            y=[1.5] * 12,
+            options=dict(family="gaussian", nlambda=3, r_compatible=True),
+        )
+        payload.append(budget)
         command = ["node", str(ROOT / "web/scripts/run-fixtures.mjs"), args.engine]
         if args.container:
             command = [
@@ -94,8 +114,14 @@ def main():
             text=True,
             check=True,
         )
+    *fits, budget_fit = json.loads(result.stdout)
+    default_max_iter = inspect.signature(bl.biglasso).parameters["max_iter"].default
+    assert budget_fit["iterations"][1:] == [default_max_iter] * 2, (
+        f"wasm's default max_iter is not biglasso()'s ({default_max_iter}): "
+        f"{budget_fit['iterations']}"
+    )
     for index, (case, actual, reference) in enumerate(
-        zip(cases, json.loads(result.stdout), expected, strict=True)
+        zip(cases, fits, expected, strict=True)
     ):
         coef = np.zeros((case.ncol + 1, len(actual["lambdas"])))
         coef[0] = actual["intercept"]

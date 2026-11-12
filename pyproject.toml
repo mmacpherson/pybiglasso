@@ -66,14 +66,11 @@ Homepage = "https://github.com/mmacpherson/pybiglasso"
 
 # The Python package in src, with the Rust extension from rust/ built into it
 # as pybiglasso._rust: one wheel per platform, for every Python (abi3). The
-# sdist adds what builds and tests the package.
+# sdist holds what builds the package and nothing more; its tests and
+# examples are in the repository.
 [tool.maturin]
 exclude = [{ path = "**/__pycache__/**", format = "sdist" }]
 features = ["pyo3/extension-module"]
-include = [
-  { path = "tests/**/*", format = "sdist" },
-  { path = "examples/**/*", format = "sdist" }
-]
 manifest-path = "rust/Cargo.toml"
 module-name = "pybiglasso._rust"
 python-source = "src"

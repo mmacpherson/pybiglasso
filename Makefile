@@ -6,9 +6,22 @@ WHEEL_PYTHON = $(if $(filter Windows_NT,$(OS)),python,python3)
 wheel-provenance:
 	$(WHEEL_PYTHON) scripts/wheel_provenance.py --expected-rust-version "$(RUSTUP_TOOLCHAIN)"
 
+# one abi3 wheel serves every supported Python, from 3.11
 .PHONY: check-wheel
 check-wheel:
+	@ls dist/*.whl | grep -q -- '-cp311-abi3-' || { echo "not a cp311-abi3 wheel: $$(ls dist/*.whl)"; exit 1; }
 	uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py
+
+# The built wheel against the stored R output, and its bit snapshot, from an
+# environment that holds the wheel and not the source
+WHEEL_TEST_PYTHON ?= 3.11
+WHEEL_BITS ?= wheel-bits.json
+WHEEL_ENV = uv run --isolated --no-project --python $(WHEEL_TEST_PYTHON) --with dist/*.whl --with pytest --with hypothesis --with pyarrow
+.PHONY: check-wheel-r
+check-wheel-r:
+	$(WHEEL_ENV) python -c "import pathlib, pybiglasso; assert 'site-packages' in pathlib.Path(pybiglasso.__file__).parts, pybiglasso.__file__"
+	$(WHEEL_ENV) python -m pytest -q -p no:cacheprovider tests/test_vs_r.py tests/test_gaussian.py -k stored_r
+	$(WHEEL_ENV) python scripts/check_arch_bits.py record $(WHEEL_BITS)
 
 .PHONY: test
 # across every core (pytest-xdist); the R comparison below stays in one
@@ -43,6 +56,12 @@ lint:
 test-rust:
 	uv run --no-project python scripts/test_rust.py
 
+# The browser build's Rust (rust/src/wasm.rs, behind the wasm feature), which
+# no other check compiles; needs the wasm32-unknown-unknown target
+.PHONY: lint-wasm
+lint-wasm:
+	cargo clippy --manifest-path rust/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings
+
 .PHONY: browser test-browser
 browser:
 	cd web && npm ci && npm run build
@@ -51,12 +70,18 @@ test-browser: browser
 	uv run python scripts/check_wasm.py
 	cd web && npm test && npm run test:browser
 
+# No hook imports pybiglasso, so neither builds the extension (about six
+# minutes in CI); cargo clippy compiles the Rust it checks itself. --inexact
+# leaves an extension already installed in the environment in place.
+HOOKS_ENV = uv sync --quiet --inexact --no-install-project
 .PHONY: update-hooks run-hooks-all-files
 update-hooks:
-	uv run pre-commit autoupdate
+	$(HOOKS_ENV)
+	uv run --no-sync pre-commit autoupdate
 
 run-hooks-all-files:
-	uv run pre-commit run --all-files
+	$(HOOKS_ENV)
+	uv run --no-sync pre-commit run --all-files
 
 # every snippet in docs/data.md, run verbatim, except those needing a
 # database or external tools (below)
@@ -150,5 +175,5 @@ build:
 # check the metadata PyPI will render, and fit from the wheel with no extras
 .PHONY: check-dist
 check-dist: build
-	uvx twine check --strict dist/*
+	uvx twine==7.0.0 check --strict dist/*
 	uv run --isolated --no-project --with dist/*.whl python scripts/check_wheel.py

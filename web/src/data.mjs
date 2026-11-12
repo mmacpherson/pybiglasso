@@ -40,7 +40,7 @@ export function responseValue(value) {
 export function binaryClasses(labels, positive) {
   const classes = [...labels].sort();
   if (classes.length !== 2 || !labels.has(positive)) {
-    throw new Error("Choose a response with exactly two classes and a positive class present in that column. This demo fits logistic regression; continuous outcomes require the future Gaussian solver.");
+    throw new Error("Choose a response with exactly two classes and a positive class present in that column. For a continuous response, choose the Gaussian family.");
   }
   return [classes.find((c) => c !== positive), positive];
 }

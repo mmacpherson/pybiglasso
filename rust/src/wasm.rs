@@ -34,6 +34,8 @@ struct Options {
     test_rows: Option<Vec<usize>>,
 }
 
+// biglasso()'s defaults; scripts/check_wasm.py fails if max_iter or the
+// lambda_min rule (in fit_inner) drifts from them
 impl Default for Options {
     fn default() -> Self {
         Self {
@@ -44,7 +46,7 @@ impl Default for Options {
             lambda_min: None,
             lambdas: None,
             penalty_factor: None,
-            max_iter: 10000,
+            max_iter: 1000,
             dfmax: None,
             r_compatible: false,
             train_rows: None,

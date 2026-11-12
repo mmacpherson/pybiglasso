@@ -29,3 +29,19 @@ jobs:
       run: make r-versions R_VERSION=latest
     - name: Compare against live R
       run: make test-r R_VERSION=latest
+  # The weekly run has no pull request to show its failure: open an issue
+  notify:
+    name: Report a scheduled failure
+    needs: r-live
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+    - env:
+        GH_TOKEN: ${{ github.token }}
+        RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        gh issue create --repo "$GITHUB_REPOSITORY" \
+          --title "Live R comparison failed against current CRAN" \
+          --body "The weekly comparison with the current CRAN release of R biglasso failed: $RUN"
