@@ -31,6 +31,39 @@ class Once:
         ).__arrow_c_stream__()
 
 
+class ScaledScalar(pa.ExtensionScalar):
+    def as_py(self, **kwargs):
+        return None if not self.is_valid else 2 * self.value.as_py(**kwargs)
+
+
+class ScaledType(pa.ExtensionType):
+    def __init__(self):
+        super().__init__(pa.float64(), "pybiglasso.test.scaled")
+
+    def __arrow_ext_serialize__(self):
+        return b""
+
+    @classmethod
+    def __arrow_ext_deserialize__(cls, storage_type, serialized):
+        return cls()
+
+    def __arrow_ext_scalar_class__(self):
+        return ScaledScalar
+
+    def to_pandas_dtype(self):
+        return np.dtype("float64")
+
+
+@pytest.fixture
+def scaled_type():
+    extension = ScaledType()
+    pa.register_extension_type(extension)
+    try:
+        yield extension
+    finally:
+        pa.unregister_extension_type(extension.extension_name)
+
+
 def source():
     schema = pa.schema(
         [
@@ -167,16 +200,167 @@ def test_stream_bad_values_have_cumulative_rows_and_no_publication(tmp_path, mod
         pa.bool_(),
     ],
 )
-def test_preserve_all_solver_types(tmp_path, dtype):
+def test_preserve_all_solver_types(tmp_path, dtype, monkeypatch):
     value = (
         True
         if pa.types.is_boolean(dtype)
         else (2**64 - 1 if dtype == pa.uint64() else 1)
     )
     table = pa.table({"x": pa.array([value, value], type=dtype)})
-    result = ingest(table, tmp_path / "data.feather", dtypes="preserve")
+    module = importlib.import_module("pybiglasso.ingest")
+    monkeypatch.setattr(
+        module,
+        "_numeric",
+        lambda *_args, **_kwargs: pytest.fail(
+            "primitive preserve used scalar validation"
+        ),
+    )
+    result = ingest(table, tmp_path / "data.feather", dtypes="preserve", block_size=1)
     assert result.X.schema.types == [dtype]
     assert result.X["x"].to_pylist() == [value, value]
+
+
+def test_preserve_primitive_response_is_vectorized_and_exact(tmp_path, monkeypatch):
+    table = pa.table({"x": [1, 2], "y": [2**53, 2**54]})
+    module = importlib.import_module("pybiglasso.ingest")
+    monkeypatch.setattr(
+        module,
+        "_numeric",
+        lambda *_args, **_kwargs: pytest.fail(
+            "primitive response used scalar validation"
+        ),
+    )
+    result = ingest(
+        table,
+        tmp_path / "data.feather",
+        response="y",
+        dtypes="preserve",
+    )
+    np.testing.assert_array_equal(result.y, [2**53, 2**54])
+
+
+def test_preserve_does_not_manage_the_process_memory_pool(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        pa,
+        "default_memory_pool",
+        lambda: pytest.fail("ingest flushed the process-wide Arrow pool"),
+    )
+    result = ingest(
+        pa.table({"x": [1.0, 2.0]}),
+        tmp_path / "data.feather",
+        dtypes="preserve",
+    )
+    assert result.X["x"].to_pylist() == [1.0, 2.0]
+
+
+@pytest.mark.parametrize("values", [[Decimal("0.25"), Decimal("0.5")], ["0.25", "0.5"]])
+def test_preserve_decimal_and_string_responses_keep_scalar_validation(
+    tmp_path, monkeypatch, values
+):
+    table = pa.table({"x": [1, 2], "y": values})
+    module = importlib.import_module("pybiglasso.ingest")
+    original = module._numeric
+    validated = []
+
+    def numeric(value, *args, **kwargs):
+        validated.append(value)
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_numeric", numeric)
+    result = ingest(
+        table,
+        tmp_path / "data.feather",
+        response="y",
+        dtypes="preserve",
+    )
+    assert validated == values
+    np.testing.assert_array_equal(result.y, [0.25, 0.5])
+
+
+def test_preserve_extension_response_uses_logical_values(tmp_path, scaled_type):
+    response = pa.ExtensionArray.from_storage(scaled_type, pa.array([1.0, 2.0, 3.0]))
+    result = ingest(
+        pa.table({"x": [1, 2, 3], "y": response}),
+        tmp_path / "data.feather",
+        response="y",
+        dtypes="preserve",
+    )
+    np.testing.assert_array_equal(result.y, [2.0, 4.0, 6.0])
+
+
+def test_preserve_extension_feature_is_rejected(tmp_path, scaled_type):
+    feature = pa.ExtensionArray.from_storage(scaled_type, pa.array([1.0, 2.0]))
+    with pytest.raises(ValueError, match="Column 'x'.*preserve"):
+        ingest(
+            pa.table({"x": feature}),
+            tmp_path / "data.feather",
+            dtypes="preserve",
+        )
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [([1, 2, 3], [1.0, 2.0, 3.0]), (["1.5", "2.5", "3.5"], [1.5, 2.5, 3.5])],
+)
+def test_preserve_dictionary_response_uses_logical_values(tmp_path, values, expected):
+    response = pa.array(values).dictionary_encode()
+    result = ingest(
+        pa.table({"x": [1, 2, 3], "y": response}),
+        tmp_path / "data.feather",
+        response="y",
+        dtypes="preserve",
+    )
+    np.testing.assert_array_equal(result.y, expected)
+
+
+def test_preserve_dictionary_response_error_has_cumulative_row(tmp_path):
+    first = pa.array(["1", "2"]).dictionary_encode()
+    second = pa.array(["3", "bad"]).dictionary_encode()
+    schema = pa.schema([("x", pa.int64()), ("y", first.type)])
+    producer = Once(
+        schema,
+        [
+            pa.record_batch([[1, 2], first], schema=schema),
+            pa.record_batch([[3, 4], second], schema=schema),
+        ],
+    )
+    with pytest.raises(
+        ValueError, match="Column 'y', row 4: missing or nonnumeric value 'bad'"
+    ):
+        ingest(
+            producer,
+            tmp_path / "data.feather",
+            response="y",
+            dtypes="preserve",
+        )
+
+
+def test_preserve_dictionary_response_keeps_integer_exactness(tmp_path):
+    response = pa.array([2**53, 2**53 + 1]).dictionary_encode()
+    with pytest.raises(ValueError, match=f"Column 'y', row 2.*value {2**53 + 1}"):
+        ingest(
+            pa.table({"x": [1, 2], "y": response}),
+            tmp_path / "data.feather",
+            response="y",
+            dtypes="preserve",
+        )
+
+
+@pytest.mark.parametrize(
+    "batches, expected",
+    [
+        ([pa.array([99.0, float("nan"), None]).slice(1)], "row 1.*nan"),
+        ([pa.array([1.0, 2.0]), pa.array([float("nan"), None])], "row 3.*nan"),
+        ([pa.array([1.0, float("nan")]), pa.array([None])], "row 2.*nan"),
+    ],
+)
+def test_preserve_reports_first_mixed_invalid_in_row_order(tmp_path, batches, expected):
+    schema = pa.schema([("x", pa.float64())])
+    producer = Once(
+        schema, [pa.record_batch([array], schema=schema) for array in batches]
+    )
+    with pytest.raises(ValueError, match=expected):
+        ingest(producer, tmp_path / "data.feather", dtypes="preserve")
 
 
 @pytest.mark.parametrize(

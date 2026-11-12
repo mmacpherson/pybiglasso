@@ -96,7 +96,10 @@ uncompressed Arrow stream spool while types are inferred, then converted from
 that spool. The spool is sequential: it keeps no growing batch index and accepts
 replacement dictionaries with a fixed schema. There is no sampling or second
 request to the producer. Preserve mode validates and stages in one pass, without
-this spool. Both modes reject schema differences exposed by imported batches,
+this spool. Primitive bool, integer and floating Arrow columns use column-wide
+Arrow/NumPy validation and conversion; strings and decimals retain per-value
+parsing so their exactness rules do not change. Both modes reject schema
+differences exposed by imported batches,
 report value errors with cumulative one-based row numbers and publish only after
 the whole stream succeeds. These checks do not recover types concealed by a
 malformed producer.
@@ -166,7 +169,13 @@ bool columns. Source size and modification time are checked between passes.
 - Parquet uses bounded `iter_batches`, respecting column selection.
   Its decoder may retain column pages for a selected row group even when the
   yielded batch is smaller, so source decoding is bounded by that row group's
-  selected, uncompressed data rather than by `block_size` alone.
+  selected, uncompressed data rather than by `block_size` alone. After a fast
+  preserve ingest, Arrow's allocator may keep about one decoded row group in
+  its cache. That memory is no longer live but still counts toward RSS. Under a
+  tight process limit, the application can call
+  `pyarrow.default_memory_pool().release_unused()` when appropriate, or choose
+  Arrow's allocator backend at process start with `ARROW_DEFAULT_MEMORY_POOL`;
+  ingest does not flush or replace the caller's process-wide pool.
 - Feather files are read one existing record batch at a time, then sliced into
   blocks. Compressed source batches must be decoded by Arrow; their original
   batch size therefore bounds the decoding allocation, not `block_size`.

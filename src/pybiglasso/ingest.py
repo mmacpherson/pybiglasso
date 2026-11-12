@@ -66,6 +66,9 @@ class _ArrowBlock:
     def __getitem__(self, name):
         return self.batch.column(name).to_pylist()
 
+    def column(self, name):
+        return self.batch.column(name)
+
 
 def _block_length(block, first_column):
     return (
@@ -505,7 +508,72 @@ def _infer(blocks, columns, overrides, decimal_rounding=()):
     return {name: candidates[name][0] for name in columns}, count
 
 
-def _stage(blocks, columns, types, directory, count, decimal_rounding=()):
+def _preserved_array(block, name, dtype, first_row, pa):
+    column = block.column(name)
+    arrow_type = column.type
+    if not (
+        pa.types.is_boolean(arrow_type)
+        or pa.types.is_integer(arrow_type)
+        or arrow_type in (pa.float32(), pa.float64())
+    ):
+        return None
+    source_dtype = np.dtype(arrow_type.to_pandas_dtype())
+    missing = (
+        column.is_null().to_numpy(zero_copy_only=False) if column.null_count else None
+    )
+    if source_dtype.kind == "f":
+        values = column.to_numpy(zero_copy_only=missing is None)
+        nonfinite = ~np.isfinite(values)
+        invalid = nonfinite if missing is None else nonfinite | missing
+        if invalid.any():
+            index = int(invalid.argmax())
+            if missing is not None and missing[index]:
+                raise ValueError(
+                    f"Column {name!r}, row {first_row + index}: "
+                    "missing or nonnumeric value None."
+                )
+            value = column[index].as_py()
+            raise ValueError(
+                f"Column {name!r}, row {first_row + index}: "
+                f"nonfinite numeric value {value!r}."
+            )
+    else:
+        if missing is not None:
+            index = int(missing.argmax())
+            raise ValueError(
+                f"Column {name!r}, row {first_row + index}: "
+                "missing or nonnumeric value None."
+            )
+        values = column.to_numpy(zero_copy_only=source_dtype.kind != "b")
+    target_dtype = np.dtype(dtype)
+    if source_dtype == target_dtype:
+        return values
+    if target_dtype != np.dtype(_RESPONSE_DTYPE):
+        return None
+    converted = values.astype(target_dtype)
+    if source_dtype.kind in "iu":
+        with np.errstate(invalid="ignore", over="ignore"):
+            exact = converted.astype(source_dtype) == values
+        if not exact.all():
+            index = int((~exact).argmax())
+            value = column[index].as_py()
+            raise ValueError(
+                f"Column {name!r}, row {first_row + index}: "
+                f"no supported exact dtype; value {value!r} is not "
+                f"representable as target dtype {dtype!r}."
+            )
+    return converted
+
+
+def _stage(
+    blocks,
+    columns,
+    types,
+    directory,
+    count,
+    decimal_rounding=(),
+    primitive_arrow=None,
+):
     tails = {
         name: np.empty(0, dtype=np.bool_) for name in columns if types[name] == "bool"
     }
@@ -516,18 +584,24 @@ def _stage(blocks, columns, types, directory, count, decimal_rounding=()):
     for block in blocks:
         length = _block_length(block, columns[0])
         for name in columns:
-            values = [
-                _numeric(raw, name, seen + index + 1, name in decimal_rounding)
-                for index, raw in enumerate(block[name])
-            ]
-            for index, value in enumerate(values, seen + 1):
-                if not _exact(value, types[name]):
-                    raise ValueError(
-                        f"Column {name!r}, row {index}: no supported exact dtype; "
-                        f"value {value!r} is not representable as target dtype "
-                        f"{types[name]!r}."
-                    )
-            array = np.asarray(values, dtype=types[name])
+            array = (
+                _preserved_array(block, name, types[name], seen + 1, primitive_arrow)
+                if primitive_arrow is not None and isinstance(block, _ArrowBlock)
+                else None
+            )
+            if array is None:
+                values = [
+                    _numeric(raw, name, seen + index + 1, name in decimal_rounding)
+                    for index, raw in enumerate(block[name])
+                ]
+                for index, value in enumerate(values, seen + 1):
+                    if not _exact(value, types[name]):
+                        raise ValueError(
+                            f"Column {name!r}, row {index}: no supported exact dtype; "
+                            f"value {value!r} is not representable as target dtype "
+                            f"{types[name]!r}."
+                        )
+                array = np.asarray(values, dtype=types[name])
             if types[name] == "bool":
                 bits = np.concatenate((tails[name], array))
                 complete = len(bits) // 8 * 8
@@ -823,6 +897,7 @@ def _ingest_stream(
                 staging,
                 None,
                 decimal_rounding,
+                primitive_arrow=pa,
             )
             if not count:
                 raise ValueError("Source must contain at least one data row.")
