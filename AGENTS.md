@@ -95,10 +95,13 @@ to observed output.
 2. `make test`
 3. `make test-r`, for any change to the solver or the R comparison
 
-On pull requests, CI skips macOS, whose runners can queue for an hour, and
-builds only some wheels; main and releases run everything. Add the `full-ci`
-label to a PR that touches native floating-point or platform-specific code,
-so macOS and every wheel run before it merges.
+What a pull request runs in CI follows from the files it changes. Packaging,
+bindings, toolchain, dependency and CI changes run everything, with every
+wheel, as main and releases do. Other changes under `rust/`, `src/` or `tests/`
+add the macOS job, whose runners can queue for an hour, and build the Linux
+x86 wheel only. Anything else skips macOS. To run everything on a branch by
+hand, start the CI workflow from the Actions tab; that run is extra evidence
+and does not replace the pull request's own required check.
 
 ## Python Style
 
