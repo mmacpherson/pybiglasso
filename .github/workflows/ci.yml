@@ -40,7 +40,8 @@ jobs:
   # What a pull request runs follows from the files it changes, in three tiers:
   # - packaging, bindings, the toolchain, dependencies, CI or the wheel checks:
   #   everything, with every wheel, as main and releases run;
-  # - other code (the rest of rust/, src/, tests/): the macOS job as well, since
+  # - other code (the rest of rust/, src/, tests/, the native test launcher,
+  #   and the benchmark scripts the tests import): the macOS job as well, since
   #   the kernels and their tests are platform-sensitive, and the Linux x86
   #   wheel; the other wheels wait for main;
   # - anything else (docs, benchmarks, the playground): every platform's tests
@@ -71,8 +72,8 @@ jobs:
         if [ "$EVENT" = pull_request ]; then
           full=false
           macos=false
-          builds='^(pyproject\.toml|uv\.lock|Makefile|rust/(Cargo\.(toml|lock)|rustfmt\.toml|build\.rs|src/(lib|python)\.rs)|\.github/|docker/|scripts/(check_(wheel|arch_bits)|wheel_provenance)\.py)'
-          code='^(rust|src|tests)/'
+          builds='^(pyproject\.toml|uv\.lock|Makefile|(rust/)?(\.cargo/|rust-toolchain(\.toml)?$)|rust/(Cargo\.(toml|lock)|rustfmt\.toml|build\.rs|src/(lib|python)\.rs)|\.github/|docker/|scripts/(check_(wheel|arch_bits)|wheel_provenance)\.py)'
+          code='^((rust|src|tests)/|scripts/test_rust\.py$|benchmarks/[^/]+\.py$)'
           # --no-renames lists a renamed or deleted file's old path too. If
           # the diff fails, coverage stays full rather than reading as
           # "nothing changed".
