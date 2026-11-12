@@ -93,7 +93,7 @@ def same_size_wide_parquet(tmp_path_factory):
     paths = []
     for name, rows, columns in (
         ("narrow", 32_768, 64),
-        ("wide", 8_192, 256),
+        ("wide", 1_024, 2_048),
     ):
         values = np.arange(rows, dtype=np.float64)
         table = pa.table({f"x{j}": pa.array(values) for j in range(columns)})
@@ -137,10 +137,14 @@ def test_wide_parquet_peak_is_bounded_by_source_size(
     assert completed.returncode == 0, completed.stderr[-3000:]
     peak = json.loads(completed.stdout.splitlines()[-1])["peak"]
     logical_bytes = (1 << 21) * 8
+    columns = 64 if width == "narrow" else 2_048
     # Source decoding, staging, mapped writer input and the final file may each
-    # account for the logical values; add 32 MiB of reader/writer metadata.
-    # This derives one width-independent ceiling from source size.
-    budget = 4 * logical_bytes + (32 << 20)
+    # account for the logical values. Add 32 MiB of fixed reader/writer state,
+    # then five 4 KiB allocation/page units per column for its staged mapping,
+    # Arrow buffer/array, field/schema, record-batch slot and IPC encoder state.
+    # The explicit column term keeps the 2,048-column case honest while
+    # remaining independent of observed RSS.
+    budget = 4 * logical_bytes + (32 << 20) + columns * (20 << 10)
     assert (peak <= budget) if mode == "ingest" else (peak > budget), (
         peak,
         budget,
