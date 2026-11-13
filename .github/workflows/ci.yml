@@ -3,10 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+  # Coverage follows from the files a pull request changes (the scope job),
+  # so a run's coverage is fixed by its commit: no label to add, and no second
+  # run started by one.
   pull_request:
-    # labeled: adding the full-ci label reruns a PR with full coverage
-    types: [opened, synchronize, reopened, labeled]
   workflow_call:  # from release.yml, on the tagged commit
+  # Full coverage on any branch, by hand. Its checks are extra evidence: they
+  # don't count toward a pull request's required check, so its summary job
+  # has a name of its own.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,12 +37,17 @@ env:
 # snapshot themselves, and rust-cross-architecture compares the two builds.
 
 jobs:
-  # Pull requests get every platform's tests but macOS, and only the Linux x86
-  # wheel. The other wheels build on main, on release, and on any PR that
-  # changes packaging, bindings, the toolchain, dependencies or CI. macOS,
-  # whose runners can queue for an hour, runs on main and on release. The
-  # full-ci label gives a PR both. (A small inline decision rather than a make
-  # recipe: it is CI plumbing, with nothing to run locally.)
+  # What a pull request runs follows from the files it changes, in three tiers:
+  # - packaging, bindings, the toolchain, dependencies, CI or the wheel checks:
+  #   everything, with every wheel, as main and releases run;
+  # - other code (the rest of rust/, src/, tests/, the native test launcher,
+  #   and the benchmark scripts the tests import): the macOS job as well, since
+  #   the kernels and their tests are platform-sensitive, and the Linux x86
+  #   wheel; the other wheels wait for main;
+  # - anything else (docs, benchmarks, the playground): every platform's tests
+  #   but macOS, whose runners can queue for an hour, and the Linux x86 wheel.
+  # (A small inline decision rather than a make recipe: it is CI plumbing,
+  # with nothing to run locally.)
   scope:
     name: Choose coverage
     runs-on: ubuntu-latest
@@ -54,7 +64,6 @@ jobs:
       shell: bash
       env:
         EVENT: ${{ github.event_name }}
-        LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         BASE: ${{ github.event.pull_request.base.sha }}
         HEAD: ${{ github.event.pull_request.head.sha }}
       run: |
@@ -63,14 +72,22 @@ jobs:
         if [ "$EVENT" = pull_request ]; then
           full=false
           macos=false
-          builds='^(pyproject\.toml|uv\.lock|Makefile|rust/(Cargo\.(toml|lock)|src/(lib|python)\.rs)|\.github/|scripts/(check_(wheel|arch_bits)|wheel_provenance)\.py)'
-          # On its own line so a failed diff stops the step (bash -e) rather
-          # than reading as "nothing build-related changed"
-          files=$(git diff --name-only "$BASE...$HEAD")
-          if jq -e 'any(.[]?; . == "full-ci")' <<<"$LABELS" >/dev/null; then
-            full=true; macos=true; echo "full coverage, with macOS: full-ci label"
+          builds='^(pyproject\.toml|uv\.lock|Makefile|(rust/)?(\.cargo/|rust-toolchain(\.toml)?$)|rust/(Cargo\.(toml|lock)|rustfmt\.toml|build\.rs|src/(lib|python)\.rs)|\.github/|docker/|scripts/(check_(wheel|arch_bits)|wheel_provenance)\.py)'
+          code='^((rust|src|tests)/|scripts/test_rust\.py$|benchmarks/[^/]+\.py$)'
+          # --no-renames lists a renamed or deleted file's old path too. If
+          # the diff fails, coverage stays full rather than reading as
+          # "nothing changed".
+          if ! files=$(git diff --no-renames --name-only "$BASE...$HEAD"); then
+            full=true; macos=true
+            echo "::warning::could not list the changed files; running everything"
           elif changed=$(grep -E "$builds" <<<"$files"); then
-            full=true; echo "full coverage: build-related changes:"; echo "$changed"
+            full=true; macos=true
+            echo "everything, with every wheel: build-related changes:"; echo "$changed"
+          elif changed=$(grep -E "$code" <<<"$files"); then
+            macos=true
+            echo "macOS too, with the Linux x86 wheel: code changes:"; echo "$changed"
+          else
+            echo "no macOS, Linux x86 wheel: no code or build-related changes"
           fi
         fi
         wheels='[
@@ -463,7 +480,7 @@ jobs:
   # succeeded, so a failed, cancelled or skipped job blocks the merge. The
   # only exception: macOS may be skipped where scope chose to skip it.
   ci-passed:
-    name: CI passed
+    name: ${{ github.event_name == 'workflow_dispatch' && 'Manual full CI passed' || 'CI passed' }}
     if: always()
     needs: [scope, hooks, rust-kernels, test, macos, rust-cross-architecture, latest-deps, minimum-deps, recipes, sdist, wheels]
     runs-on: ubuntu-latest
