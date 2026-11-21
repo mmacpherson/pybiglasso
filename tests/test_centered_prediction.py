@@ -432,7 +432,31 @@ def test_gaussian_intercept_stationarity_for_unrepresentable_means():
         ),
         Fraction(0),
     ) / len(y)
-    assert abs(residual_mean) <= 1e-8 * (1 + abs(path.coef.toarray()).sum())
+    # The target after anchored centering: tau = 1e-8 standardized units per
+    # unit of standardized slope, plus the rounding of ybar itself and an
+    # allowance for the residual updates' rounding, in y's units.
+    beta = abs(path.coef.toarray()[:, 0] * path.scale)
+    ybar = Fraction(float(path.centered_intercept[0]))
+    exact_mean = sum(map(Fraction, map(float, y)), Fraction(0)) / len(y)
+    z_max = max(
+        abs(Fraction(float(x)) - Fraction(float(path.center[j])))
+        / Fraction(float(path.scale[j]))
+        for j in range(X.shape[1])
+        for x in X[:, j]
+    )
+    updates = (
+        64
+        * len(y)
+        * U
+        * (
+            max(abs(Fraction(float(v)) - ybar) for v in y)
+            + sum(map(Fraction, beta)) * z_max
+        )
+    )
+    bound = (
+        Fraction(1, 10**8) * sum(map(Fraction, beta)) + abs(exact_mean - ybar) + updates
+    )
+    assert abs(residual_mean) <= bound
 
 
 @pytest.mark.xfail(
@@ -466,3 +490,194 @@ def test_binomial_lambda_max_is_the_null_gradient():
         for j in range(X.shape[1])
     )
     assert abs(Fraction(path.lambdas[0]) - gradient) <= 1e-12 * gradient
+
+
+# Reduction order, scratch memory and floating-point settings --------------
+
+
+def test_each_prediction_is_independent_of_the_other_lambdas(monkeypatch):
+    # Summed in blocks of columns, the union of the requested lambdas' columns
+    # set the partial sums: this logit was 0 alone and 1 beside the second
+    # lambda, and so changed class.
+    monkeypatch.setattr(path_module, "CHUNK_ELEMENTS", 4)
+    path = bl.BiglassoPath(
+        lambdas=np.array([1.0, 0.5]),
+        intercept=np.zeros(2),
+        centered_intercept=np.array([-1e16, 0.0]),
+        coef=sps.csc_array(np.array([[1e16, 0], [0, 1], [1, 0], [0, 1]])),
+        deviance=np.zeros(2),
+        iterations=np.zeros(2, dtype=int),
+        n_rejected=np.zeros(2, dtype=int),
+        center=np.zeros(4),
+        center_offset=np.zeros(4),
+        anchored=np.zeros(4, dtype=bool),
+        scale=np.ones(4),
+        penalty_factor=np.ones(4),
+        feature_names=tuple("abcd"),
+        alpha=1.0,
+        family="binomial",
+        named_features=False,
+        r_compatible=False,
+    )
+    X = np.ones((1, 4))
+    # ((-1e16 + 1e16) + 1), the intercept and then each term in column order
+    assert path.decision_function(X, lambdas=[1.0])[0, 0] == 1.0
+    assert path.decision_function(X)[0, 0] == 1.0
+    assert path.predict(X, lambdas=[1.0])[0, 0] == path.predict(X)[0, 0] == 1
+
+
+def test_selected_whole_path_and_callback_predictions_agree(monkeypatch):
+    # far columns cancel; a budget of 8 values splits the 12 columns into
+    # blocks, so the union of the requested lambdas' columns sets their bounds
+    monkeypatch.setattr(path_module, "CHUNK_ELEMENTS", 8)
+    rng = np.random.default_rng(13)
+    X = np.asfortranarray(1e8 + rng.standard_normal((90, 12)))
+    y = ((X[:, :4] - 1e8) @ [1.0, -1.0, 0.5, 0.5] + rng.standard_normal(90) > 0).astype(
+        float
+    )
+    train, test = np.arange(0, 90, 2), np.arange(1, 90, 2)
+    seen = []
+
+    def stop(il, lambdas, cols, beta, scoring):
+        coef = sps.csc_array(
+            (beta, (cols, np.zeros(len(cols), dtype=np.int64))), shape=(X.shape[1], 1)
+        )
+        seen.append(path_module._predictor(X, coef, scoring, test)[:, 0])
+        return False
+
+    path = bl.biglasso(
+        X, y, family="binomial", row_indices=train, nlambda=10, _stop=stop
+    )
+    assert path.n_nonzero[-1] >= 6
+    whole = path.decision_function(X, row_indices=test)
+    selected = np.column_stack(
+        [
+            path.decision_function(X, lambdas=[lam], row_indices=test)[:, 0]
+            for lam in path.lambdas
+        ]
+    )
+    assert whole.tobytes() == np.asfortranarray(selected).tobytes()
+    np.testing.assert_array_equal(np.column_stack(seen), whole)
+
+
+def test_raw_compatible_prediction_is_unchanged_across_blocks(monkeypatch):
+    # r_compatible keeps the historical raw evaluation, blocks and all: the
+    # same as summing each block's sparse product into the raw intercept
+    monkeypatch.setattr(path_module, "CHUNK_ELEMENTS", 96)
+    rng = np.random.default_rng(14)
+    X = np.asfortranarray(1e8 + rng.standard_normal((90, 12)))
+    path = bl.biglasso(
+        X, X[:, 0] - 1e8, family="gaussian", nlambda=8, r_compatible=True
+    )
+    expected = np.broadcast_to(path.intercept, (90, len(path))).copy()
+    used = np.unique(path.coef.indices)
+    width = min(len(used), 96)
+    for c0 in range(0, len(used), width):
+        cols = used[c0 : c0 + width]
+        for start in range(0, 90, 96 // width):
+            stop = min(start + 96 // width, 90)
+            expected[start:stop] += X[start:stop][:, cols] @ sps.csr_array(
+                path.coef[cols, :]
+            )
+    assert path.decision_function(X).tobytes() == expected.tobytes()
+
+
+def scratch_peak(fn):
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        result = fn()
+        return tracemalloc.get_traced_memory()[1], result
+    finally:
+        tracemalloc.stop()
+
+
+def test_centered_prediction_scratch_stays_within_its_budget():
+    # Fortran float64 X, every column used, one lambda: blocks overlapped
+    # their predecessors' buffers and reached 50 MiB against 32 MiB
+    rng = np.random.default_rng(15)
+    X = np.asfortranarray(rng.standard_normal((6144, 1024)))
+    coef = sps.csc_array(np.ones((1024, 1)))
+    peak, eta = scratch_peak(
+        lambda: path_module.centered_predictor(
+            X,
+            coef,
+            np.zeros(1),
+            np.zeros(1024),
+            np.zeros(1024),
+            np.zeros(1024, dtype=bool),
+        )
+    )
+    assert peak <= path_module.CHUNK_ELEMENTS * 8 + eta.nbytes
+
+
+@pytest.mark.parametrize("storage", ["int8 rows", "arrow rows", "float64 C"])
+def test_centered_prediction_scratch_budget_over_many_blocks(monkeypatch, storage):
+    monkeypatch.setattr(path_module, "CHUNK_ELEMENTS", 1 << 14)
+    rng = np.random.default_rng(16)
+    n, p, nlambda = 20000, 6, 3
+    values = rng.integers(-3, 4, size=(n, p)).astype(np.int8)
+    rows = rng.permutation(n)[: n // 2]
+    if storage == "int8 rows":
+        X = np.asfortranarray(values)
+    elif storage == "arrow rows":
+        X = pa.table(
+            {
+                f"x{j}": pa.chunked_array([values[:777, j], values[777:, j]])
+                for j in range(p)
+            }
+        )
+    else:
+        X, rows = np.ascontiguousarray(values, dtype=np.float64), None
+    coef = sps.csc_array(rng.standard_normal((p, nlambda)))
+    peak, eta = scratch_peak(
+        lambda: path_module.centered_predictor(
+            X,
+            coef,
+            np.zeros(nlambda),
+            np.ones(p),
+            np.full(p, 0.5),
+            np.ones(p, dtype=bool),
+            rows,
+        )
+    )
+    # the scratch budget, the result, and the sparse coefficients' index
+    assert peak <= path_module.CHUNK_ELEMENTS * 8 + eta.nbytes + (1 << 14)
+
+
+def test_overflow_reaches_its_specified_result_under_raising_settings(monkeypatch):
+    ncol = 1
+
+    def solver(*args):
+        return dict(
+            iters=np.array([1]),
+            col_map=np.arange(ncol),
+            center=np.array([MAX]),
+            offset=np.zeros(ncol),
+            anchored=np.zeros(ncol, dtype=bool),
+            scale=np.ones(ncol),
+            intercept=np.array([0.5]),
+            coef_rows=[np.arange(ncol)],
+            coef_vals=[np.array([2.0])],  # MAX * 2 overflows
+            lambda_=np.array([0.1]),
+            deviance=np.zeros(1),
+            n_reject=np.zeros(1, dtype=np.int64),
+        )
+
+    monkeypatch.setattr(bl.fit, "_fit_path", lambda *a: solver(*a))
+    X = np.zeros((3, ncol), order="F")
+    for settings in (dict(all="raise"), dict()):
+        with np.errstate(**settings), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            path = bl.biglasso(X, np.zeros(3), family="gaussian", lambdas=[0.1])
+        assert np.isnan(path.intercept[0])
+        # the fit's own warning, and no low-level overflow warning beside it
+        assert [str(w.message)[:40] for w in caught] == [
+            "The intercept on X's raw scale is not re"
+        ]
+    with (
+        np.errstate(all="raise"),
+        pytest.raises(ValueError, match="too large to predict"),
+    ):
+        path.decision_function(np.full((1, ncol), -MAX))

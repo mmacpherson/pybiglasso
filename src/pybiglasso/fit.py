@@ -183,20 +183,25 @@ def biglasso(
     )
     on_lambda = None
     if _stop is not None:
+        # by column of X, as a prediction indexes them, filled in as columns
+        # become active; a column's standardization is fixed for the fit, so
+        # entries written for one lambda stay right for the others
+        full_center, full_offset = np.zeros(data.ncol), np.zeros(data.ncol)
+        full_anchored = np.zeros(data.ncol, dtype=bool)
 
         def on_lambda(
             il, lambdas, cols, vals, intercept, center, scale, offset, anchored
         ):
             beta, raw = _unstandardize(vals, intercept, center, scale, offset, anchored)
-            # by column of X, as a prediction indexes them; only cols are read
-            by_column = np.zeros((3, data.ncol))
-            by_column[:, cols] = center, offset, anchored
+            full_center[cols] = center
+            full_offset[cols] = offset
+            full_anchored[cols] = anchored
             scoring = Scoring(
                 np.array([raw]),
                 np.array([intercept]),
-                by_column[0],
-                by_column[1],
-                by_column[2].astype(bool),
+                full_center,
+                full_offset,
+                full_anchored,
                 bool(r_compatible),
             )
             return bool(_stop(il, lambdas, cols, beta, scoring))
@@ -484,7 +489,10 @@ def _unstandardize(vals, intercept, center, scale, offset, anchored):
     # one exactly rounded sum, shared with the browser build; not @ (BLAS
     # picks its summation order by CPU and thread count) and not math.fsum
     # (documented to double-round on some builds)
-    products = np.concatenate([center * beta, offset[anchored] * beta[anchored]])
+    # an overflowing product is handled below, as NaN with the fit's warning,
+    # whatever NumPy's error settings
+    with np.errstate(over="ignore", invalid="ignore"):
+        products = np.concatenate([center * beta, offset[anchored] * beta[anchored]])
     raw = _rust.exported_intercept(float(intercept), products)
     return beta, math.nan if raw is None else raw
 

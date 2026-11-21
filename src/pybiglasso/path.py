@@ -134,8 +134,7 @@ class BiglassoPath:
         With `row_indices`, predict for those rows of X only. If X names its
         columns (a DataFrame or Arrow table) and the path was fit with names,
         they must be the fitted `feature_names`, in the same order. A path fit
-        on an unnamed array, or unpickled from before names were recorded,
-        checks only the number of columns.
+        on an unnamed array checks only the number of columns.
         """
         X = _as_arrow_matrix(X)
         index = self._lambda_index(lambdas)
@@ -288,39 +287,101 @@ def centered_predictor(
 ):
     """`centered_intercept + sum_j coef_j * ((x_j - center_j) - offset_j)`.
 
-    The offset applies to `anchored` columns. Reads X as `linear_predictor`
-    does, without copying it, subtracting each block's centers into a new
-    array rather than into the block, which may be the caller's own memory;
-    block and centered copy together stay within the same 32 MB.
+    The offset applies to `anchored` columns. Each output is a fixed
+    sequence of separate IEEE operations: h = x_j - center_j (then
+    - offset_j), p = coef_j * h, eta = eta + p, over that lambda's nonzero
+    coefficients in increasing column order, starting from the intercept.
+    The sequence doesn't depend on which other lambdas are predicted with it,
+    on block sizes, or on the platform: every step is its own NumPy ufunc
+    call, which rounds to float64 before the next reads it, so no
+    multiply-add can be fused. X is read a column at a time over blocks of
+    rows, never copied whole or written to; the block buffers are reused, so
+    besides the (nrow, k) result the scratch stays within CHUNK_ELEMENTS
+    float64 values (32 MB).
 
     Forward error, for the stored floats: with k nonzero coefficients at a
     lambda and M = |centered_intercept| + sum_j |coef_j| (|x_j - center_j| +
     |offset_j|), the result is within gamma_(k+3) M + 2 k eta of the exact
     value (u = 2**-53, gamma_m = m u / (1 - m u), eta = 2**-1074), under
-    round-to-nearest with gradual underflow, for (k + 3) u < 1/2. Each term
-    meets at most k + 3 roundings: two subtractions, one product and at most k
-    additions. scipy evaluates `block @ beta` as a column-ordered axpy into a
-    zeroed output (csc_matvecs), and every block's partial sum is then added
-    to the intercept, so each output takes at most k additions in all. The
-    bound doesn't grow with a column's distance from zero, unlike the raw
-    form's. Raises ValueError if a value read or a prediction isn't finite.
+    round-to-nearest with gradual underflow, for (k + 3) u < 1/2: each term
+    meets at most two subtractions, one product and k additions. The bound
+    doesn't grow with a column's distance from zero, unlike the raw form's.
+    Raises ValueError if a value read or a prediction isn't finite, whatever
+    NumPy's floating-point error settings.
     """
     X = _as_array(_as_arrow_matrix(X))
-    coef = sps.csc_array(coef)
-    eta = np.broadcast_to(
-        centered_intercept, (_nrow(X, row_indices), coef.shape[1])
-    ).copy()
-    # each block and its centered copy: the same budget as linear_predictor's
-    blocks = _blocks(X, coef, row_indices, max(1, CHUNK_ELEMENTS // 2))
-    for start, stop, cols, beta, block in blocks:
-        centered = block - center[cols]
-        offset = anchored[cols]
-        if offset.any():
-            centered[:, offset] -= center_offset[cols][offset]
-        eta[start:stop] += centered @ beta
-    if not np.isfinite(eta).all():
-        raise ValueError("X has values too large to predict with this model.")
+    by_column = sps.csr_array(coef)
+    by_column.sort_indices()
+    nrow, nlambda = _nrow(X, row_indices), by_column.shape[1]
+    eta = np.empty((nrow, nlambda), order="F")
+    eta[:] = centered_intercept
+    used = np.flatnonzero(np.diff(by_column.indptr))
+    if len(used) == 0 or nrow == 0:
+        return eta
+    # per row: the column read, its float64 copy, its centered values, a
+    # gather or Arrow lookup's temporaries, and one product per lambda
+    height = max(1, min(nrow, CHUNK_ELEMENTS // (10 + nlambda)))
+    converted = np.empty(height)
+    centered = np.empty(height)
+    products = np.empty((height, nlambda))
+    with np.errstate(over="ignore", invalid="ignore"):
+        for start in range(0, nrow, height):
+            stop = min(start + height, nrow)
+            rows = (
+                slice(start, stop) if row_indices is None else row_indices[start:stop]
+            )
+            m = stop - start
+            for j in used:
+                values = _column(X, rows, int(j), converted[:m])
+                if not np.isfinite(values).all():
+                    raise ValueError("X contains NaN or infinity.")
+                h = centered[:m]
+                np.subtract(values, center[j], out=h)
+                if anchored[j]:
+                    np.subtract(h, center_offset[j], out=h)
+                lambdas = by_column.indices[
+                    by_column.indptr[j] : by_column.indptr[j + 1]
+                ]
+                coefs = by_column.data[by_column.indptr[j] : by_column.indptr[j + 1]]
+                first, last = lambdas[0], lambdas[-1] + 1
+                if last - first == len(lambdas):
+                    # consecutive lambdas, the usual case on a path: one product
+                    # and one addition per output, in place
+                    p = products[:m, : len(lambdas)]
+                    np.multiply.outer(h, coefs, out=p)
+                    target = eta[start:stop, first:last]
+                    np.add(target, p, out=target)
+                else:
+                    p = products[:m, 0]
+                    for k, b in zip(lambdas, coefs, strict=True):
+                        np.multiply(h, b, out=p)
+                        target = eta[start:stop, k]
+                        np.add(target, p, out=target)
+            if not np.isfinite(eta[start:stop]).all():
+                raise ValueError("X has values too large to predict with this model.")
     return eta
+
+
+def _column(X, rows, j, buffer):
+    """Column j of X at `rows` as float64: a view of X where it already is
+    float64 and contiguous rows are asked for, otherwise written into
+    `buffer`. Never a view the caller might write through."""
+    if isinstance(X, _ArrowMatrix):
+        return X._block(rows, [j])[:, 0]
+    if isinstance(rows, slice):
+        column = X[rows, j]
+        if column.dtype == np.float64:
+            return column
+        np.copyto(buffer, column, casting="unsafe")
+        return buffer
+    # NumPy's own indexing, as linear_predictor gathers: a new array, so the
+    # caller's X is never written through, and the same IndexError for an
+    # invalid index
+    gathered = X[:, j][rows]
+    if gathered.dtype == np.float64:
+        return gathered
+    np.copyto(buffer, gathered, casting="unsafe")
+    return buffer
 
 
 class Scoring(NamedTuple):
@@ -396,8 +457,8 @@ def _blocks(X, coef, row_indices, chunk):
             yield start, stop, cols, beta, block
 
 
-# rows x columns of X gathered at once by `linear_predictor` (32 MB as
-# float64); `centered_predictor` gathers half as many, beside their centered copy
+# rows x columns of X gathered at once by `linear_predictor`, and the float64
+# scratch `centered_predictor` uses (32 MB as float64)
 CHUNK_ELEMENTS = 1 << 22
 
 # Every field a fitted path records; an older pickle lacks some of them.
