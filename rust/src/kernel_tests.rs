@@ -25,8 +25,11 @@ fn params(penalty_factor: &[f64]) -> Params<'_> {
 }
 
 fn path(center: Vec<f64>, scale: Vec<f64>, col_map: Vec<usize>) -> Path {
+    let (offset, anchored) = Path::unanchored(&center);
     Path {
         center,
+        offset,
+        anchored,
         scale,
         col_map,
         lambda: vec![0.0],

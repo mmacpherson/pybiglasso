@@ -562,8 +562,11 @@ impl<D: Design> Fit<'_, D> {
         }
 
         let nl = p.nlambda;
+        let (offset, anchored) = Path::unanchored(&center);
         let mut path = Path {
             center,
+            offset,
+            anchored,
             scale,
             col_map,
             lambda: vec![0.0; nl],

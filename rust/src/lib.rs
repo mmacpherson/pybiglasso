@@ -31,5 +31,5 @@ mod python;
 #[cfg(feature = "wasm")]
 mod wasm;
 
-#[cfg(any(feature = "wasm", test))]
+#[cfg(any(feature = "wasm", feature = "python", test))]
 mod model_scale;

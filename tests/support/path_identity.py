@@ -17,14 +17,18 @@ def path_digest(p):
         "coef.indices": p.coef.indices,
         "coef.indptr": p.coef.indptr,
         "intercept": p.intercept,
+        "centered_intercept": p.centered_intercept,
         "lambdas": p.lambdas,
         "deviance": p.deviance,
         "iterations": p.iterations,
         "n_rejected": p.n_rejected,
         "center": p.center,
+        "center_offset": p.center_offset,
+        "anchored": p.anchored,
         "scale": p.scale,
         "penalty_factor": p.penalty_factor,
         "alpha": p.alpha,
+        "r_compatible": p.r_compatible,
     }
     for name, value in fields.items():
         a = np.asarray(value)

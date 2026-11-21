@@ -70,6 +70,10 @@ def test_classifier_extreme_probabilities_are_accurate():
     clf.n_features_in_ = 1
     clf.coef_ = np.ones((1, 1))
     clf.intercept_ = np.zeros(1)
+    clf.centered_intercept_ = np.zeros(1)
+    clf.center_ = np.zeros(1)
+    clf.center_offset_ = np.zeros(1)
+    clf.anchored_ = np.zeros(1, dtype=bool)
 
     with localcontext() as context:
         context.prec = 400

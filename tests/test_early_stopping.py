@@ -48,18 +48,25 @@ def test_stop_sees_each_fit(data):
     X, y = data
     seen = []
 
-    def record(il, lambdas, cols, beta, intercept):
-        seen.append((il, lambdas.copy(), cols.copy(), beta.copy(), intercept))
+    def record(il, lambdas, cols, beta, scoring):
+        seen.append((il, lambdas.copy(), cols.copy(), beta.copy(), scoring))
         return False
 
     path = bl.biglasso(X, y, nlambda=12, _stop=record, family="binomial")
     assert [s[0] for s in seen] == list(range(12))
-    for il, lambdas, cols, beta, intercept in seen:
+    for il, lambdas, cols, beta, scoring in seen:
         np.testing.assert_array_equal(lambdas, path.lambdas)
         column = path.coef[:, [il]]
         np.testing.assert_array_equal(cols, column.indices)
         np.testing.assert_array_equal(beta, column.data)
-        assert intercept == path.intercept[il]
+        # and the state to predict with, as the path will
+        assert scoring.intercept[0] == path.intercept[il]
+        assert scoring.centered_intercept[0] == path.centered_intercept[il]
+        for field in ("center", "center_offset", "anchored"):
+            np.testing.assert_array_equal(
+                getattr(scoring, field)[cols], getattr(path, field)[cols]
+            )
+        assert scoring.r_compatible == path.r_compatible
 
 
 def test_stop_errors_propagate(data):

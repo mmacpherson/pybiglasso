@@ -127,6 +127,9 @@ def record(output):
                         center=fit.center,
                         scale=fit.scale,
                         deviance=fit.deviance,
+                        centered_intercept=fit.centered_intercept,
+                        center_offset=fit.center_offset,
+                        anchored=fit.anchored,
                     )
                     cases[f"{name}/dtype={dtype}/family={family}/alpha={alpha}"] = dict(
                         inputs={"X": array_bits(values), "y": array_bits(response)},

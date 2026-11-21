@@ -73,16 +73,21 @@ def test_path_digest_frames_dtype_shape_and_sparse_storage():
     path = bl.BiglassoPath(
         lambdas=np.array([1.0, 0.5]),
         intercept=np.zeros(2),
+        centered_intercept=np.zeros(2),
         coef=sps.csc_array([[0.0, 1.0], [0.0, 0.0]]),
         deviance=np.array([2.0, 1.0]),
         iterations=np.array([0, 2]),
         n_rejected=np.array([2, 1]),
         center=np.zeros(2),
+        center_offset=np.zeros(2),
+        anchored=np.zeros(2, dtype=bool),
         scale=np.ones(2),
         penalty_factor=np.ones(2),
         feature_names=("a", "b"),
         alpha=1.0,
         family="gaussian",
+        named_features=False,
+        r_compatible=False,
     )
     digest = path_digest(path)
     assert path_digest(dataclasses.replace(path, lambdas=path.lambdas.copy())) == digest

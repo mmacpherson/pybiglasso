@@ -22,7 +22,7 @@ from sklearn.utils.validation import check_array, check_is_fitted, validate_data
 
 from .arrow import _ArrowMatrix, _as_arrow_matrix, _response
 from .fit import biglasso
-from .path import METRICS, linear_predictor, score_logits
+from .path import METRICS, Scoring, _predictor, _require_current_state, score_logits
 
 __all__ = [
     "BiglassoClassifier",
@@ -38,7 +38,7 @@ def _as_design(X):
     Booleans become a uint8 view, and float16 becomes float32 (the solver
     accepts float32/64); everything else numeric is used as is, so an int8
     genotype memmap stays an int8 memmap. Finiteness is checked by `biglasso`
-    and `linear_predictor` as they read X, not by a separate pass here.
+    and the predictors as they read X, not by a separate pass here.
     """
     if isinstance(X, _ArrowMatrix):
         return X
@@ -119,7 +119,47 @@ def _choose_alpha(scores, rule, lower_is_better, complete, allow_nan):
     return best
 
 
-class _ClassifierBase(ClassifierMixin, BaseEstimator):
+# What a fitted estimator predicts with, besides coef_ and intercept_; an
+# estimator pickled by an earlier pybiglasso lacks it.
+_FITTED_STATE = frozenset(
+    ("centered_intercept_", "center_", "center_offset_", "anchored_")
+)
+
+
+class _FittedState:
+    """The centered state of the selected lambda, which estimators predict
+    with, and a clear error for fitted estimators saved without it. Unfitted
+    estimators carry no fitted state and unpickle as they always have."""
+
+    def __setstate__(self, state):
+        if "coef_" in state:
+            _require_current_state(self, state, _FITTED_STATE)
+        super().__setstate__(state)
+
+    def _record(self, path, index):
+        """coef_'s companions at lambda `index` of `path`, shaped as the
+        estimator shapes intercept_ (a float, or a length-1 array)."""
+        centered = path.centered_intercept[index]
+        self.centered_intercept_ = (
+            centered.copy() if np.ndim(centered) else float(centered)
+        )
+        self.center_ = path.center
+        self.center_offset_ = path.center_offset
+        self.anchored_ = path.anchored
+
+    def _scoring(self):
+        # the estimators fit in default mode, so they predict in centered form
+        return Scoring(
+            np.atleast_1d(self.intercept_),
+            np.atleast_1d(self.centered_intercept_),
+            self.center_,
+            self.center_offset_,
+            self.anchored_,
+            False,
+        )
+
+
+class _ClassifierBase(_FittedState, ClassifierMixin, BaseEstimator):
     def _validate_xy(self, X, y):
         X, y = _validate_data(
             self, X, y, dtype="numeric", order=None, copy=False, ensure_all_finite=False
@@ -156,7 +196,7 @@ class _ClassifierBase(ClassifierMixin, BaseEstimator):
         # unlike fit, check every column for NaN/inf: scikit-learn requires it,
         # and for float X it costs one read (a sum), not a copy
         X = _validate_data(self, X, reset=False, dtype="numeric", order=None)
-        return linear_predictor(_as_design(X), self.coef_.T, self.intercept_)[:, 0]
+        return _predictor(_as_design(X), self.coef_.T, self._scoring())[:, 0]
 
     def predict(self, X):
         check_is_fitted(self)
@@ -177,7 +217,7 @@ class _ClassifierBase(ClassifierMixin, BaseEstimator):
         return tags
 
 
-class _RegressionBase(RegressorMixin, BaseEstimator):
+class _RegressionBase(_FittedState, RegressorMixin, BaseEstimator):
     def _validate_xy(self, X, y):
         X, y = _validate_data(
             self,
@@ -206,9 +246,7 @@ class _RegressionBase(RegressorMixin, BaseEstimator):
     def predict(self, X):
         check_is_fitted(self)
         X = _validate_data(self, X, reset=False, dtype="numeric", order=None)
-        return linear_predictor(
-            _as_design(X), self.coef_[:, None], np.atleast_1d(self.intercept_)
-        )[:, 0]
+        return _predictor(_as_design(X), self.coef_[:, None], self._scoring())[:, 0]
 
 
 class BiglassoRegressor(_RegressionBase):
@@ -244,6 +282,7 @@ class BiglassoRegressor(_RegressionBase):
         )
         self.coef_ = self.path_.coef.toarray()[:, 0]
         self.intercept_ = float(self.path_.intercept[0])
+        self._record(self.path_, 0)
         self.n_iter_ = int(self.path_.iterations[0])
         return self
 
@@ -320,6 +359,7 @@ class BiglassoRegressorCV(_RegressionBase):
         self.alpha_ = grid[best]
         self.coef_ = path.coef[:, [best]].toarray().ravel()
         self.intercept_ = float(path.intercept[best])
+        self._record(path, best)
         self.n_iter_ = int(path.iterations[best])
         return self
 
@@ -364,6 +404,7 @@ class BiglassoClassifier(_ClassifierBase):
         )
         self.coef_ = path.coef.toarray().T
         self.intercept_ = path.intercept.copy()
+        self._record(path, slice(None))
         self.n_iter_ = int(path.iterations[0])
         return self
 
@@ -419,7 +460,9 @@ class BiglassoClassifierCV(_ClassifierBase):
         at `alpha_` (or where saturation or dfmax ended it, if that came
         before the folds' choice; `alpha_` is then chosen from the alphas it
         reached)
-    coef_, intercept_ : coefficients at `alpha_`
+    coef_, intercept_ : coefficients at `alpha_`, on X's raw scale
+    centered_intercept_, center_, center_offset_, anchored_ : the centered
+        form of the same model, which predictions evaluate
     """
 
     def __init__(
@@ -550,6 +593,7 @@ class BiglassoClassifierCV(_ClassifierBase):
         self.n_iter_ = int(path.iterations[best])
         self.coef_ = path.coef[:, [best]].toarray().T
         self.intercept_ = path.intercept[[best]].copy()
+        self._record(path, [best])
         return self
 
 
@@ -563,19 +607,20 @@ class _NoImprovement:
         self.sign = 1.0 if metric == "deviance" else -1.0  # lower is better
         self.best, self.since = np.inf, 0
 
-    def __call__(self, il, lambdas, cols, beta, intercept):
-        score = self.score(cols, beta, intercept)
+    def __call__(self, il, lambdas, cols, beta, scoring):
+        score = self.score(cols, beta, scoring)
         if score < self.best:
             self.best, self.since = score, 0
         else:
             self.since += 1
         return self.since >= self.patience
 
-    def score(self, cols, beta, intercept):
-        """The held-out score of one fit; lower is better."""
+    def score(self, cols, beta, scoring):
+        """The held-out score of one fit, predicted as its path will; lower
+        is better."""
         coef = sps.csc_array(
             (beta, (cols, np.zeros(len(cols), dtype=np.int64))),
             shape=(self.X.shape[1], 1),
         )
-        eta = linear_predictor(self.X, coef, np.array([intercept]), self.rows)
+        eta = _predictor(self.X, coef, scoring, self.rows)
         return self.sign * score_logits(self.y, eta, self.metric)[0]
