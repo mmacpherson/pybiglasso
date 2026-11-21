@@ -133,7 +133,13 @@ def test_flipping_labels_negates_the_fit(data, alpha, unpenalized):
         X, 1 - y, alpha=alpha, penalty_factor=pf, nlambda=30, family="binomial"
     )
     assert fit.n_nonzero[-1] > 0
-    assert_same_trajectory(flipped, fit, coef_b=-dense(fit), intercept_b=-fit.intercept)
+    assert_same_trajectory(
+        flipped,
+        fit,
+        coef_b=-dense(fit),
+        intercept_b=-fit.intercept,
+        centered_intercept_b=-fit.centered_intercept,
+    )
 
 
 def test_permuting_columns_permutes_the_solution(data):

@@ -146,6 +146,15 @@ pub(crate) enum Event {
 
 pub(crate) struct Path {
     pub(crate) center: Vec<f64>,
+    /// What each column's standardized values subtract after the center:
+    /// x is standardized as ((x - center) - offset) / scale where anchored.
+    /// Every column is unanchored (offset 0) until anchored centering is
+    /// selected; predictions already evaluate this centered form.
+    // Read by the bindings, which native tests don't build.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) offset: Vec<f64>,
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) anchored: Vec<bool>,
     pub(crate) scale: Vec<f64>,
     pub(crate) col_map: Vec<usize>,
     pub(crate) lambda: Vec<f64>,
@@ -188,6 +197,11 @@ struct CenteredSums {
 }
 
 impl Path {
+    /// Every column unanchored: offsets 0, beside these centers.
+    pub(crate) fn unanchored(center: &[f64]) -> (Vec<f64>, Vec<bool>) {
+        (vec![0.0; center.len()], vec![false; center.len()])
+    }
+
     /// Adds an event for each column center_scale couldn't center precisely.
     pub(crate) fn note_imprecise(&mut self, columns: Vec<usize>) {
         self.events.splice(0..0, columns.into_iter().map(Event::ImpreciseCenter));

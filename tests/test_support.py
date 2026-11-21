@@ -124,6 +124,7 @@ class ToyPath:
     coef: sparse.csc_array
     lambdas: np.ndarray
     intercept: np.ndarray
+    centered_intercept: np.ndarray
     deviance: np.ndarray
     iterations: np.ndarray
     n_rejected: np.ndarray
@@ -137,6 +138,7 @@ def toy_path():
         sparse.csc_array([[0.0, 0.25], [0.0, -0.5]]),
         np.array([0.1, 0.05]),
         np.zeros(2),
+        np.array([0.5, 0.5]),
         np.array([10.0, 8.0]),
         np.array([1, 3]),
         np.array([2, 0]),

@@ -211,7 +211,9 @@ def test_gaussian_prediction_scoring_and_constant_response():
         )
     np.testing.assert_array_equal(compatible.predict(X), constant.predict(X))
     np.testing.assert_array_equal(compatible.iterations[1:], 4)
-    wrong = dataclasses.replace(constant, intercept=constant.intercept + 1)
+    wrong = dataclasses.replace(
+        constant, centered_intercept=constant.centered_intercept + 1
+    )
     np.testing.assert_array_equal(wrong.score(X, np.full(4, 3.0), "r2"), 0)
 
 

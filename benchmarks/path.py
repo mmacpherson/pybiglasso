@@ -37,7 +37,6 @@ import argparse
 import functools
 import hashlib
 import json
-import math
 import os
 import pathlib
 import platform
@@ -229,22 +228,10 @@ def lambda_grid(X, y, alpha, family="binomial"):
 
 
 def standardized_intercept(path):
-    """Each lambda's intercept on the standardized scale, b0 + sum_j b_j * center_j.
-
-    A BLAS matmul's summation order depends on its thread count, and each run
-    limits BLAS to its own threads; fsum's result doesn't depend on summation
-    order or BLAS, so it is the same at any thread count, as pybiglasso's own
-    output is.
-    """
-    import numpy as np
-
-    coef = path.coef.toarray()
-    return np.array(
-        [
-            math.fsum([intercept, *(coef[:, k] * path.center)])
-            for k, intercept in enumerate(path.intercept)
-        ]
-    )
+    """Each lambda's intercept on the standardized scale: the path's own
+    centered_intercept, not rebuilt from the raw intercept and coefficients,
+    which can cancel for columns far from zero."""
+    return path.centered_intercept.copy()
 
 
 def fit_pybiglasso(

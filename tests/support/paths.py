@@ -6,7 +6,14 @@ converged solvers instead need the residual/curvature checks in certificates.
 
 import numpy as np
 
-PATH_FIELDS = ("lambdas", "intercept", "deviance", "iterations", "n_rejected")
+PATH_FIELDS = (
+    "lambdas",
+    "intercept",
+    "centered_intercept",
+    "deviance",
+    "iterations",
+    "n_rejected",
+)
 # Existing fixture policy, not a theorem or an error bound. Iterations and
 # rejections remain exact; the known fixtures stay away from discrete ties.
 SAME_TRAJECTORY = dict(rtol=1e-9, atol=1e-12)
@@ -39,7 +46,9 @@ def assert_bitwise(a, b, *, length=None, rows=None, coef_b=None):
     _assert_array_bits(a.coef.toarray(), coef if rows is None else coef[rows])
 
 
-def assert_same_trajectory(a, b, *, coef_b=None, intercept_b=None, deviance_b=None):
+def assert_same_trajectory(
+    a, b, *, coef_b=None, intercept_b=None, centered_intercept_b=None, deviance_b=None
+):
     """Exact discrete trajectory, with the existing rounded-value policy."""
     assert len(a) == len(b)
     np.testing.assert_array_equal(a.iterations, b.iterations)
@@ -53,6 +62,11 @@ def assert_same_trajectory(a, b, *, coef_b=None, intercept_b=None, deviance_b=No
     np.testing.assert_allclose(
         a.intercept,
         b.intercept if intercept_b is None else intercept_b,
+        **SAME_TRAJECTORY,
+    )
+    np.testing.assert_allclose(
+        a.centered_intercept,
+        b.centered_intercept if centered_intercept_b is None else centered_intercept_b,
         **SAME_TRAJECTORY,
     )
     np.testing.assert_allclose(

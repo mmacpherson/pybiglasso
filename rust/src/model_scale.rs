@@ -1,11 +1,31 @@
-//! Exact rounding for the sum of the already-rounded intercept products.
+//! The raw-scale intercept that pairs with the exported slopes, for both the
+//! Python and browser bindings, so the two agree on every input.
 //!
-//! The Python adapter uses math.fsum. Integer accumulation in units of the
-//! smallest subnormal avoids depending on JS sums or another platform libm.
+//! Integer accumulation in units of the smallest subnormal gives the exactly
+//! rounded sum of the already-rounded products on any build, without relying
+//! on JS sums, the platform libm, or Python's math.fsum, whose documentation
+//! allows double rounding on some builds.
 
 const WORDS: usize = 34;
 const FRACTION: u64 = (1 << 52) - 1;
 
+/// `centered_intercept - S`, where S is the exactly rounded sum of
+/// `products`, the rounded products center * coef (and offset * coef for
+/// anchored columns). None when that isn't a finite number: a nonfinite
+/// product, a sum that overflows, or a final subtraction that overflows. The
+/// raw pair then can't represent the model, though centered predictions can.
+pub(crate) fn exported_intercept(centered_intercept: f64, products: &[f64]) -> Option<f64> {
+    if !centered_intercept.is_finite() {
+        return None;
+    }
+    let sum = rounded_sum(products).ok()?;
+    let intercept = centered_intercept - sum;
+    intercept.is_finite().then_some(intercept)
+}
+
+/// The sum of `values` rounded once to nearest, ties to even; an error for a
+/// nonfinite value or a sum outside the finite range. Exact cancellation of
+/// large terms, as in [MAX, MAX, -MAX], is handled exactly.
 pub(crate) fn rounded_sum(values: &[f64]) -> Result<f64, &'static str> {
     let mut positive = [0u64; WORDS];
     let mut negative = [0u64; WORDS];
@@ -111,6 +131,25 @@ mod tests {
         assert!(rounded_sum(&[f64::INFINITY]).is_err());
         assert!(rounded_sum(&[f64::NAN]).is_err());
         assert!(rounded_sum(&[f64::MAX, f64::MAX]).is_err());
+    }
+
+    #[test]
+    fn intermediate_overflow_is_exact() {
+        assert_eq!(rounded_sum(&[f64::MAX, f64::MAX, -f64::MAX]), Ok(f64::MAX));
+    }
+
+    #[test]
+    fn exported_intercept_is_none_when_not_representable() {
+        assert_eq!(exported_intercept(1.0, &[0.25, 0.5]), Some(0.25));
+        assert_eq!(exported_intercept(1.0, &[]), Some(1.0));
+        // a nonfinite product, including mixed infinities that would cancel
+        assert_eq!(exported_intercept(1.0, &[f64::INFINITY, f64::NEG_INFINITY]), None);
+        assert_eq!(exported_intercept(1.0, &[f64::NAN]), None);
+        // the sum overflows
+        assert_eq!(exported_intercept(0.0, &[f64::MAX, f64::MAX]), None);
+        // every term finite, but the final subtraction overflows
+        assert_eq!(exported_intercept(f64::MAX, &[-f64::MAX]), None);
+        assert_eq!(exported_intercept(f64::NAN, &[]), None);
     }
 
     #[test]

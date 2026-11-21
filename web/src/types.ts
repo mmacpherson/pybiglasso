@@ -13,7 +13,11 @@ export interface ModelPath {
   indices: number[][];
   coefficients: number[][];
   standardized_coefficients: number[][];
+  /** The model's value where every feature is at its center (plus its offset, if anchored) */
+  centered_intercept: number[];
   center: number[];
+  center_offset: number[];
+  anchored: boolean[];
   scale: number[];
   iterations: number[];
   n_rejected: number[];

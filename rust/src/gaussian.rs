@@ -723,8 +723,11 @@ impl<D: Design> Fit<'_, D> {
             );
         }
         let nl = p.nlambda;
+        let (offset, anchored) = Path::unanchored(&center);
         let mut path = Path {
             center,
+            offset,
+            anchored,
             scale,
             col_map,
             lambda: vec![0.0; nl],
@@ -886,8 +889,11 @@ mod tests {
                         n_fit: rows.len(),
                     };
                     let Standardization { center, scale, .. } = fit.center_scale().unwrap();
+                    let (offset, anchored) = Path::unanchored(&center);
                     let path = Path {
                         center,
+                        offset,
+                        anchored,
                         scale,
                         col_map: vec![0, 1, 2],
                         lambda: vec![1.0],

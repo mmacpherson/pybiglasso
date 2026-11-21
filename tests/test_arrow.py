@@ -329,16 +329,21 @@ def test_public_prediction_row_indices_match_numpy(tmp_path, kind, nrow, case):
     model = BiglassoPath(
         lambdas=np.ones(1),
         intercept=np.zeros(1),
+        centered_intercept=np.zeros(1),
         coef=sps.csc_array([[1.0]]),
         deviance=np.zeros(1),
         iterations=np.zeros(1, dtype=int),
         n_rejected=np.zeros(1, dtype=int),
         center=np.zeros(1),
+        center_offset=np.zeros(1),
+        anchored=np.zeros(1, dtype=bool),
         scale=np.ones(1),
         penalty_factor=np.ones(1),
         feature_names=("x0",),
         alpha=1.0,
         family="gaussian",
+        named_features=False,
+        r_compatible=False,
     )
     rows = {
         "list": [nrow - 1],

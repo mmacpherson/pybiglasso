@@ -10,7 +10,7 @@ import scipy.sparse as sps
 from ._threads import resolve_threads
 from .arrow import _ArrowMatrix, _as_array, _as_arrow_matrix, _response
 from .config import settings
-from .path import INTERCEPT, BiglassoPath
+from .path import INTERCEPT, BiglassoPath, Scoring
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +120,11 @@ def biglasso(
     Returns
     -------
     BiglassoPath
-        Fitted path with ``lambdas``, sparse ``coef``, ``intercept``,
-        ``deviance``, ``iterations``, ``n_rejected``, centering and scaling,
-        penalty factors, feature names, ``alpha``, and ``family``.
+        Fitted path with ``lambdas``, sparse ``coef``, ``intercept`` and
+        ``centered_intercept``, ``deviance``, ``iterations``, ``n_rejected``,
+        centering (``center``, ``center_offset``, ``anchored``) and scaling,
+        penalty factors, feature names, ``alpha``, ``family``, and
+        ``r_compatible``.
 
     Notes
     -----
@@ -138,9 +140,10 @@ def biglasso(
     deviance is evaluated at the final fitted model.
     """
     # _stop (private, for BiglassoClassifierCV's early stopping): called as
-    # _stop(il, lambdas, cols, beta, intercept) after each lambda is fit, with
-    # the whole grid and that fit's nonzero coefficients on X's scale; a true
-    # result ends the path there, as dfmax does, but without a warning
+    # _stop(il, lambdas, cols, beta, scoring) after each lambda is fit, with
+    # the whole grid, that fit's nonzero coefficients on X's scale, and a
+    # Scoring of those columns, to predict as the path will; a true result
+    # ends the path there, as dfmax does, but without a warning
 
     data = _validate_args(
         X,
@@ -180,10 +183,28 @@ def biglasso(
     )
     on_lambda = None
     if _stop is not None:
+        # by column of X, as a prediction indexes them, filled in as columns
+        # become active; a column's standardization is fixed for the fit, so
+        # entries written for one lambda stay right for the others
+        full_center, full_offset = np.zeros(data.ncol), np.zeros(data.ncol)
+        full_anchored = np.zeros(data.ncol, dtype=bool)
 
-        def on_lambda(il, lambdas, cols, vals, intercept, center, scale):
-            beta, intercept = _unstandardize(vals, intercept, center, scale)
-            return bool(_stop(il, lambdas, cols, beta, intercept))
+        def on_lambda(
+            il, lambdas, cols, vals, intercept, center, scale, offset, anchored
+        ):
+            beta, raw = _unstandardize(vals, intercept, center, scale, offset, anchored)
+            full_center[cols] = center
+            full_offset[cols] = offset
+            full_anchored[cols] = anchored
+            scoring = Scoring(
+                np.array([raw]),
+                np.array([intercept]),
+                full_center,
+                full_offset,
+                full_anchored,
+                bool(r_compatible),
+            )
+            return bool(_stop(il, lambdas, cols, beta, scoring))
 
     results = _fit_path(
         data.X,
@@ -194,7 +215,7 @@ def biglasso(
         on_lambda,
         family,
     )
-    return _assemble_path(results, data, alpha, family)
+    return _assemble_path(results, data, alpha, family, r_compatible)
 
 
 def _validate_args(
@@ -376,7 +397,7 @@ def _validate_args(
     )
 
 
-def _assemble_path(results, data, alpha, family):
+def _assemble_path(results, data, alpha, family, r_compatible):
     if imprecise := results.pop("imprecise_center", []):
         names = ", ".join(data.feature_names[index] for index in imprecise[:5])
         more = f" and {len(imprecise) - 5} more" if len(imprecise) > 5 else ""
@@ -392,17 +413,34 @@ def _assemble_path(results, data, alpha, family):
     # return coefficients to X's original scale.
     fitted = np.flatnonzero(results["iters"] >= 0)
     col_map, center, scale = results["col_map"], results["center"], results["scale"]
-    rows, vals, intercept = [], [], results["intercept"][fitted].copy()
+    offset, anchored = results["offset"], results["anchored"]
+    centered_intercept = results["intercept"][fitted].copy()
+    rows, vals, intercept = [], [], np.empty(len(fitted))
     for output_index, lambda_index in enumerate(fitted):
         cols = col_map[results["coef_rows"][lambda_index]]
         beta, intercept[output_index] = _unstandardize(
             results["coef_vals"][lambda_index],
-            intercept[output_index],
+            centered_intercept[output_index],
             center[cols],
             scale[cols],
+            offset[cols],
+            anchored[cols],
         )
         rows.append(cols)
         vals.append(beta)
+    if unrepresentable := int(np.isnan(intercept).sum()):
+        scored = (
+            "with r_compatible=True, which predicts with the raw intercept, the "
+            "path can't be scored at those lambdas"
+            if r_compatible
+            else "predict() and score() use the model's centered form and are "
+            "unaffected"
+        )
+        warnings.warn(
+            f"The intercept on X's raw scale is not representable as a float64 "
+            f"at {unrepresentable} lambda(s), and is NaN there; {scored}.",
+            stacklevel=3,
+        )
     indptr = np.concatenate([[0], np.cumsum([len(row) for row in rows])])
     coef = sps.csc_array(
         (
@@ -416,27 +454,49 @@ def _assemble_path(results, data, alpha, family):
     return BiglassoPath(
         lambdas=results["lambda_"][fitted],
         intercept=intercept,
+        centered_intercept=centered_intercept,
         coef=coef,
         # the solver tracks -log-likelihood, as R does; report true deviance
         deviance=(2.0 if family == "binomial" else 1.0) * results["deviance"][fitted],
         iterations=results["iters"][fitted],
         n_rejected=results["n_reject"][fitted],
         center=center,
+        center_offset=offset,
+        anchored=anchored,
         scale=scale,
         penalty_factor=data.penalty_factor,
         feature_names=data.feature_names,
         alpha=alpha,
         family=family,
         named_features=data.named_features,
+        r_compatible=bool(r_compatible),
     )
 
 
-def _unstandardize(vals, intercept, center, scale):
+def _unstandardize(vals, intercept, center, scale, offset, anchored):
     """Coefficients and intercept on X's scale, from those fit on standardized
-    columns with this `center` and `scale`."""
-    beta = vals / scale
-    # fsum, not @: BLAS picks its summation order by CPU and thread count
-    return beta, intercept - math.fsum(center * beta)
+    columns with this `center` and `scale` (and `offset`, where `anchored`).
+
+    The intercept is `intercept - S`, S the exactly rounded sum of the
+    rounded products center * beta (and offset * beta where anchored), so its
+    forward error is at most u |result| + u |S| + sum (u |p| + eta) over the
+    exact products p. NaN when it isn't representable: a product or the sum
+    overflows, or the final subtraction does.
+    """
+    from . import _rust
+
+    # A slope or product that underflows keeps its round-to-nearest subnormal
+    # value, whatever NumPy's error settings, as with default settings.
+    with np.errstate(under="ignore"):
+        beta = vals / scale
+    # one exactly rounded sum, shared with the browser build; not @ (BLAS
+    # picks its summation order by CPU and thread count) and not math.fsum
+    # (documented to double-round on some builds). An overflowing product is
+    # handled there, as NaN with the fit's warning.
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        products = np.concatenate([center * beta, offset[anchored] * beta[anchored]])
+    raw = _rust.exported_intercept(float(intercept), products)
+    return beta, math.nan if raw is None else raw
 
 
 def _fit_path(X, y, row_indices, params, n_threads, on_lambda, family):

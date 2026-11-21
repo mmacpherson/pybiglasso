@@ -127,13 +127,25 @@ def record(output):
                         center=fit.center,
                         scale=fit.scale,
                         deviance=fit.deviance,
+                        centered_intercept=fit.centered_intercept,
+                        center_offset=fit.center_offset,
+                        anchored=fit.anchored,
                     )
+                    fit_bits = {
+                        key: array_bits(value, include_data=True)
+                        for key, value in arrays.items()
+                    }
+                    # Centered prediction, in its fixed order of separate
+                    # operations, on rows scaled by 2^30 (exactly) so that
+                    # large terms cancel and any reordering or fused
+                    # multiply-add would show in the last bits.
+                    probe = np.asfortranarray(
+                        np.asarray(values, dtype=np.float64) * 2.0**30
+                    )
+                    fit_bits["prediction"] = array_bits(fit.decision_function(probe))
                     cases[f"{name}/dtype={dtype}/family={family}/alpha={alpha}"] = dict(
                         inputs={"X": array_bits(values), "y": array_bits(response)},
-                        fit={
-                            key: array_bits(value, include_data=True)
-                            for key, value in arrays.items()
-                        },
+                        fit=fit_bits,
                     )
         # Windows cannot remove a mapped file; release all views first.
         designs.pop("arrow-mixed")

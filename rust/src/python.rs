@@ -1,3 +1,4 @@
+use super::model_scale;
 use super::solver::*;
 use numpy::{
     Element, IntoPyArray, PyArrayDescrMethods, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArray,
@@ -32,6 +33,8 @@ fn to_dict<'py>(py: Python<'py>, path: Path) -> PyResult<Bound<'py, PyDict>> {
     }
     d.set_item("coef_vals", vals)?;
     d.set_item("center", path.center.into_pyarray(py))?;
+    d.set_item("offset", path.offset.into_pyarray(py))?;
+    d.set_item("anchored", path.anchored.into_pyarray(py))?;
     d.set_item("scale", path.scale.into_pyarray(py))?;
     d.set_item("col_map", path.col_map.into_iter().map(|x| x as i64).collect::<Vec<_>>().into_pyarray(py))?;
     d.set_item("lambda_", path.lambda.into_pyarray(py))?;
@@ -491,9 +494,10 @@ fn fit_path<'py>(
         return Err(PyValueError::new_err("row_path='mask' needs row_indices without repeats."));
     }
     let lambdas_vec = lambdas.as_ref().map(|l| l.as_slice().map(|s| s.to_vec())).transpose()?;
-    // on_lambda(il, lambdas, cols, vals, intercept, center, scale), after
-    // each lambda; its exception is kept, and raised once the fit has
-    // stopped
+    // on_lambda(il, lambdas, cols, vals, intercept, center, scale, offset,
+    // anchored), after each lambda, with that fit's standardized
+    // coefficients and intercept and the standardization of their columns;
+    // its exception is kept, and raised once the fit has stopped
     let on_lambda = on_lambda.map(Bound::unbind);
     let raised: Mutex<Option<PyErr>> = Mutex::new(None);
     let call = |path: &Path, il: usize| -> Result<bool, String> {
@@ -509,6 +513,8 @@ fn fit_path<'py>(
                 path.intercept[il],
                 cols.iter().map(|&c| path.center[c]).collect::<Vec<_>>().into_pyarray(py),
                 cols.iter().map(|&c| path.scale[c]).collect::<Vec<_>>().into_pyarray(py),
+                cols.iter().map(|&c| path.offset[c]).collect::<Vec<_>>().into_pyarray(py),
+                cols.iter().map(|&c| path.anchored[c]).collect::<Vec<_>>().into_pyarray(py),
             );
             on_lambda.call1(py, args)?.extract::<bool>(py)
         })
@@ -564,8 +570,17 @@ fn fit_path<'py>(
     Err(PyValueError::new_err("X must have a native real numeric dtype (float32/64 or integer)."))
 }
 
+/// The raw-scale intercept paired with the exported slopes (see
+/// model_scale::exported_intercept), shared with the browser binding; None
+/// when it isn't a finite number.
+#[pyfunction]
+fn exported_intercept(centered_intercept: f64, products: PyReadonlyArray1<'_, f64>) -> PyResult<Option<f64>> {
+    Ok(model_scale::exported_intercept(centered_intercept, products.as_slice()?))
+}
+
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fit_path, m)?)?;
+    m.add_function(wrap_pyfunction!(exported_intercept, m)?)?;
     Ok(())
 }

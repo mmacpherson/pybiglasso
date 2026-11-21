@@ -527,8 +527,22 @@ with a comment beginning "Differs from R biglasso".
   This can make the fit, its intercept especially, inaccurate. An absent warning
   doesn't guarantee accurate scaling or an accurate raw intercept: even a
   well-centered fit can lose precision when its intercept is expressed on X's
-  raw scale. Subtract a reference value, such as each column's minimum, before
-  fitting such data.
+  raw scale, which is why default-mode predictions use the centered form (see
+  "Predictions" below). Subtract a reference value, such as each column's
+  minimum, before fitting such data.
+- **Predictions (default mode).** R predicts from the coefficients and
+  intercept on X's raw scale, `X %*% beta + a0`. pybiglasso's default mode
+  evaluates the same model in centered form: `centered_intercept` plus each
+  coefficient times the column's signed difference from its center. The
+  rounding error of this form doesn't grow with a column's distance from
+  zero, whereas the raw form's can (for values near 1e8 that vary by 1, to
+  the order of 1e-8). This covers `predict`, `decision_function`,
+  `predict_proba`, `score`, the scikit-learn estimators, and
+  cross-validation scoring. `r_compatible=True` predicts and scores from the
+  raw coefficients and intercept, as R does. The raw `intercept` and `coef`
+  remain available as a rounded export of the same model, so the two forms
+  can differ in their last bits even on ordinary data; where the raw
+  intercept isn't representable as a float64, it is NaN, with a warning.
 - **Residual centering (default mode).** R uses the column sum divided by its
   row count as the center. When a usable column's measured standardized mean
   exceeds 1e-6 in magnitude, pybiglasso's default mode adds the mean of its

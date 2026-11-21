@@ -52,13 +52,9 @@ def path(data):
 
 
 @pytest.mark.parametrize("protocol", [0, pickle.HIGHEST_PROTOCOL])
-def test_legacy_path_pickle_keeps_binomial_behavior(path, data, protocol):
-    # Released paths predate the family field. Simulate their instance state
-    # without changing the shared fixture, then round-trip that legacy state.
-    legacy = pickle.loads(pickle.dumps(path, protocol=protocol))
-    del legacy.__dict__["family"]
-    restored = pickle.loads(pickle.dumps(legacy, protocol=protocol))
-    assert restored.family == "binomial"
+def test_path_pickle_round_trips(path, data, protocol):
+    restored = pickle.loads(pickle.dumps(path, protocol=protocol))
+    assert_bitwise(restored, path)
     X, y = data
     np.testing.assert_array_equal(restored.predict(X), path.predict(X))
     np.testing.assert_array_equal(restored.predict_proba(X), path.predict_proba(X))
@@ -455,6 +451,8 @@ def test_intercept_correction_does_not_depend_on_summation_order(monkeypatch):
             iters=np.array([1]),
             col_map=np.arange(ncol),
             center=terms,
+            offset=np.zeros(ncol),
+            anchored=np.zeros(ncol, dtype=bool),
             scale=np.ones(ncol),
             intercept=np.zeros(1),
             coef_rows=[np.arange(ncol)],

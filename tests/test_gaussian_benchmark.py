@@ -650,26 +650,12 @@ def test_real_glum_child_timing_boundaries(benchmark, tmp_path, monkeypatch, fam
         assert output["coef"].shape == (100, inputs.shape[1])
 
 
-def test_standardized_intercept_is_exactly_rounded(benchmark):
-    # A serial or BLAS sum loses the 1 here; any summation order gives the
-    # same answer only if the sum of the (rounded) products is exactly rounded.
+def test_standardized_intercept_is_the_paths_centered_intercept(benchmark):
+    # Rebuilding it from the raw pair cancels for columns far from zero; the
+    # path records it directly.
     import types
-    from fractions import Fraction
 
-    import scipy.sparse
-
-    center = np.array([1e16, 1.0, -1e16, 0.1])
-    coef = np.array([[1.0, 0.5], [1.0, 3.0], [1.0, 0.5], [1.0, -7.0]])
-    path = types.SimpleNamespace(
-        coef=scipy.sparse.csc_matrix(coef),
-        center=center,
-        intercept=np.array([0.25, -2.0]),
+    path = types.SimpleNamespace(centered_intercept=np.array([0.25, -2.0]))
+    np.testing.assert_array_equal(
+        benchmark.standardized_intercept(path), path.centered_intercept
     )
-    exact = [
-        float(
-            Fraction(b0)
-            + sum(Fraction(b * c) for b, c in zip(column, center, strict=True))
-        )
-        for b0, column in zip(path.intercept, coef.T, strict=True)
-    ]
-    np.testing.assert_array_equal(benchmark.standardized_intercept(path), exact)

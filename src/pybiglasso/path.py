@@ -1,6 +1,7 @@
 """The fitted regularization path returned by `pybiglasso.biglasso`."""
 
 import dataclasses
+from typing import NamedTuple
 
 import numpy as np
 import scipy.sparse as sps
@@ -16,42 +17,58 @@ METRICS = ("deviance", "auc", "accuracy")
 class BiglassoPath:
     """A binomial or Gaussian regression fit along decreasing lambdas.
 
-    Coefficients are on the original (unstandardized) scale of X.
+    Coefficients are on the original (unstandardized) scale of X. The model at
+    lambda k is ``centered_intercept[k] + sum_j coef[j, k] * ((x_j - center_j)
+    - center_offset_j)``, the offset applying where ``anchored`` is true;
+    ``intercept[k] + X @ coef[:, k]`` is the same model on X's raw scale.
 
     Attributes:
       lambdas: (nlambda,) penalty strengths, decreasing
-      intercept: (nlambda,) intercept at each lambda
+      intercept: (nlambda,) intercept on X's raw scale at each lambda; NaN
+        where that isn't a representable float64 (a warning says so)
+      centered_intercept: (nlambda,) the model's value where every column is
+        at its center (plus its offset, if anchored)
       coef: (ncol, nlambda) sparse coefficients, one column per lambda
       deviance: (nlambda,) training deviance: RSS for Gaussian, twice negative
         log likelihood for binomial. r_compatible=True retains R's loss bookkeeping.
       iterations: (nlambda,) coordinate-descent iterations at each lambda
       n_rejected: (nlambda,) columns excluded by the strong rule at each lambda
       center, scale: (ncol,) column means and standard deviations of X
+      center_offset: (ncol,) what anchored columns subtract after the center
+      anchored: (ncol,) whether each column is standardized as
+        ((x - center) - center_offset) / scale
       penalty_factor: (ncol,) per-column penalty multipliers
       feature_names: (ncol,) column names
       named_features: whether feature_names came from the user or X's
         columns, rather than being the defaults x0, x1, ...
       alpha: elastic-net mixing parameter (1 is the lasso)
       family: "binomial" or "gaussian"
+      r_compatible: whether the path was fit with r_compatible=True, which
+        also predicts and scores with the raw coefficients and intercept, as
+        R biglasso does
     """
 
     lambdas: np.ndarray
     intercept: np.ndarray
+    centered_intercept: np.ndarray
     coef: sps.csc_array
     deviance: np.ndarray
     iterations: np.ndarray
     n_rejected: np.ndarray
     center: np.ndarray
+    center_offset: np.ndarray
+    anchored: np.ndarray
     scale: np.ndarray
     penalty_factor: np.ndarray
     feature_names: tuple
     alpha: float
-    # Pickles from before families existed have no instance field, so they
-    # fall back here. New fits always record their actual family explicitly.
-    family: str = "binomial"
-    # Likewise for pickles from before this was recorded: they keep the
-    # column-count check only.
-    named_features: bool = False
+    family: str
+    named_features: bool
+    r_compatible: bool
+
+    def __setstate__(self, state):
+        _require_current_state(self, state, _PATH_STATE)
+        self.__dict__.update(state)
 
     def __len__(self):
         return len(self.lambdas)
@@ -117,8 +134,7 @@ class BiglassoPath:
         With `row_indices`, predict for those rows of X only. If X names its
         columns (a DataFrame or Arrow table) and the path was fit with names,
         they must be the fitted `feature_names`, in the same order. A path fit
-        on an unnamed array, or unpickled from before names were recorded,
-        checks only the number of columns.
+        on an unnamed array checks only the number of columns.
         """
         X = _as_arrow_matrix(X)
         index = self._lambda_index(lambdas)
@@ -127,8 +143,18 @@ class BiglassoPath:
                 f"X has {X.shape[1]} columns; the model was fit on {self.coef.shape[0]}."
             )
         self._check_column_names(X)
-        return linear_predictor(
-            X, self.coef[:, index], self.intercept[index], row_indices
+        return _predictor(
+            X,
+            self.coef[:, index],
+            Scoring(
+                self.intercept[index],
+                self.centered_intercept[index],
+                self.center,
+                self.center_offset,
+                self.anchored,
+                self.r_compatible,
+            ),
+            row_indices,
         )
 
     def predict_proba(self, X, lambdas=None, row_indices=None):
@@ -180,6 +206,7 @@ class BiglassoPath:
         )
         path = dict(
             lambda_=self.lambdas,
+            centered_intercept=self.centered_intercept,
             deviance=self.deviance,
             n_nonzero=self.n_nonzero,
             iterations=self.iterations,
@@ -188,6 +215,8 @@ class BiglassoPath:
         features = dict(
             feature=names,
             center=self.center,
+            center_offset=self.center_offset,
+            anchored=self.anchored,
             scale=self.scale,
             penalty_factor=self.penalty_factor,
         )
@@ -198,8 +227,10 @@ class BiglassoPath:
 
         kind="coef": long format, one row per nonzero coefficient (and the
           intercept) per lambda: lambda_, feature, coefficient
-        kind="path": one row per lambda: deviance, n_nonzero, iterations, ...
-        kind="features": one row per column of X: center, scale, penalty_factor
+        kind="path": one row per lambda: centered_intercept, deviance,
+          n_nonzero, iterations, ...
+        kind="features": one row per column of X: center, center_offset,
+          anchored, scale, penalty_factor
         """
         try:
             import polars as pl
@@ -238,16 +269,194 @@ def linear_predictor(X, coef, intercept, row_indices=None):
     X's dtype or size; coefficients stay sparse. Besides the (nrow, k) result,
     that bounds the memory used. Raises ValueError if the values read aren't
     all finite.
+
+    This is the raw form of a fitted model, as R biglasso predicts. For
+    columns far from zero its rounding error grows with their magnitude; a
+    path's own `decision_function` uses the centered form in default mode.
     """
     X = _as_array(_as_arrow_matrix(X))
     coef = sps.csc_array(coef)
+    eta = np.broadcast_to(intercept, (_nrow(X, row_indices), coef.shape[1])).copy()
+    for start, stop, _, beta, block in _blocks(X, coef, row_indices, CHUNK_ELEMENTS):
+        eta[start:stop] += block @ beta
+    return eta
+
+
+def centered_predictor(
+    X, coef, centered_intercept, center, center_offset, anchored, row_indices=None
+):
+    """`centered_intercept + sum_j coef_j * ((x_j - center_j) - offset_j)`.
+
+    The offset applies to `anchored` columns. Each output is a fixed
+    sequence of separate IEEE operations: h = x_j - center_j (then
+    - offset_j), p = coef_j * h, eta = eta + p, over that lambda's nonzero
+    coefficients in increasing column order, starting from the intercept.
+    The sequence doesn't depend on which other lambdas are predicted with it,
+    on block sizes, or on the platform: every step is its own NumPy ufunc
+    call, which rounds to float64 before the next reads it, so no
+    multiply-add can be fused. X is read a column at a time over blocks of
+    rows, never copied whole or written to; each block's used columns are
+    centered a tile at a time into a reused buffer, so besides the (nrow, k)
+    result the scratch stays within CHUNK_ELEMENTS float64 values (32 MB).
+
+    Forward error, for the stored floats: with k nonzero coefficients at a
+    lambda and M = |centered_intercept| + sum_j |coef_j| (|x_j - center_j| +
+    |offset_j|), the result is within gamma_(k+3) M + 2 k eta of the exact
+    value (u = 2**-53, gamma_m = m u / (1 - m u), eta = 2**-1074), under
+    round-to-nearest with gradual underflow, for (k + 3) u < 1/2: each term
+    meets at most two subtractions, one product and k additions. The bound
+    doesn't grow with a column's distance from zero, unlike the raw form's.
+    Raises ValueError if a value read or a prediction isn't finite, whatever
+    NumPy's floating-point error settings.
+    """
+    X = _as_array(_as_arrow_matrix(X))
+    coef = sps.csc_array(coef)
+    coef.sort_indices()
+    nrow, nlambda = _nrow(X, row_indices), coef.shape[1]
+    eta = np.empty((nrow, nlambda), order="F")
+    eta[:] = centered_intercept
     used = np.unique(coef.indices)
-    nrow = X.shape[0] if row_indices is None else len(row_indices)
-    eta = np.broadcast_to(intercept, (nrow, coef.shape[1])).copy()
-    if len(used) == 0:
+    if len(used) == 0 or nrow == 0:
         return eta
-    width = min(len(used), CHUNK_ELEMENTS)
-    height = CHUNK_ELEMENTS // width
+    # Each lambda's nonzero columns, ascending, and their coefficients.
+    terms = [
+        (
+            k,
+            coef.indices[coef.indptr[k] : coef.indptr[k + 1]],
+            coef.data[coef.indptr[k] : coef.indptr[k + 1]],
+        )
+        for k in range(nlambda)
+        if coef.indptr[k + 1] > coef.indptr[k]
+    ]
+    # X's used columns are centered a tile at a time over a block of rows;
+    # each lambda's output column, contiguous in the Fortran-ordered result,
+    # then takes the tile's terms in column order, so every output still sees
+    # its intercept and then its terms in ascending column order, however the
+    # rows and columns are tiled. float64-sized slots per row: the centered
+    # tile, the column's float64 copy, a product, a finiteness mask (under 1),
+    # and a NumPy gather (1) or an Arrow lookup's indices, chunk ids, order,
+    # block and gathered values (up to 10).
+    width = max(1, min(len(used), 256, CHUNK_ELEMENTS // 32))
+    height = max(1, min(nrow, CHUNK_ELEMENTS // (width + 14)))
+    tile = np.empty((height, width), order="F")
+    converted = np.empty(height)
+    product = np.empty(height)
+    finite = np.empty(height, dtype=bool)
+    # Each operation rounds to nearest with gradual underflow, as the bound
+    # assumes; overflow is checked below. So NumPy's error settings don't
+    # change a finite result or turn it into an exception.
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        for start in range(0, nrow, height):
+            stop = min(start + height, nrow)
+            rows = (
+                slice(start, stop) if row_indices is None else row_indices[start:stop]
+            )
+            m = stop - start
+            p = product[:m]
+            for t0 in range(0, len(used), width):
+                columns = used[t0 : t0 + width]
+                for q, j in enumerate(columns):
+                    values = _column(X, rows, int(j), converted[:m])
+                    if not np.isfinite(values, out=finite[:m]).all():
+                        raise ValueError("X contains NaN or infinity.")
+                    h = tile[:m, q]
+                    np.subtract(values, center[j], out=h)
+                    if anchored[j]:
+                        np.subtract(h, center_offset[j], out=h)
+                low, high = columns[0], columns[-1]
+                for k, cols, coefs in terms:
+                    first, last = np.searchsorted(cols, [low, high + 1])
+                    if first == last:
+                        continue
+                    out = eta[start:stop, k]
+                    for q, b in zip(
+                        np.searchsorted(columns, cols[first:last]),
+                        coefs[first:last],
+                        strict=True,
+                    ):
+                        np.multiply(tile[:m, q], b, out=p)
+                        np.add(out, p, out=out)
+            for k in range(nlambda):
+                if not np.isfinite(eta[start:stop, k], out=finite[:m]).all():
+                    raise ValueError(
+                        "X has values too large to predict with this model."
+                    )
+    return eta
+
+
+def _column(X, rows, j, buffer):
+    """Column j of X at `rows` as float64: a view of X where it already is
+    float64 and contiguous rows are asked for, otherwise written into
+    `buffer`. Never a view the caller might write through."""
+    if isinstance(X, _ArrowMatrix):
+        return X._block(rows, [j])[:, 0]
+    if isinstance(rows, slice):
+        column = X[rows, j]
+        if column.dtype == np.float64:
+            return column
+        np.copyto(buffer, column, casting="unsafe")
+        return buffer
+    # NumPy's own indexing, as linear_predictor gathers: a new array, so the
+    # caller's X is never written through, and the same IndexError for an
+    # invalid index
+    gathered = X[:, j][rows]
+    if gathered.dtype == np.float64:
+        return gathered
+    np.copyto(buffer, gathered, casting="unsafe")
+    return buffer
+
+
+class Scoring(NamedTuple):
+    """What a fitted model predicts with, at its selected lambdas: the raw
+    pair, or the centered form, as `r_compatible` chooses."""
+
+    intercept: np.ndarray
+    centered_intercept: np.ndarray
+    center: np.ndarray
+    center_offset: np.ndarray
+    anchored: np.ndarray
+    r_compatible: bool
+
+
+def _predictor(X, coef, scoring, row_indices=None):
+    """The linear predictor of a fitted model, in the form its mode scores
+    with."""
+    if scoring.r_compatible:
+        if np.isnan(scoring.intercept).any():
+            raise ValueError(
+                "This r_compatible model's raw intercept is not representable, "
+                "so it can't be scored on the raw scale; fit with "
+                "r_compatible=False for centered scoring."
+            )
+        return linear_predictor(X, coef, scoring.intercept, row_indices)
+    # Differs from R biglasso: R predicts with the raw coefficients and
+    # intercept. Default mode evaluates the same model in centered form, whose
+    # rounding error doesn't grow with a column's distance from zero;
+    # r_compatible=True keeps the raw form.
+    return centered_predictor(
+        X,
+        coef,
+        scoring.centered_intercept,
+        scoring.center,
+        scoring.center_offset,
+        scoring.anchored,
+        row_indices,
+    )
+
+
+def _nrow(X, row_indices):
+    return X.shape[0] if row_indices is None else len(row_indices)
+
+
+def _blocks(X, coef, row_indices, chunk):
+    """(start, stop, cols, beta, block) over the columns of X with a nonzero
+    coefficient, in blocks of at most `chunk` values converted to float64."""
+    used = np.unique(coef.indices)
+    if len(used) == 0:
+        return
+    nrow = _nrow(X, row_indices)
+    width = min(len(used), chunk)
+    height = chunk // width
     for c0 in range(0, len(used), width):
         cols = used[c0 : c0 + width]
         beta = sps.csr_array(coef[cols, :])
@@ -267,12 +476,27 @@ def linear_predictor(X, coef, intercept, row_indices=None):
             block = np.asarray(block, dtype=np.float64)
             if not np.isfinite(block).all():
                 raise ValueError("X contains NaN or infinity.")
-            eta[start:stop] += block @ beta
-    return eta
+            yield start, stop, cols, beta, block
 
 
-# rows x columns of X gathered at once by `linear_predictor` (32 MB as float64)
+# rows x columns of X gathered at once by `linear_predictor`, and the float64
+# scratch `centered_predictor` uses (32 MB as float64)
 CHUNK_ELEMENTS = 1 << 22
+
+# Every field a fitted path records; an older pickle lacks some of them.
+_PATH_STATE = frozenset(f.name for f in dataclasses.fields(BiglassoPath))
+
+
+def _require_current_state(obj, state, fields):
+    """Refuse fitted state from an earlier pybiglasso, which can't be scored
+    the way this one scores: it lacks the centered state predictions use."""
+    missing = fields - set(state)
+    if missing:
+        raise ValueError(
+            f"This {type(obj).__name__} was saved by an earlier version of "
+            "pybiglasso that didn't record the fitted state predictions now use "
+            f"({', '.join(sorted(missing))}). Refit it with this version."
+        )
 
 
 def binomial_deviance(y, eta):
