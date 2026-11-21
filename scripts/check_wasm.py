@@ -153,6 +153,18 @@ def main():
                 assert a.shape == b.shape and a.tobytes() == b.tobytes(), (
                     f"{args.engine} vs native bits: {case.name}: {key}"
                 )
+        if args.native_bits:
+            # the centered form predictions use, which R doesn't report
+            for key, dtype in [
+                ("centered_intercept", np.float64),
+                ("center_offset", np.float64),
+                ("anchored", np.bool_),
+            ]:
+                a = np.asarray(actual[key], dtype=dtype)
+                b = np.asarray(native[index][key], dtype=dtype)
+                assert a.shape == b.shape and a.tobytes() == b.tobytes(), (
+                    f"{args.engine} vs native bits: {case.name}: {key}"
+                )
         np.testing.assert_array_equal(
             actual["iterations"], reference["iter"], err_msg=case.name
         )

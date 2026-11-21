@@ -183,16 +183,21 @@ for (const family of ["binomial", "gaussian"]) {
         assert.deepEqual(fold.indices, alone.indices);
         assert.deepEqual(fold.iterations, alone.iterations);
         fold.coefficients.forEach((b, k) => b.forEach((v, i) => assert(Math.abs(v - alone.coefficients[k][i]) <= 1e-12 * (1 + Math.abs(v)))));
-        // the held-out loss, from the returned coefficients
-        assert.equal(fold.holdout.length, fold.lambdas.length);
-        fold.holdout.forEach((loss, k) => {
+        // the held-out loss, from the returned coefficients: default mode
+        // scores the centered form, r_compatible the raw pair, as R does
+        const holdout = (path, eta) => path.holdout.forEach((loss, k) => {
           const losses = test.map((i) => {
-            const eta = fold.intercept[k] + fold.indices[k].reduce((s, j, n) => s + data.x[j][i] * fold.coefficients[k][n], 0);
-            return family === "gaussian" ? (data.y[i] - eta) ** 2 : 2 * (Math.log1p(Math.exp(eta)) - data.y[i] * eta);
+            const e = eta(path, k, i);
+            return family === "gaussian" ? (data.y[i] - e) ** 2 : 2 * (Math.log1p(Math.exp(e)) - data.y[i] * e);
           });
           const expected = losses.reduce((a, b) => a + b, 0) / test.length;
           assert(Math.abs(loss - expected) <= 1e-12 * expected, `${loss} vs ${expected}`);
         });
+        assert.equal(fold.holdout.length, fold.lambdas.length);
+        holdout(fold, (p, k, i) => p.centered_intercept[k] + p.indices[k].reduce(
+          (s, j, n) => s + p.coefficients[k][n] * ((data.x[j][i] - p.center[j]) - (p.anchored[j] ? p.center_offset[j] : 0)), 0));
+        const raw = whole.fit({ family, alpha: .8, lambdas, train_rows: train, test_rows: test, r_compatible: true });
+        holdout(raw, (p, k, i) => p.intercept[k] + p.indices[k].reduce((s, j, n) => s + data.x[j][i] * p.coefficients[k][n], 0));
         assert.equal(alone.holdout, undefined);
       } finally { whole.free(); part.free(); }
     });

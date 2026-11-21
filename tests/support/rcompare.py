@@ -400,6 +400,10 @@ def fit_py(case, data, lambdas=None, *, r_compatible=True):
         iter=fit.iterations,
         rejections=fit.n_rejected,
         beta=np.vstack([fit.intercept, fit.coef.toarray()]),
+        # pybiglasso's centered form of the same model; not compared with R
+        centered_intercept=fit.centered_intercept,
+        center_offset=fit.center_offset,
+        anchored=fit.anchored,
         seconds=seconds,
         warnings=warning_kinds(str(w.message) for w in caught),
     )

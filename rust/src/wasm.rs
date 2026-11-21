@@ -1,6 +1,6 @@
 //! Browser binding. A dataset is ingested once; every path borrows its X.
 
-use super::model_scale::rounded_sum;
+use super::model_scale::exported_intercept;
 use super::solver::*;
 use ndarray::{ArrayView2, ShapeBuilder};
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,13 @@ struct ModelPath {
     indices: Vec<Vec<usize>>,
     coefficients: Vec<Vec<f64>>,
     standardized_coefficients: Vec<Vec<f64>>,
+    /// The model's value where every x_j is center_j + center_offset_j:
+    /// predictions are centered_intercept + sum_j coef_j ((x_j - center_j)
+    /// - center_offset_j), the offset applying to anchored columns
+    centered_intercept: Vec<f64>,
     center: Vec<f64>,
+    center_offset: Vec<f64>,
+    anchored: Vec<bool>,
     scale: Vec<f64>,
     iterations: Vec<i64>,
     n_rejected: Vec<i64>,
@@ -238,6 +244,7 @@ impl Dataset {
         let mut coefficients = Vec::new();
         let mut standardized_coefficients = Vec::new();
         let mut intercept = Vec::new();
+        let mut unrepresentable = 0;
         // The core leaves -1 sentinels after saturation or dfmax, just as the
         // Python adapter expects; they are not fitted null models.
         let fitted: Vec<usize> = path.iters.iter().enumerate().filter_map(|(k, &n)| (n >= 0).then_some(k)).collect();
@@ -246,13 +253,18 @@ impl Dataset {
                 path.coef_rows[k].as_deref().unwrap_or_default().iter().map(|&j| path.col_map[j]).collect();
             let values = path.coef_vals[k].as_deref().unwrap_or_default();
             let beta: Vec<f64> = cols.iter().zip(values).map(|(&j, &v)| v / path.scale[j]).collect();
-            let correction: Vec<f64> = cols.iter().zip(&beta).map(|(&j, &v)| path.center[j] * v).collect();
-            intercept.push(path.intercept[k] - rounded_sum(&correction).map_err(str::to_owned)?);
+            let products: Vec<f64> = (cols.iter().zip(&beta).map(|(&j, &v)| path.center[j] * v))
+                .chain(cols.iter().zip(&beta).filter(|&(&j, _)| path.anchored[j]).map(|(&j, &v)| path.offset[j] * v))
+                .collect();
+            intercept.push(exported_intercept(path.intercept[k], &products).unwrap_or_else(|| {
+                unrepresentable += 1;
+                f64::NAN
+            }));
             indices.push(cols);
             coefficients.push(beta);
             standardized_coefficients.push(values.to_vec());
         }
-        let warnings = path
+        let mut warnings: Vec<String> = path
             .events
             .iter()
             .map(|e| match e {
@@ -268,18 +280,39 @@ impl Dataset {
                 }
             })
             .collect();
+        if unrepresentable > 0 {
+            warnings.push(format!(
+                "The raw-scale intercept is not representable at {unrepresentable} lambda(s) and is NaN there; held-out scores and predictions use the centered form."
+            ));
+        }
+        let centered_intercept: Vec<f64> = fitted.iter().map(|&k| path.intercept[k]).collect();
+        if options.r_compatible && options.test_rows.is_some() && intercept.iter().any(|b| b.is_nan()) {
+            return Err("This compatibility-mode model's raw intercept is not representable, so its held-out rows can't be scored on the raw scale; fit with r_compatible off for centered scoring.".into());
+        }
         let holdout = options.test_rows.as_ref().map(|test| {
             (0..fitted.len())
                 .map(|f| {
                     let loss: f64 = test
                         .iter()
                         .map(|&i| {
-                            let eta = intercept[f]
-                                + indices[f]
-                                    .iter()
-                                    .zip(&coefficients[f])
-                                    .map(|(&j, &b)| self.x[j * self.nrow + i] * b)
-                                    .sum::<f64>();
+                            let x = |j: usize| self.x[j * self.nrow + i];
+                            let terms = indices[f].iter().zip(&coefficients[f]);
+                            // Differs from R biglasso, which predicts with
+                            // the raw coefficients and intercept: default mode
+                            // evaluates the centered form, whose rounding
+                            // error doesn't grow with a column's distance
+                            // from zero. r_compatible keeps the raw form.
+                            let eta = if options.r_compatible {
+                                intercept[f] + terms.map(|(&j, &b)| x(j) * b).sum::<f64>()
+                            } else {
+                                centered_intercept[f]
+                                    + terms
+                                        .map(|(&j, &b)| {
+                                            let centered = x(j) - path.center[j];
+                                            b * if path.anchored[j] { centered - path.offset[j] } else { centered }
+                                        })
+                                        .sum::<f64>()
+                            };
                             match family {
                                 // log(1 + exp(eta)) - y eta, computed stably
                                 Family::Binomial => {
@@ -291,8 +324,11 @@ impl Dataset {
                         .sum();
                     loss / test.len() as f64
                 })
-                .collect()
+                .collect::<Vec<f64>>()
         });
+        if holdout.as_ref().is_some_and(|losses| losses.iter().any(|l| !l.is_finite())) {
+            return Err("A held-out row's prediction is too large to evaluate with this model.".into());
+        }
         let result = ModelPath {
             family: options.family,
             lambdas: fitted.iter().map(|&k| path.lambda[k]).collect(),
@@ -300,7 +336,10 @@ impl Dataset {
             indices,
             coefficients,
             standardized_coefficients,
+            centered_intercept,
             center: path.center,
+            center_offset: path.offset,
+            anchored: path.anchored,
             scale: path.scale,
             iterations: fitted.iter().map(|&k| path.iters[k]).collect(),
             n_rejected: fitted.iter().map(|&k| path.n_reject[k]).collect(),
