@@ -36,24 +36,52 @@ pub(crate) fn arithmetic_ok() -> bool {
         && (min * std::hint::black_box(0.1)).to_bits() == 0x0001_9999_9999_999a
 }
 
+/// A norm's input, read in ascending row order, once per pass the norm makes.
+trait Pass {
+    fn len(&self) -> usize;
+    fn each(&self, visit: impl FnMut(f64));
+}
+/// Values computed from an index: a slice, or a difference of two.
+struct Indexed<F>(usize, F);
+impl<F: Fn(usize) -> f64> Pass for Indexed<F> {
+    fn len(&self) -> usize {
+        self.0
+    }
+    fn each(&self, mut visit: impl FnMut(f64)) {
+        (0..self.0).for_each(|i| visit((self.1)(i)));
+    }
+}
+/// A transform of each value in a column of X. The column is read in runs,
+/// as the kernels read it: the same values in the same order as at(i), but
+/// a chunked column isn't searched for every row.
+struct Mapped<'a, C, F>(&'a C, F);
+impl<C: Col, F: Fn(f64) -> f64> Pass for Mapped<'_, C, F> {
+    fn len(&self) -> usize {
+        self.0.n()
+    }
+    fn each(&self, mut visit: impl FnMut(f64)) {
+        for_each_value(self.0, |v| visit((self.1)(v)));
+    }
+}
+
 // Guard the actual norm input, after any centering/differencing transform.
 // Its unscaled square is normal; the count bounds every partial sum.
 const FAST_MIN: f64 = f64::from_bits((1023 - 240) << 52);
 const FAST_MAX: f64 = f64::from_bits((1023 + 240) << 52);
 
-fn norm_fast(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
-    let (gamma, _) = gamma_terms(n.checked_mul(2)?.checked_add(64)?)?;
+fn norm_fast(values: &impl Pass) -> Option<f64> {
+    let (gamma, _) = gamma_terms(values.len().checked_mul(2)?.checked_add(64)?)?;
     let mut valid = true;
     let mut squared = 0.;
-    for i in 0..n {
-        let value = at(i).abs();
+    values.each(|value| {
+        let value = value.abs();
         let in_range = value == 0. || (FAST_MIN..=FAST_MAX).contains(&value);
         valid &= in_range;
         // Invalid inputs contribute a dummy zero; no overflowing or tiny
         // candidate products are evaluated. The entire candidate is discarded.
         let guarded = if in_range { value } else { 0. };
         squared += guarded * guarded;
-    }
+    });
     if !valid {
         return None;
     }
@@ -67,32 +95,41 @@ fn norm_fast(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
 }
 
 pub(crate) fn norm(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
-    if !arithmetic_ok() {
-        return None;
-    }
-    norm_fast(n, &at).or_else(|| norm_safe(n, at))
+    norm_of(&Indexed(n, at))
 }
 
-fn norm_safe(n: usize, at: impl Fn(usize) -> f64) -> Option<f64> {
+fn norm_of(values: &impl Pass) -> Option<f64> {
     if !arithmetic_ok() {
         return None;
     }
-    let mut maximum: f64 = 0.;
-    for i in 0..n {
-        let v = at(i).abs();
-        if !v.is_finite() {
-            return None;
-        }
+    norm_fast(values).or_else(|| norm_safe(values))
+}
+
+fn norm_safe(values: &impl Pass) -> Option<f64> {
+    if !arithmetic_ok() {
+        return None;
+    }
+    let (mut finite, mut maximum) = (true, 0f64);
+    values.each(|v| {
+        let v = v.abs();
+        finite &= v.is_finite();
         maximum = maximum.max(v);
+    });
+    if !finite {
+        return None;
     }
     if maximum == 0. {
         return Some(0.);
     }
-    let mut squared = 0.;
-    for i in 0..n {
-        let ratio = div(at(i).abs(), maximum)?;
-        squared = add(squared, mul(ratio, ratio)?)?;
-    }
+    // None once any step fails, as returning from a loop would be.
+    let mut squared = Some(0.);
+    values.each(|v| {
+        squared = squared.and_then(|s| {
+            let ratio = div(v.abs(), maximum)?;
+            add(s, mul(ratio, ratio)?)
+        });
+    });
+    let squared = squared?;
     // The additive enclosure is in the squared, scaled domain, before sqrt.
     // next_up of a flushed-to-zero operation is never used: arithmetic_ok
     // requires gradual underflow. Genuine rounded zero widens to ETA.
@@ -145,20 +182,15 @@ impl Meta {
         if !denominator.is_finite() || denominator <= 0. {
             return None;
         }
-        let at = |i| column.at(i);
         let (xnorm, coefficient_norm) = if centered {
             // These rounded coefficients are exactly those used by stock's
             // centered fallback. Their construction is outside the linear dot.
-            let z = |i| (column.at(i) - center) / scale;
-            let zn = norm(n, z)?;
+            let zn = norm_of(&Mapped(column, |value| (value - center) / scale))?;
             (zn, div(zn, denominator)?)
         } else {
-            let xn = norm(n, at)?;
-            let difference = |i| {
-                let value = column.at(i);
-                if value == center { 0. } else { (value - center).abs().next_up() }
-            };
-            (xn, div(norm(n, difference)?, denominator)?)
+            let xn = norm_of(&Mapped(column, |value| value))?;
+            let difference = |value: f64| if value == center { 0. } else { (value - center).abs().next_up() };
+            (xn, div(norm_of(&Mapped(column, difference))?, denominator)?)
         };
         Some(Self { xnorm, coefficient_norm, center: center.abs(), denominator, n, centered })
     }
@@ -251,7 +283,11 @@ pub(crate) fn test_norm_paths(values: &[f64]) -> (Option<f64>, Option<f64>, Opti
     if !arithmetic_ok() {
         return (None, None, None);
     }
-    (norm_fast(values.len(), |i| values[i]), norm_safe(values.len(), |i| values[i]), test_norm(values))
+    (
+        norm_fast(&Indexed(values.len(), |i| values[i])),
+        norm_safe(&Indexed(values.len(), |i| values[i])),
+        test_norm(values),
+    )
 }
 /// The scores use the residual sum the solver keeps: `seqsum` order with
 /// `r_compatible`, the default mode's blocked order otherwise.
@@ -296,17 +332,17 @@ mod tests {
         for value in [FAST_MIN, FAST_MIN.next_up(), FAST_MAX.next_down(), FAST_MAX] {
             for sign in [-1., 1.] {
                 let values = [0., sign * value, -0.];
-                assert!(norm_fast(values.len(), |i| values[i]).unwrap() >= value);
+                assert!(norm_fast(&Indexed(values.len(), |i| values[i])).unwrap() >= value);
             }
         }
         for value in [FAST_MIN.next_down(), FAST_MAX.next_up(), f64::NAN, f64::INFINITY] {
-            assert!(norm_fast(3, |i| if i == 1 { value } else { 1. }).is_none());
+            assert!(norm_fast(&Indexed(3, |i| if i == 1 { value } else { 1. })).is_none());
         }
     }
 
     #[test]
     fn guarded_norm_keeps_safe_underflow_fallback() {
-        assert!(norm_fast(1, |_| 1e-200).is_none());
+        assert!(norm_fast(&Indexed(1, |_| 1e-200)).is_none());
         assert!(norm(1, |_| 1e-200).unwrap() >= 1e-200);
         assert_eq!(norm(0, |_| unreachable!()), Some(0.));
         assert_eq!(norm(3, |_| -0.), Some(0.));
@@ -314,23 +350,25 @@ mod tests {
 
     #[test]
     fn operation_count_rejects_before_reading() {
-        assert!(norm_fast(usize::MAX, |_| unreachable!()).is_none());
+        assert!(norm_fast(&Indexed(usize::MAX, |_| unreachable!())).is_none());
     }
 
     #[test]
     fn guard_checks_the_transformed_quantity() {
         let raw = [FAST_MAX, -FAST_MAX];
-        assert!(norm_fast(raw.len(), |i| raw[i]).is_some());
+        assert!(norm_fast(&Indexed(raw.len(), |i| raw[i])).is_some());
         assert!(
-            norm_fast(raw.len(), |i| { if raw[i] == FAST_MAX { 0. } else { (raw[i] - FAST_MAX).abs().next_up() } })
-                .is_none()
+            norm_fast(&Indexed(raw.len(), |i: usize| {
+                if raw[i] == FAST_MAX { 0. } else { (raw[i] - FAST_MAX).abs().next_up() }
+            }))
+            .is_none()
         );
 
         let center = 2. * FAST_MAX;
         let raw = [center, center.next_up()];
         let scale = raw[1] - center;
-        assert!(norm_fast(raw.len(), |i| raw[i]).is_none());
-        assert!(norm_fast(raw.len(), |i| (raw[i] - center) / scale).unwrap() >= 1.);
+        assert!(norm_fast(&Indexed(raw.len(), |i| raw[i])).is_none());
+        assert!(norm_fast(&Indexed(raw.len(), |i| (raw[i] - center) / scale)).unwrap() >= 1.);
     }
 
     #[test]
@@ -340,7 +378,90 @@ mod tests {
         let (upper, _) = gamma_terms(last).unwrap();
         assert!(upper < 0.5);
         assert!(gamma_terms(1usize << 51).is_none());
-        assert!(norm_fast((1usize << 50) - 32, |_| unreachable!()).is_none());
+        assert!(norm_fast(&Indexed((1usize << 50) - 32, |_| unreachable!())).is_none());
+    }
+    /// Meta's bits from each storage, against those from the same values
+    /// in one contiguous f64 slice, which reads them one by one in order.
+    /// Both go through the run reader, so its visit order is checked first,
+    /// row by row against at(i), the scalar access it replaced.
+    fn assert_meta_matches_values<C: Col>(what: &str, column: &C, center: f64, scale: f64) {
+        let values: Vec<f64> = (0..column.n()).map(|i| column.at(i)).collect();
+        let mut row = 0;
+        Mapped(column, |value| value).each(|value| {
+            assert_eq!(value.to_bits(), values[row].to_bits(), "{what}: row {row}");
+            row += 1;
+        });
+        assert_eq!(row, values.len(), "{what}: rows visited");
+        let expected = Meta::make(&Contig::<_, true>(&values), center, scale, values.len(), |_| true);
+        let actual = Meta::make(column, center, scale, values.len(), |_| true);
+        assert_eq!(actual.map(Meta::test_metadata), expected.map(Meta::test_metadata), "{what}");
+    }
+
+    #[test]
+    fn meta_reads_every_storage_as_its_values() {
+        let n = 61;
+        let small: Vec<i16> = (0..n).map(|i| ((i * 7919) % 101) as i16 - 50).collect();
+        let as_f64: Vec<f64> = small.iter().map(|&v| f64::from(v)).collect();
+        // A value below the fast guard sends the norm to its safe fallback;
+        // values far from zero relative to their spread take the centered branch.
+        let mut tiny = as_f64.clone();
+        tiny[30] = 1e-300;
+        let offset: Vec<f64> = as_f64.iter().map(|v| 1e6 + v / 64.).collect();
+        let mut nonfinite = as_f64.clone();
+        nonfinite[40] = f64::NAN;
+        let bools: Vec<u8> = small.iter().map(|&v| u8::from(v > 0)).collect();
+        let cases: [(&str, &[f64], f64, f64); 5] = [
+            ("ordinary", &as_f64, 1.5, 29.),
+            ("exact center", &as_f64, 3., 29.),
+            ("safe fallback", &tiny, 1.5, 29.),
+            ("centered", &offset, 1e6, 0.45),
+            ("nonfinite", &nonfinite, 1.5, 29.),
+        ];
+        for (name, x, center, scale) in cases {
+            assert_meta_matches_values(name, &Contig::<_, true>(x), center, scale);
+            let wide = ndarray::Array2::from_shape_fn((x.len(), 3), |(i, j)| if j == 1 { x[i] } else { 0. });
+            assert_meta_matches_values(name, &Strided::<_, true>(wide.column(1)), center, scale);
+            let rows: Vec<usize> = (0..x.len()).rev().step_by(2).collect();
+            assert_meta_matches_values(name, &Gather { col: Contig::<_, true>(x), idx: &rows }, center, scale);
+            for size in [1, 7, 8, 9, 20] {
+                let mut chunks = vec![MappedCol::F64(&[])];
+                chunks.extend(x.chunks(size).map(MappedCol::F64));
+                chunks.push(MappedCol::F64(&[]));
+                let mapped = MappedX { columns: vec![ChunkedColumn::new(chunks, x.len()).unwrap()] };
+                assert_meta_matches_values(name, &mapped.col(0), center, scale);
+            }
+        }
+        let narrow: Vec<i8> = small.iter().map(|&v| v as i8).collect();
+        let single: Vec<f32> = as_f64.iter().map(|&v| v as f32).collect();
+        let (center, scale) = (1.5, 29.);
+        assert_meta_matches_values("i16", &MappedCol::I16(&small), center, scale);
+        assert_meta_matches_values("i8", &MappedCol::I8(&narrow), center, scale);
+        assert_meta_matches_values("f32", &MappedCol::F32(&single), center, scale);
+        for size in [3, 8, 13] {
+            let chunks: Vec<_> = narrow.chunks(size).map(MappedCol::I8).collect();
+            let mapped = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
+            assert_meta_matches_values("i8 chunks", &mapped.col(0), center, scale);
+        }
+        // 64-bit integers at and around 2^53, where conversion to f64 rounds.
+        let edge = 1i64 << 53;
+        let wide: Vec<i64> = (0..n as i64).map(|i| (edge + i % 5 - 2) * if i % 3 == 0 { -1 } else { 1 }).collect();
+        let unsigned: Vec<u64> = (0..n as u64).map(|i| (edge as u64) + i % 5 - 2).collect();
+        for size in [1, 7, 8, 13] {
+            let chunks: Vec<_> = wide.chunks(size).map(MappedCol::I64).collect();
+            let mapped = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
+            assert_meta_matches_values("i64 chunks", &mapped.col(0), 2f64.powi(52), 2f64.powi(53));
+            let chunks: Vec<_> = unsigned.chunks(size).map(MappedCol::U64).collect();
+            let mapped = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
+            assert_meta_matches_values("u64 chunks", &mapped.col(0), 2f64.powi(53), 2.);
+        }
+        for bit_offset in [0, 3] {
+            let mut bytes = vec![0u8; (bit_offset + n).div_ceil(8)];
+            for (i, &b) in bools.iter().enumerate() {
+                bytes[(bit_offset + i) / 8] |= b << ((bit_offset + i) % 8);
+            }
+            let bits = MappedCol::Bits { bytes: &bytes, offset: bit_offset, len: n };
+            assert_meta_matches_values("bits", &bits, 0.5, 0.5);
+        }
     }
 }
 
