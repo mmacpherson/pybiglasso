@@ -382,8 +382,16 @@ mod tests {
     }
     /// Meta's bits from each storage, against those from the same values
     /// in one contiguous f64 slice, which reads them one by one in order.
+    /// Both go through the run reader, so its visit order is checked first,
+    /// row by row against at(i), the scalar access it replaced.
     fn assert_meta_matches_values<C: Col>(what: &str, column: &C, center: f64, scale: f64) {
         let values: Vec<f64> = (0..column.n()).map(|i| column.at(i)).collect();
+        let mut row = 0;
+        Mapped(column, |value| value).each(|value| {
+            assert_eq!(value.to_bits(), values[row].to_bits(), "{what}: row {row}");
+            row += 1;
+        });
+        assert_eq!(row, values.len(), "{what}: rows visited");
         let expected = Meta::make(&Contig::<_, true>(&values), center, scale, values.len(), |_| true);
         let actual = Meta::make(column, center, scale, values.len(), |_| true);
         assert_eq!(actual.map(Meta::test_metadata), expected.map(Meta::test_metadata), "{what}");
@@ -433,6 +441,18 @@ mod tests {
             let chunks: Vec<_> = narrow.chunks(size).map(MappedCol::I8).collect();
             let mapped = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
             assert_meta_matches_values("i8 chunks", &mapped.col(0), center, scale);
+        }
+        // 64-bit integers at and around 2^53, where conversion to f64 rounds.
+        let edge = 1i64 << 53;
+        let wide: Vec<i64> = (0..n as i64).map(|i| (edge + i % 5 - 2) * if i % 3 == 0 { -1 } else { 1 }).collect();
+        let unsigned: Vec<u64> = (0..n as u64).map(|i| (edge as u64) + i % 5 - 2).collect();
+        for size in [1, 7, 8, 13] {
+            let chunks: Vec<_> = wide.chunks(size).map(MappedCol::I64).collect();
+            let mapped = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
+            assert_meta_matches_values("i64 chunks", &mapped.col(0), 2f64.powi(52), 2f64.powi(53));
+            let chunks: Vec<_> = unsigned.chunks(size).map(MappedCol::U64).collect();
+            let mapped = MappedX { columns: vec![ChunkedColumn::new(chunks, n).unwrap()] };
+            assert_meta_matches_values("u64 chunks", &mapped.col(0), 2f64.powi(53), 2.);
         }
         for bit_offset in [0, 3] {
             let mut bytes = vec![0u8; (bit_offset + n).div_ceil(8)];
