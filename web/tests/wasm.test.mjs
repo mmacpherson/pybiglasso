@@ -194,8 +194,8 @@ for (const family of ["binomial", "gaussian"]) {
           assert(Math.abs(loss - expected) <= 1e-12 * expected, `${loss} vs ${expected}`);
         });
         assert.equal(fold.holdout.length, fold.lambdas.length);
-        holdout(fold, (p, k, i) => p.centered_intercept[k] + p.indices[k].reduce(
-          (s, j, n) => s + p.coefficients[k][n] * ((data.x[j][i] - p.center[j]) - (p.anchored[j] ? p.center_offset[j] : 0)), 0));
+        holdout(fold, (p, k, i) => p.indices[k].map((j, n) => [j, p.coefficients[k][n]]).sort((a, b) => a[0] - b[0]).reduce(
+          (s, [j, b]) => s + b * ((data.x[j][i] - p.center[j]) - (p.anchored[j] ? p.center_offset[j] : 0)), p.centered_intercept[k]));
         const raw = whole.fit({ family, alpha: .8, lambdas, train_rows: train, test_rows: test, r_compatible: true });
         holdout(raw, (p, k, i) => p.intercept[k] + p.indices[k].reduce((s, j, n) => s + data.x[j][i] * p.coefficients[k][n], 0));
         assert.equal(alone.holdout, undefined);
@@ -223,6 +223,19 @@ test("fold rows out of range, repeated, or empty are clean errors", () => {
     for (const rows of [[8], [0, 0, 1], []]) {
       assert.throws(() => d.fit({ lambdas: [.1], train_rows: rows }), /Fold rows/);
       assert.throws(() => d.fit({ lambdas: [.1], test_rows: rows }), /Fold rows/);
+    }
+  } finally { d.free(); }
+});
+
+test("a finite held-out prediction with an overflowing squared residual scores as an infinite loss, in both modes", () => {
+  const d = new Dataset(5, 1);
+  try {
+    d.write_column(0, 0, Float64Array.of(-1, 1, -1, 1, 0));
+    d.write_response(0, Float64Array.of(0, 0, 0, 0, 1e200));
+    for (const r_compatible of [false, true]) {
+      const p = d.fit({ family: "gaussian", lambdas: [1], train_rows: [0, 1, 2, 3], test_rows: [4], r_compatible });
+      // the prediction is exactly zero; only (1e200 - 0)^2 overflows
+      assert.deepEqual(p.holdout, [Infinity], `r_compatible=${r_compatible}`);
     }
   } finally { d.free(); }
 });

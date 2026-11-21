@@ -281,54 +281,68 @@ impl Dataset {
             })
             .collect();
         if unrepresentable > 0 {
+            let scoring = if options.r_compatible {
+                "with r_compatible, which scores held-out rows with the raw intercept, those lambdas can't be scored"
+            } else {
+                "held-out scores use the centered form and are unaffected"
+            };
             warnings.push(format!(
-                "The raw-scale intercept is not representable at {unrepresentable} lambda(s) and is NaN there; held-out scores and predictions use the centered form."
+                "The raw-scale intercept is not representable at {unrepresentable} lambda(s) and is NaN there; {scoring}."
             ));
         }
         let centered_intercept: Vec<f64> = fitted.iter().map(|&k| path.intercept[k]).collect();
         if options.r_compatible && options.test_rows.is_some() && intercept.iter().any(|b| b.is_nan()) {
             return Err("This compatibility-mode model's raw intercept is not representable, so its held-out rows can't be scored on the raw scale; fit with r_compatible off for centered scoring.".into());
         }
-        let holdout = options.test_rows.as_ref().map(|test| {
-            (0..fitted.len())
-                .map(|f| {
-                    let loss: f64 = test
-                        .iter()
-                        .map(|&i| {
-                            let x = |j: usize| self.x[j * self.nrow + i];
-                            let terms = indices[f].iter().zip(&coefficients[f]);
-                            // Differs from R biglasso, which predicts with
-                            // the raw coefficients and intercept: default mode
-                            // evaluates the centered form, whose rounding
-                            // error doesn't grow with a column's distance
-                            // from zero. r_compatible keeps the raw form.
-                            let eta = if options.r_compatible {
-                                intercept[f] + terms.map(|(&j, &b)| x(j) * b).sum::<f64>()
-                            } else {
-                                centered_intercept[f]
-                                    + terms
-                                        .map(|(&j, &b)| {
-                                            let centered = x(j) - path.center[j];
-                                            b * if path.anchored[j] { centered - path.offset[j] } else { centered }
-                                        })
-                                        .sum::<f64>()
-                            };
-                            match family {
+        // Differs from R biglasso, which predicts with the raw coefficients
+        // and intercept: default mode evaluates the centered form, whose
+        // rounding error doesn't grow with a column's distance from zero, in
+        // the Python binding's order (the intercept, then each term in
+        // column order). r_compatible keeps the raw form and its loss.
+        let by_column: Vec<Vec<(usize, f64)>> = (0..fitted.len())
+            .map(|f| {
+                let mut terms: Vec<(usize, f64)> =
+                    indices[f].iter().copied().zip(coefficients[f].iter().copied()).collect();
+                terms.sort_unstable_by_key(|&(j, _)| j);
+                terms
+            })
+            .collect();
+        let centered_eta = |f: usize, i: usize| -> f64 {
+            by_column[f].iter().fold(centered_intercept[f], |eta, &(j, b)| {
+                let centered = self.x[j * self.nrow + i] - path.center[j];
+                eta + b * if path.anchored[j] { centered - path.offset[j] } else { centered }
+            })
+        };
+        let raw_eta = |f: usize, i: usize| -> f64 {
+            intercept[f]
+                + indices[f].iter().zip(&coefficients[f]).map(|(&j, &b)| self.x[j * self.nrow + i] * b).sum::<f64>()
+        };
+        let holdout = match &options.test_rows {
+            None => None,
+            Some(test) => Some(
+                (0..fitted.len())
+                    .map(|f| {
+                        let mut loss = 0.0;
+                        for &i in test {
+                            let eta = if options.r_compatible { raw_eta(f, i) } else { centered_eta(f, i) };
+                            if !options.r_compatible && !eta.is_finite() {
+                                return Err(
+                                    "A held-out row's prediction is too large to evaluate with this model.".to_string()
+                                );
+                            }
+                            loss += match family {
                                 // log(1 + exp(eta)) - y eta, computed stably
                                 Family::Binomial => {
                                     2.0 * (eta.max(0.0) + libm::log1p(libm::exp(-eta.abs())) - self.y[i] * eta)
                                 }
                                 Family::Gaussian => (self.y[i] - eta).powi(2),
-                            }
-                        })
-                        .sum();
-                    loss / test.len() as f64
-                })
-                .collect::<Vec<f64>>()
-        });
-        if holdout.as_ref().is_some_and(|losses| losses.iter().any(|l| !l.is_finite())) {
-            return Err("A held-out row's prediction is too large to evaluate with this model.".into());
-        }
+                            };
+                        }
+                        Ok(loss / test.len() as f64)
+                    })
+                    .collect::<Result<Vec<f64>, String>>()?,
+            ),
+        };
         let result = ModelPath {
             family: options.family,
             lambdas: fitted.iter().map(|&k| path.lambda[k]).collect(),
