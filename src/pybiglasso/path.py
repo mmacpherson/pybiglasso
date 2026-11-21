@@ -318,13 +318,22 @@ def centered_predictor(
     used = np.flatnonzero(np.diff(by_column.indptr))
     if len(used) == 0 or nrow == 0:
         return eta
-    # per row: the column read, its float64 copy, its centered values, a
-    # gather or Arrow lookup's temporaries, and one product per lambda
-    height = max(1, min(nrow, CHUNK_ELEMENTS // (10 + nlambda)))
+    # float64-sized slots per row: the column's float64 copy and its centered
+    # values (2), a finiteness mask (under 1), a NumPy gather (1) or an Arrow
+    # lookup's indices, chunk ids, order, block and gathered values (up to
+    # 10), and one product for each lambda in a tile; lambdas beyond the tile
+    # are taken in turn, so the scratch stays within the budget however many
+    # are selected.
+    tile = max(1, min(nlambda, CHUNK_ELEMENTS // 2))
+    height = max(1, min(nrow, CHUNK_ELEMENTS // (14 + tile)))
     converted = np.empty(height)
     centered = np.empty(height)
-    products = np.empty((height, nlambda))
-    with np.errstate(over="ignore", invalid="ignore"):
+    finite = np.empty(height, dtype=bool)
+    products = np.empty((height, tile))
+    # Each operation rounds to nearest with gradual underflow, as the bound
+    # assumes; overflow is checked below. So NumPy's error settings don't
+    # change a finite result or turn it into an exception.
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
         for start in range(0, nrow, height):
             stop = min(start + height, nrow)
             rows = (
@@ -333,7 +342,7 @@ def centered_predictor(
             m = stop - start
             for j in used:
                 values = _column(X, rows, int(j), converted[:m])
-                if not np.isfinite(values).all():
+                if not np.isfinite(values, out=finite[:m]).all():
                     raise ValueError("X contains NaN or infinity.")
                 h = centered[:m]
                 np.subtract(values, center[j], out=h)
@@ -346,19 +355,24 @@ def centered_predictor(
                 first, last = lambdas[0], lambdas[-1] + 1
                 if last - first == len(lambdas):
                     # consecutive lambdas, the usual case on a path: one product
-                    # and one addition per output, in place
-                    p = products[:m, : len(lambdas)]
-                    np.multiply.outer(h, coefs, out=p)
-                    target = eta[start:stop, first:last]
-                    np.add(target, p, out=target)
+                    # and one addition per output, in place, a tile at a time
+                    for k0 in range(0, len(lambdas), tile):
+                        k1 = min(k0 + tile, len(lambdas))
+                        p = products[:m, : k1 - k0]
+                        np.multiply.outer(h, coefs[k0:k1], out=p)
+                        target = eta[start:stop, first + k0 : first + k1]
+                        np.add(target, p, out=target)
                 else:
                     p = products[:m, 0]
                     for k, b in zip(lambdas, coefs, strict=True):
                         np.multiply(h, b, out=p)
                         target = eta[start:stop, k]
                         np.add(target, p, out=target)
-            if not np.isfinite(eta[start:stop]).all():
-                raise ValueError("X has values too large to predict with this model.")
+            for k in range(nlambda):
+                if not np.isfinite(eta[start:stop, k], out=finite[:m]).all():
+                    raise ValueError(
+                        "X has values too large to predict with this model."
+                    )
     return eta
 
 

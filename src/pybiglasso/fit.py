@@ -485,13 +485,15 @@ def _unstandardize(vals, intercept, center, scale, offset, anchored):
     """
     from . import _rust
 
-    beta = vals / scale
+    # A slope or product that underflows keeps its round-to-nearest subnormal
+    # value, whatever NumPy's error settings, as with default settings.
+    with np.errstate(under="ignore"):
+        beta = vals / scale
     # one exactly rounded sum, shared with the browser build; not @ (BLAS
     # picks its summation order by CPU and thread count) and not math.fsum
-    # (documented to double-round on some builds)
-    # an overflowing product is handled below, as NaN with the fit's warning,
-    # whatever NumPy's error settings
-    with np.errstate(over="ignore", invalid="ignore"):
+    # (documented to double-round on some builds). An overflowing product is
+    # handled there, as NaN with the fit's warning.
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
         products = np.concatenate([center * beta, offset[anchored] * beta[anchored]])
     raw = _rust.exported_intercept(float(intercept), products)
     return beta, math.nan if raw is None else raw

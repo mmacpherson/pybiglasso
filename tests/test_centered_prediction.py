@@ -681,3 +681,54 @@ def test_overflow_reaches_its_specified_result_under_raising_settings(monkeypatc
         pytest.raises(ValueError, match="too large to predict"),
     ):
         path.decision_function(np.full((1, ncol), -MAX))
+
+
+def test_centered_prediction_scratch_budget_with_many_lambdas():
+    # At 100 lambdas a block of rows held products for every lambda and a
+    # finiteness mask of the same shape, over the budget together.
+    X = np.asfortranarray(np.ones((40000, 1)))
+    coef = sps.csc_array(np.full((1, 100), 0.5))
+    peak, eta = scratch_peak(
+        lambda: path_module.centered_predictor(
+            X, coef, np.zeros(100), np.zeros(1), np.zeros(1), np.zeros(1, dtype=bool)
+        )
+    )
+    np.testing.assert_array_equal(eta, 0.5)
+    assert peak <= path_module.CHUNK_ELEMENTS * 8 + eta.nbytes + (1 << 14)
+
+
+def test_finite_underflow_keeps_its_bits_under_raising_settings(monkeypatch):
+    # Predicting at the smallest normal float: 0.1 * tiny is subnormal
+    x = np.array([-1.0, 1.0, -1.0, 1.0])
+    path = bl.biglasso(x[:, None], 0.2 * x, family="gaussian", lambdas=[0.1])
+    probe = np.full((1, 1), np.finfo(float).tiny)
+    expected = path.decision_function(probe)
+    assert 0 < abs(expected[0, 0]) < np.finfo(float).tiny
+    with np.errstate(all="raise"):
+        assert path.decision_function(probe).tobytes() == expected.tobytes()
+
+    # an export product that underflows to a subnormal
+    def solver(*args):
+        return dict(
+            iters=np.array([1]),
+            col_map=np.arange(1),
+            center=np.array([np.finfo(float).tiny]),
+            offset=np.zeros(1),
+            anchored=np.zeros(1, dtype=bool),
+            scale=np.array([4.0]),  # and the slope 0.5 / 4 is exact
+            intercept=np.array([0.0]),
+            coef_rows=[np.arange(1)],
+            coef_vals=[np.array([0.5])],
+            lambda_=np.array([0.1]),
+            deviance=np.zeros(1),
+            n_reject=np.zeros(1, dtype=np.int64),
+        )
+
+    monkeypatch.setattr(bl.fit, "_fit_path", lambda *a: solver(*a))
+    X = np.zeros((3, 1), order="F")
+    default = bl.biglasso(X, np.zeros(3), family="gaussian", lambdas=[0.1])
+    assert 0 < abs(default.intercept[0]) < np.finfo(float).tiny
+    with np.errstate(all="raise"):
+        strict = bl.biglasso(X, np.zeros(3), family="gaussian", lambdas=[0.1])
+    assert strict.intercept.tobytes() == default.intercept.tobytes()
+    assert strict.coef.data.tobytes() == default.coef.data.tobytes()
