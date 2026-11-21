@@ -75,6 +75,7 @@ to observed output.
 ## Development Commands
 
 - `make test` — fast suite, against stored R output (no R needed)
+- `make test-speed` — default prediction speed against the R-compatible path
 - `make test-minimum` — the same suite with every declared dependency floor
 - `make test-r` — the same grid live against the pinned R release that made the
   fixtures, in a container (`CONTAINER=podman` works too); use
@@ -99,7 +100,8 @@ What a pull request runs in CI follows from the files it changes. Packaging,
 bindings, toolchain, dependency and CI changes run everything, with every
 wheel, as main and releases do. Other changes under `rust/`, `src/` or `tests/`,
 `scripts/test_rust.py` or the benchmark scripts add the macOS job, whose runners can queue for an hour, and build the Linux
-x86 wheel only. Anything else skips macOS. To run everything on a branch by
+x86 wheel only. Anything else skips macOS. The Ubuntu x86-64 / Python 3.14
+job runs `make test-speed` in every tier. To run everything on a branch by
 hand, start the CI workflow from the Actions tab; that run is extra evidence
 and does not replace the pull request's own required check.
 

@@ -213,6 +213,9 @@ jobs:
       run: git ls-files -z rust | xargs -0 touch -t 200001010000
     - name: Tests (against stored R biglasso 1.7.2 output)
       run: make test
+    - name: Check default prediction speed
+      if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+      run: make test-speed
     - name: Save the Rust build for later runs
       if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9    # v6.1.0
