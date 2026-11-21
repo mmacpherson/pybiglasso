@@ -295,9 +295,9 @@ def centered_predictor(
     on block sizes, or on the platform: every step is its own NumPy ufunc
     call, which rounds to float64 before the next reads it, so no
     multiply-add can be fused. X is read a column at a time over blocks of
-    rows, never copied whole or written to; the block buffers are reused, so
-    besides the (nrow, k) result the scratch stays within CHUNK_ELEMENTS
-    float64 values (32 MB).
+    rows, never copied whole or written to; each block's used columns are
+    centered a tile at a time into a reused buffer, so besides the (nrow, k)
+    result the scratch stays within CHUNK_ELEMENTS float64 values (32 MB).
 
     Forward error, for the stored floats: with k nonzero coefficients at a
     lambda and M = |centered_intercept| + sum_j |coef_j| (|x_j - center_j| +
@@ -310,26 +310,38 @@ def centered_predictor(
     NumPy's floating-point error settings.
     """
     X = _as_array(_as_arrow_matrix(X))
-    by_column = sps.csr_array(coef)
-    by_column.sort_indices()
-    nrow, nlambda = _nrow(X, row_indices), by_column.shape[1]
+    coef = sps.csc_array(coef)
+    coef.sort_indices()
+    nrow, nlambda = _nrow(X, row_indices), coef.shape[1]
     eta = np.empty((nrow, nlambda), order="F")
     eta[:] = centered_intercept
-    used = np.flatnonzero(np.diff(by_column.indptr))
+    used = np.unique(coef.indices)
     if len(used) == 0 or nrow == 0:
         return eta
-    # float64-sized slots per row: the column's float64 copy and its centered
-    # values (2), a finiteness mask (under 1), a NumPy gather (1) or an Arrow
-    # lookup's indices, chunk ids, order, block and gathered values (up to
-    # 10), and one product for each lambda in a tile; lambdas beyond the tile
-    # are taken in turn, so the scratch stays within the budget however many
-    # are selected.
-    tile = max(1, min(nlambda, CHUNK_ELEMENTS // 2))
-    height = max(1, min(nrow, CHUNK_ELEMENTS // (14 + tile)))
+    # Each lambda's nonzero columns, ascending, and their coefficients.
+    terms = [
+        (
+            k,
+            coef.indices[coef.indptr[k] : coef.indptr[k + 1]],
+            coef.data[coef.indptr[k] : coef.indptr[k + 1]],
+        )
+        for k in range(nlambda)
+        if coef.indptr[k + 1] > coef.indptr[k]
+    ]
+    # X's used columns are centered a tile at a time over a block of rows;
+    # each lambda's output column, contiguous in the Fortran-ordered result,
+    # then takes the tile's terms in column order, so every output still sees
+    # its intercept and then its terms in ascending column order, however the
+    # rows and columns are tiled. float64-sized slots per row: the centered
+    # tile, the column's float64 copy, a product, a finiteness mask (under 1),
+    # and a NumPy gather (1) or an Arrow lookup's indices, chunk ids, order,
+    # block and gathered values (up to 10).
+    width = max(1, min(len(used), 256, CHUNK_ELEMENTS // 32))
+    height = max(1, min(nrow, CHUNK_ELEMENTS // (width + 14)))
+    tile = np.empty((height, width), order="F")
     converted = np.empty(height)
-    centered = np.empty(height)
+    product = np.empty(height)
     finite = np.empty(height, dtype=bool)
-    products = np.empty((height, tile))
     # Each operation rounds to nearest with gradual underflow, as the bound
     # assumes; overflow is checked below. So NumPy's error settings don't
     # change a finite result or turn it into an exception.
@@ -340,34 +352,30 @@ def centered_predictor(
                 slice(start, stop) if row_indices is None else row_indices[start:stop]
             )
             m = stop - start
-            for j in used:
-                values = _column(X, rows, int(j), converted[:m])
-                if not np.isfinite(values, out=finite[:m]).all():
-                    raise ValueError("X contains NaN or infinity.")
-                h = centered[:m]
-                np.subtract(values, center[j], out=h)
-                if anchored[j]:
-                    np.subtract(h, center_offset[j], out=h)
-                lambdas = by_column.indices[
-                    by_column.indptr[j] : by_column.indptr[j + 1]
-                ]
-                coefs = by_column.data[by_column.indptr[j] : by_column.indptr[j + 1]]
-                first, last = lambdas[0], lambdas[-1] + 1
-                if last - first == len(lambdas):
-                    # consecutive lambdas, the usual case on a path: one product
-                    # and one addition per output, in place, a tile at a time
-                    for k0 in range(0, len(lambdas), tile):
-                        k1 = min(k0 + tile, len(lambdas))
-                        p = products[:m, : k1 - k0]
-                        np.multiply.outer(h, coefs[k0:k1], out=p)
-                        target = eta[start:stop, first + k0 : first + k1]
-                        np.add(target, p, out=target)
-                else:
-                    p = products[:m, 0]
-                    for k, b in zip(lambdas, coefs, strict=True):
-                        np.multiply(h, b, out=p)
-                        target = eta[start:stop, k]
-                        np.add(target, p, out=target)
+            p = product[:m]
+            for t0 in range(0, len(used), width):
+                columns = used[t0 : t0 + width]
+                for q, j in enumerate(columns):
+                    values = _column(X, rows, int(j), converted[:m])
+                    if not np.isfinite(values, out=finite[:m]).all():
+                        raise ValueError("X contains NaN or infinity.")
+                    h = tile[:m, q]
+                    np.subtract(values, center[j], out=h)
+                    if anchored[j]:
+                        np.subtract(h, center_offset[j], out=h)
+                low, high = columns[0], columns[-1]
+                for k, cols, coefs in terms:
+                    first, last = np.searchsorted(cols, [low, high + 1])
+                    if first == last:
+                        continue
+                    out = eta[start:stop, k]
+                    for q, b in zip(
+                        np.searchsorted(columns, cols[first:last]),
+                        coefs[first:last],
+                        strict=True,
+                    ):
+                        np.multiply(tile[:m, q], b, out=p)
+                        np.add(out, p, out=out)
             for k in range(nlambda):
                 if not np.isfinite(eta[start:stop, k], out=finite[:m]).all():
                     raise ValueError(
