@@ -77,8 +77,9 @@ python-source = "src"
 strip = true
 
 [tool.pytest.ini_options]
-addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak and not recipes and not bench'"
+addopts = "-rxEfs --strict-markers --tb short -m 'not r and not soak and not recipes and not bench and not speed'"
 markers = [
+  "speed: serial prediction speed checks (make test-speed)",
   "bench: optional competitor integration tests (make test-bench)",
   "r: runs R biglasso live (needs Rscript, or CONTAINER + R_IMAGE)",
   "soak: large problems against live R; slow, meant for local runs",

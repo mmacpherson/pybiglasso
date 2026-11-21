@@ -35,6 +35,10 @@ BENCH_PYTHON ?= 3.14
 test-bench:
 	uv run -p $(BENCH_PYTHON) --locked --group bench pytest tests/test_gaussian_benchmark.py -m bench
 
+.PHONY: test-speed
+test-speed:
+	uv run --locked pytest -n 0 -m speed -s tests/test_prediction_speed.py
+
 # the newest versions pyproject.toml allows, ignoring uv.lock: what a new
 # install gets
 .PHONY: test-latest

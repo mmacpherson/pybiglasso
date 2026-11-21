@@ -75,6 +75,7 @@ to observed output.
 ## Development Commands
 
 - `make test` — fast suite, against stored R output (no R needed)
+- `make test-speed` — default prediction speed against the R-compatible path
 - `make test-minimum` — the same suite with every declared dependency floor
 - `make test-r` — the same grid live against the pinned R release that made the
   fixtures, in a container (`CONTAINER=podman` works too); use
